@@ -3,6 +3,7 @@ import "std:text"
 import "std:json"
 import "std:encoding"
 import "std:fs"
+import "pkg:beacons/src/lib.gu"
 import "pkg:lotcast-core/src/lib.gu"
 import "pkg:lotcast-log/src/lib.gu"
 import "src/lib.gu"
@@ -99,7 +100,7 @@ fn test_request_pending_audit_method_is_e_method_pending() -> Unit:
     assert(code_of(parse_draw_request(t, 1000)) == "E_METHOD_PENDING")
 
 fn test_request_not_before_bounds() -> Unit:
-    let now = 1000000
+    let now = 1795556000
     assert(code_of(parse_draw_request(body_of(",\"not_before\":" + int_to_text(now + 400 * 86400)), now)) == "ok")
     assert(code_of(parse_draw_request(body_of(",\"not_before\":" + int_to_text(now + 400 * 86400 + 1)), now)) == "E_REQUEST")
     assert(code_of(parse_draw_request(body_of(",\"not_before\":-1"), now)) == "E_REQUEST")
@@ -224,7 +225,7 @@ fn new_writer(root: Text) -> Writer:
     return unwrap(writer_open(store, cfg_for(root), seed_bytes()))
 
 fn t_now() -> Int:
-    return 1000000
+    return 1795556000
 
 fn test_drain_puts_a_batch_in_one_checkpoint_with_the_epoch_line() -> Unit:
     let root = temp_root()
@@ -236,11 +237,11 @@ fn test_drain_puts_a_batch_in_one_checkpoint_with_the_epoch_line() -> Unit:
     let da = unwrap(store_get_draw(w.store, a))
     let db = unwrap(store_get_draw(w.store, b))
     assert(json_as_int(json_get(da, "index")) + json_as_int(json_get(db, "index")) == 1)
-    assert(json_as_int(json_get(da, "epoch")) == 200000)
-    assert(json_as_int(json_get(da, "deadline")) == 1000025)
+    assert(json_as_int(json_get(da, "epoch")) == 359111200)
+    assert(json_as_int(json_get(da, "deadline")) == 1795556025)
     let cp = unwrap(parse_checkpoint(unwrap(note_text(w.state.checkpoint))))
-    assert(unwrap(parse_epoch(cp.extensions)).epoch == 200000)
-    assert(unwrap(parse_epoch(cp.extensions)).deadline == 1000025)
+    assert(unwrap(parse_epoch(cp.extensions)).epoch == 359111200)
+    assert(unwrap(parse_epoch(cp.extensions)).deadline == 1795556025)
     assert(len(store_inbox_ids(w.store)) == 0)
 
 fn test_the_promise_names_the_checkpoint_epoch_and_is_signed() -> Unit:
@@ -250,7 +251,7 @@ fn test_the_promise_names_the_checkpoint_epoch_and_is_signed() -> Unit:
     set w = unwrap(writer_tick(w, t_now()))
     let d = unwrap(store_get_draw(w.store, a))
     assert(json_as_text(json_get(d, "promise")) != "")
-    assert(json_as_int(json_get(d, "epoch")) == 200000)
+    assert(json_as_int(json_get(d, "epoch")) == 359111200)
 
 fn test_a_request_already_drawn_is_not_appended_again() -> Unit:
     let root = temp_root()
@@ -269,7 +270,7 @@ fn test_an_empty_epoch_writes_no_checkpoint_and_no_epoch_file() -> Unit:
     set w = unwrap(writer_tick(w, t_now()))
     set w = unwrap(writer_tick(w, t_now() + 30))
     assert(w.state.size == 0)
-    assert(not store_has(w.store, "epochs/200000.json"))
+    assert(not store_has(w.store, "epochs/359111200.json"))
 
 fn test_closing_an_epoch_stores_the_checkpoint_and_valid_inclusion_proofs() -> Unit:
     let root = temp_root()
@@ -278,11 +279,11 @@ fn test_closing_an_epoch_stores_the_checkpoint_and_valid_inclusion_proofs() -> U
     let b = queue(w.store, 6)
     let c = queue(w.store, 7)
     set w = unwrap(writer_tick(w, t_now()))
-    assert(not store_has(w.store, "epochs/200000.json"))
-    set w = unwrap(writer_tick(w, 1000005))
-    assert(store_has(w.store, "epochs/200000.json"))
-    let closed = unwrap(store_get_json(w.store, "epochs/200000.json"))
-    assert(json_as_int(json_get(closed, "deadline")) == 1000025)
+    assert(not store_has(w.store, "epochs/359111200.json"))
+    set w = unwrap(writer_tick(w, 1795556005))
+    assert(store_has(w.store, "epochs/359111200.json"))
+    let closed = unwrap(store_get_json(w.store, "epochs/359111200.json"))
+    assert(json_as_int(json_get(closed, "deadline")) == 1795556025)
     assert(json_as_int(json_get(closed, "size")) == 3)
     let cp = unwrap(parse_checkpoint(unwrap(note_text(json_as_text(json_get(closed, "checkpoint"))))))
     let entries = json_get(closed, "entries")
@@ -303,13 +304,13 @@ fn test_a_later_epoch_gets_its_own_checkpoint_and_the_old_epoch_stays_closed() -
     let a = queue(w.store, 8)
     set w = unwrap(writer_tick(w, t_now()))
     let b = queue(w.store, 9)
-    set w = unwrap(writer_tick(w, 1000006))
-    assert(store_has(w.store, "epochs/200000.json"))
+    set w = unwrap(writer_tick(w, 1795556006))
+    assert(store_has(w.store, "epochs/359111200.json"))
     assert(w.state.size == 2)
     let db = unwrap(store_get_draw(w.store, b))
-    assert(json_as_int(json_get(db, "epoch")) == 200001)
-    set w = unwrap(writer_tick(w, 1000011))
-    assert(store_has(w.store, "epochs/200001.json"))
+    assert(json_as_int(json_get(db, "epoch")) == 359111201)
+    set w = unwrap(writer_tick(w, 1795556011))
+    assert(store_has(w.store, "epochs/359111201.json"))
 
 fn reopen(root: Text) -> Writer:
     return new_writer(root)
@@ -321,56 +322,56 @@ fn test_restart_after_a_tick_closes_the_epoch_without_a_second_checkpoint() -> U
     set w = unwrap(writer_tick(w, t_now()))
     let before = w.state.checkpoint
     var again = reopen(root)
-    set again = unwrap(writer_tick(again, 1000010))
+    set again = unwrap(writer_tick(again, 1795556010))
     assert(again.state.checkpoint == before)
-    assert(store_has(again.store, "epochs/200000.json"))
+    assert(store_has(again.store, "epochs/359111200.json"))
     assert(again.state.size == 1)
 
 fn test_crash_between_the_intent_and_the_append_is_redrained_in_the_same_epoch() -> Unit:
     let root = temp_root()
     var w = new_writer(root)
     let a = queue(w.store, 12)
-    let intent = store_put_json(w.store, "state/open.json", json_set(json_set(json_set(json_object(), "epoch", json_int(200000)), "deadline", json_int(1000025)), "ids", json_push(json_array(), json_text(a))))
+    let intent = store_put_json(w.store, "state/open.json", json_set(json_set(json_set(json_object(), "epoch", json_int(359111200)), "deadline", json_int(1795556025)), "ids", json_push(json_array(), json_text(a))))
     set w = reopen(root)
     set w = unwrap(writer_tick(w, t_now() + 1))
     assert(w.state.size == 1)
-    assert(json_as_int(json_get(unwrap(store_get_draw(w.store, a)), "epoch")) == 200000)
+    assert(json_as_int(json_get(unwrap(store_get_draw(w.store, a)), "epoch")) == 359111200)
 
 fn test_crash_between_the_intent_and_the_append_in_an_epoch_that_has_ended() -> Unit:
     let root = temp_root()
     var w = new_writer(root)
     let a = queue(w.store, 13)
-    let intent = store_put_json(w.store, "state/open.json", json_set(json_set(json_set(json_object(), "epoch", json_int(200000)), "deadline", json_int(1000025)), "ids", json_push(json_array(), json_text(a))))
+    let intent = store_put_json(w.store, "state/open.json", json_set(json_set(json_set(json_object(), "epoch", json_int(359111200)), "deadline", json_int(1795556025)), "ids", json_push(json_array(), json_text(a))))
     set w = reopen(root)
-    set w = unwrap(writer_tick(w, 1000020))
+    set w = unwrap(writer_tick(w, 1795556020))
     assert(w.state.size == 1)
-    assert(json_as_int(json_get(unwrap(store_get_draw(w.store, a)), "epoch")) == 200004)
-    assert(not store_has(w.store, "epochs/200000.json"))
+    assert(json_as_int(json_get(unwrap(store_get_draw(w.store, a)), "epoch")) == 359111204)
+    assert(not store_has(w.store, "epochs/359111200.json"))
 
 fn test_crash_between_the_intent_and_the_append_shortly_after_the_epoch_ended() -> Unit:
     let root = temp_root()
     var w = new_writer(root)
     let a = queue(w.store, 15)
-    let intent = store_put_json(w.store, "state/open.json", json_set(json_set(json_set(json_object(), "epoch", json_int(200000)), "deadline", json_int(1000025)), "ids", json_push(json_array(), json_text(a))))
+    let intent = store_put_json(w.store, "state/open.json", json_set(json_set(json_set(json_object(), "epoch", json_int(359111200)), "deadline", json_int(1795556025)), "ids", json_push(json_array(), json_text(a))))
     set w = reopen(root)
-    set w = unwrap(writer_tick(w, 1000010))
-    assert(json_as_int(json_get(unwrap(store_get_draw(w.store, a)), "epoch")) == 200000)
-    assert(store_has(w.store, "epochs/200000.json"))
+    set w = unwrap(writer_tick(w, 1795556010))
+    assert(json_as_int(json_get(unwrap(store_get_draw(w.store, a)), "epoch")) == 359111200)
+    assert(store_has(w.store, "epochs/359111200.json"))
 
 fn test_crash_after_the_append_but_before_the_draw_records() -> Unit:
     let root = temp_root()
     var w = new_writer(root)
     let a = queue(w.store, 14)
     let r = request_n(14)
-    let intent = store_put_json(w.store, "state/open.json", json_set(json_set(json_set(json_object(), "epoch", json_int(200000)), "deadline", json_int(1000025)), "ids", json_push(json_array(), json_text(a))))
-    let appended = unwrap(log_append_many(w.state, [unwrap(entry_bytes(r))], w.origin, w.seed, [epoch_extension(200000, 1000025)]))
+    let intent = store_put_json(w.store, "state/open.json", json_set(json_set(json_set(json_object(), "epoch", json_int(359111200)), "deadline", json_int(1795556025)), "ids", json_push(json_array(), json_text(a))))
+    let appended = unwrap(log_append_many(w.state, [unwrap(entry_bytes(r))], w.origin, w.seed, [epoch_extension(359111200, 1795556025)]))
     let before = appended.state.checkpoint
     set w = reopen(root)
-    set w = unwrap(writer_tick(w, 1000010))
+    set w = unwrap(writer_tick(w, 1795556010))
     assert(w.state.checkpoint == before)
-    assert(store_has(w.store, "epochs/200000.json"))
+    assert(store_has(w.store, "epochs/359111200.json"))
     let d = unwrap(store_get_draw(w.store, a))
-    assert(json_as_int(json_get(d, "epoch")) == 200000)
+    assert(json_as_int(json_get(d, "epoch")) == 359111200)
     assert(json_as_int(json_get(d, "index")) == 0)
 
 # ---------------------------------------------------------------- stamper
@@ -405,39 +406,39 @@ fn closed_store() -> Store:
     var w = new_writer(root)
     let a = queue(w.store, 21)
     set w = unwrap(writer_tick(w, t_now()))
-    set w = unwrap(writer_tick(w, 1000005))
+    set w = unwrap(writer_tick(w, 1795556005))
     return w.store
 
 fn test_stamper_anchors_an_epoch_when_both_tokens_prove_by_the_deadline() -> Unit:
     let store = closed_store()
-    let after = unwrap(stamper_tick(store, {}, 1000006, stamp_in_time))
-    let anchor = unwrap(store_get_json(store, "anchors/200000.json"))
+    let after = unwrap(stamper_tick(store, {}, 1795556006, stamp_in_time))
+    let anchor = unwrap(store_get_json(store, "anchors/359111200.json"))
     assert(json_as_bool(json_get(anchor, "void")) == false)
-    assert(json_as_int(json_get(anchor, "proven_by")) == 1000024)
+    assert(json_as_int(json_get(anchor, "proven_by")) == 1795556024)
     assert(json_len(json_get(anchor, "timestamps")) == 2)
 
 fn test_stamper_voids_an_epoch_whose_tokens_prove_after_the_deadline() -> Unit:
     let store = closed_store()
-    let after = unwrap(stamper_tick(store, {}, 1000006, stamp_late))
-    let anchor = unwrap(store_get_json(store, "anchors/200000.json"))
+    let after = unwrap(stamper_tick(store, {}, 1795556006, stamp_late))
+    let anchor = unwrap(store_get_json(store, "anchors/359111200.json"))
     assert(json_as_bool(json_get(anchor, "void")) == true)
 
 fn test_stamper_retries_until_the_deadline_then_voids() -> Unit:
     let store = closed_store()
-    let first = unwrap(stamper_tick(store, {}, 1000006, stamp_fails))
-    assert(not store_has(store, "anchors/200000.json"))
-    let last = unwrap(stamper_tick(store, first, 1000024, stamp_fails))
-    assert(not store_has(store, "anchors/200000.json"))
-    let over = unwrap(stamper_tick(store, last, 1000026, stamp_fails))
-    let anchor = unwrap(store_get_json(store, "anchors/200000.json"))
+    let first = unwrap(stamper_tick(store, {}, 1795556006, stamp_fails))
+    assert(not store_has(store, "anchors/359111200.json"))
+    let last = unwrap(stamper_tick(store, first, 1795556024, stamp_fails))
+    assert(not store_has(store, "anchors/359111200.json"))
+    let over = unwrap(stamper_tick(store, last, 1795556026, stamp_fails))
+    let anchor = unwrap(store_get_json(store, "anchors/359111200.json"))
     assert(json_as_bool(json_get(anchor, "void")) == true)
 
 fn test_stamper_switches_to_freetsa_after_ten_minutes_of_one_authority_down() -> Unit:
     let store = closed_store()
     var down: Map[Text, Int] = {}
-    set down = map_set(down, "digicert", 1000006 - 601)
-    let after = unwrap(stamper_tick(store, down, 1000006, stamp_digicert_down))
-    let anchor = unwrap(store_get_json(store, "anchors/200000.json"))
+    set down = map_set(down, "digicert", 1795556006 - 601)
+    let after = unwrap(stamper_tick(store, down, 1795556006, stamp_digicert_down))
+    let anchor = unwrap(store_get_json(store, "anchors/359111200.json"))
     assert(json_as_bool(json_get(anchor, "void")) == false)
     let first = json_get(unwrap(json_index_safe(json_get(anchor, "timestamps"), 0)), "tsa")
     let second = json_get(unwrap(json_index_safe(json_get(anchor, "timestamps"), 1)), "tsa")
@@ -445,7 +446,162 @@ fn test_stamper_switches_to_freetsa_after_ten_minutes_of_one_authority_down() ->
 
 fn test_stamper_ignores_epochs_already_anchored() -> Unit:
     let store = closed_store()
-    let a = unwrap(stamper_tick(store, {}, 1000006, stamp_in_time))
-    let b = unwrap(stamper_tick(store, a, 1000007, stamp_fails))
-    let anchor = unwrap(store_get_json(store, "anchors/200000.json"))
+    let a = unwrap(stamper_tick(store, {}, 1795556006, stamp_in_time))
+    let b = unwrap(stamper_tick(store, a, 1795556007, stamp_fails))
+    let anchor = unwrap(store_get_json(store, "anchors/359111200.json"))
     assert(json_as_bool(json_get(anchor, "void")) == false)
+
+# ---------------------------------------------------------------- watcher
+
+fn fake_drand(round: Int) -> Result[DrandRound, StdError]:
+    return Ok(DrandRound(round, bytes_from_ints([1, 2]), bytes_from_ints([3, 4])))
+
+fn fake_source(id: Text, t0: Int) -> Result[SourceResult, StdError]:
+    return Ok(SourceResult(id, "present", bytes_from_ints([9]), json_set(json_object(), "id", json_text(id))))
+
+fn fake_absent(id: Text, t0: Int) -> Result[SourceResult, StdError]:
+    return Ok(SourceResult(id, "absent-proven", bytes_from_ints([]), json_set(json_object(), "id", json_text(id))))
+
+fn fake_open_window(id: Text, t0: Int) -> Result[SourceResult, StdError]:
+    return Err(std_error("E_LOTCAST_PENDING", id + " has no pulse after t0 yet; the window closes at unix time 1795558000"))
+
+fn fake_build(request: Request, log_part: Json, promise: Text, drand: DrandRound, others: List[SourceResult], key: Bytes) -> Result[Json, StdError]:
+    var r = json_object()
+    set r = json_set(r, "round", json_int(drand.round))
+    set r = json_set(r, "promise", json_text(promise))
+    set r = json_set(r, "index", json_get(log_part, "index"))
+    set r = json_set(r, "others", json_int(len(others)))
+    return Ok(r)
+
+fn fake_build_fails(request: Request, log_part: Json, promise: Text, drand: DrandRound, others: List[SourceResult], key: Bytes) -> Result[Json, StdError]:
+    return Err(std_error("E_LOTCAST_SELFCHECK", "step 3 failed"))
+
+fn queue_request(store: Store, r: Request) -> Text:
+    let id = draw_id(unwrap(entry_hash(r)))
+    let put = unwrap(store_put_inbox(store, id, request_to_json(r)))
+    return id
+
+fn anchored_store(r: Request) -> Writer:
+    let root = temp_root()
+    var w = new_writer(root)
+    let id = queue_request(w.store, r)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let failing = unwrap(stamper_tick(w.store, {}, 1795556006, stamp_in_time))
+    return w
+
+fn scheduled(n: Int, not_before: Int) -> Request:
+    let base = request_n(n)
+    return Request(base.tradition, base.method, base.options, 0, bytes_from_ints([]), ["drand-quicknet"], not_before, base.client_nonce, bytes_from_ints([]))
+
+fn status_of_draw(store: Store, id: Text) -> Text:
+    return json_as_text(json_get(unwrap(store_get_json(store, "status/" + id + ".json")), "status"))
+
+fn test_watcher_completes_a_drand_only_draw_once_the_round_exists() -> Unit:
+    let r = request_n(31)
+    let w = anchored_store(r)
+    let id = draw_id(unwrap(entry_hash(r)))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_source, fake_build))
+    assert(n == 1)
+    assert(store_has(w.store, "receipts/" + id + ".json"))
+    assert(status_of_draw(w.store, id) == "complete")
+    let receipt = unwrap(store_get_json(w.store, "receipts/" + id + ".json"))
+    assert(json_as_int(json_get(receipt, "others")) == 3)
+
+fn test_watcher_waits_for_a_future_not_before() -> Unit:
+    let r = scheduled(32, 1795561000)
+    let w = anchored_store(r)
+    let id = draw_id(unwrap(entry_hash(r)))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_source, fake_build))
+    assert(n == 0)
+    assert(status_of_draw(w.store, id) == "pending")
+    let waiting = json_get(unwrap(store_get_json(w.store, "status/" + id + ".json")), "waiting_on")
+    assert(json_as_text(json_get(unwrap(json_index_safe(waiting, 0)), "source")) == "not-before")
+    assert(not store_has(w.store, "receipts/" + id + ".json"))
+    let later = unwrap(watch_once(w.store, w.origin, w.public, 1795561100, fake_drand, fake_source, fake_build))
+    assert(later == 1)
+
+fn test_watcher_names_the_source_whose_window_is_open() -> Unit:
+    let base = request_n(33)
+    let r = Request(base.tradition, base.method, base.options, 0, bytes_from_ints([]), ["curby-rng", "drand-quicknet"], 0, base.client_nonce, bytes_from_ints([]))
+    let w = anchored_store(r)
+    let id = draw_id(unwrap(entry_hash(r)))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_open_window, fake_build))
+    assert(n == 0)
+    let waiting = json_get(unwrap(store_get_json(w.store, "status/" + id + ".json")), "waiting_on")
+    assert(json_as_text(json_get(unwrap(json_index_safe(waiting, 0)), "source")) == "curby-rng")
+    assert(json_as_int(json_get(unwrap(store_get_json(w.store, "status/" + id + ".json")), "next_check")) == 1795556050)
+
+fn test_watcher_completes_when_a_source_had_no_pulse_in_its_window() -> Unit:
+    let base = request_n(34)
+    let r = Request(base.tradition, base.method, base.options, 0, bytes_from_ints([]), ["curby-rng", "drand-quicknet"], 0, base.client_nonce, bytes_from_ints([]))
+    let w = anchored_store(r)
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_absent, fake_build))
+    assert(n == 1)
+
+fn test_watcher_does_not_serve_a_receipt_that_fails_its_own_check() -> Unit:
+    let r = request_n(35)
+    let w = anchored_store(r)
+    let id = draw_id(unwrap(entry_hash(r)))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_source, fake_build_fails))
+    assert(n == 0)
+    assert(not store_has(w.store, "receipts/" + id + ".json"))
+    let waiting = json_get(unwrap(store_get_json(w.store, "status/" + id + ".json")), "waiting_on")
+    assert(json_as_text(json_get(unwrap(json_index_safe(waiting, 0)), "source")) == "internal-check")
+
+fn test_watcher_reports_a_void_epoch_as_anchor_failed() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let r = request_n(36)
+    let id = queue_request(w.store, r)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let failing = unwrap(stamper_tick(w.store, {}, 1795556006, stamp_late))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_source, fake_build))
+    assert(n == 0)
+    assert(status_of_draw(w.store, id) == "anchor-failed")
+
+fn test_watcher_says_anchor_while_the_epoch_is_not_stamped() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let r = request_n(37)
+    let id = queue_request(w.store, r)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556006, fake_drand, fake_source, fake_build))
+    let waiting = json_get(unwrap(store_get_json(w.store, "status/" + id + ".json")), "waiting_on")
+    assert(json_as_text(json_get(unwrap(json_index_safe(waiting, 0)), "source")) == "anchor")
+
+fn test_a_restarted_watcher_resumes_pending_draws_without_relogging() -> Unit:
+    let r = scheduled(38, 1795561000)
+    let w = anchored_store(r)
+    let first = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_source, fake_build))
+    let size = w.state.size
+    let store = unwrap(store_open(w.store.root))
+    let again = unwrap(watch_once(store, w.origin, w.public, 1795561100, fake_drand, fake_source, fake_build))
+    assert(again == 1)
+    assert(w.state.size == size)
+
+fn counting_source(id: Text, t0: Int) -> Result[SourceResult, StdError]:
+    let before = read_text("fetch-count.txt")
+    var seen = ""
+    if is_ok(before):
+        set seen = unwrap(before)
+    let wrote = write_text_atomic("fetch-count.txt", seen + "x")
+    return Ok(SourceResult(id, "present", bytes_from_ints([9]), json_set(json_object(), "id", json_text(id))))
+
+fn test_many_draws_with_the_same_anchor_time_cause_one_fetch_per_source() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    for n in range(40, 50):
+        let base = request_n(n)
+        let r = Request(base.tradition, base.method, base.options, 0, bytes_from_ints([]), ["curby-rng", "drand-quicknet"], 0, base.client_nonce, bytes_from_ints([]))
+        let id = queue_request(w.store, r)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let failing = unwrap(stamper_tick(w.store, {}, 1795556006, stamp_in_time))
+    let wrote = write_text_atomic("fetch-count.txt", "")
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, counting_source, fake_build))
+    assert(n == 10)
+    assert(unwrap(read_text("fetch-count.txt")) == "x")
+    let gone = fs_remove("fetch-count.txt")

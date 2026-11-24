@@ -117,3 +117,103 @@ fn test_size_zero_and_one_edges() -> Unit:
     assert(verify_consistency(1, tree_root(one), 1, tree_root(one), []))
     assert(not verify_consistency(2, tree_root(one), 1, tree_root(one), []))
     assert(not is_ok(consistency_proof(one, 2)))
+
+# The signed text, or "<none>" when that signer is absent or wrong.
+fn signed_text(r: Result[Option[Text], StdError]) -> Text:
+    match unwrap(r):
+        Some(t):
+            return t
+        None:
+            return "<none>"
+
+fn note_vectors() -> Json:
+    return unwrap(json_parse(unwrap(read_text("fixtures/note-vectors.json"))))
+
+fn vtext(v: Json, key: Text) -> Text:
+    return json_as_text(json_get(v, key))
+
+fn op_name(v: Json) -> Text:
+    return json_as_text(json_get(json_get(v, "operator"), "name"))
+
+fn op_seed(v: Json) -> Bytes:
+    return hexb(json_as_text(json_get(json_get(v, "operator"), "seed")))
+
+fn op_public(v: Json) -> Bytes:
+    return hexb(json_as_text(json_get(json_get(v, "operator"), "public")))
+
+fn w_name(v: Json) -> Text:
+    return json_as_text(json_get(json_get(v, "witness"), "name"))
+
+fn w_seed(v: Json) -> Bytes:
+    return hexb(json_as_text(json_get(json_get(v, "witness"), "seed")))
+
+fn w_public(v: Json) -> Bytes:
+    return hexb(json_as_text(json_get(json_get(v, "witness"), "public")))
+
+fn test_note_matches_python_vector() -> Unit:
+    let v = note_vectors()
+    let signed = unwrap(sign_note(vtext(v, "checkpoint_text"), op_name(v), op_seed(v)))
+    assert(signed == vtext(v, "note_operator"))
+    assert(key_hash(op_name(v), op_public(v)) == hexb(json_as_text(json_get(json_get(v, "operator"), "key_hash"))))
+    let both = unwrap(add_signature(signed, w_name(v), w_seed(v)))
+    assert(both == vtext(v, "note_both"))
+
+fn test_verify_accepts_only_the_named_key() -> Unit:
+    let v = note_vectors()
+    let note = vtext(v, "note_operator")
+    assert(signed_text(verify_note(note, op_name(v), op_public(v))) == vtext(v, "checkpoint_text"))
+    assert(signed_text(verify_note(note, op_name(v), w_public(v))) == "<none>")
+    assert(signed_text(verify_note(note, w_name(v), w_public(v))) == "<none>")
+
+fn test_second_signature_does_not_invalidate_first() -> Unit:
+    let v = note_vectors()
+    let note = vtext(v, "note_both")
+    assert(signed_text(verify_note(note, op_name(v), op_public(v))) == vtext(v, "checkpoint_text"))
+    assert(signed_text(verify_note(note, w_name(v), w_public(v))) == vtext(v, "checkpoint_text"))
+
+fn test_tampered_text_fails() -> Unit:
+    let v = note_vectors()
+    let note = vtext(v, "note_operator")
+    let tampered = text_replace(note, "12345", "12346")
+    assert(tampered != note)
+    assert(signed_text(verify_note(tampered, op_name(v), op_public(v))) == "<none>")
+
+fn test_unknown_key_hash_is_ignored_not_error() -> Unit:
+    let v = note_vectors()
+    let line = vtext(v, "signature_line_witness")
+    let renamed = text_replace(line, w_name(v), op_name(v))
+    let note = vtext(v, "note_operator") + renamed
+    assert(signed_text(verify_note(note, op_name(v), op_public(v))) == vtext(v, "checkpoint_text"))
+    assert(signed_text(verify_note(vtext(v, "note_both"), "someone.else/log", op_public(v))) == "<none>")
+
+fn test_malformed_notes_are_errors() -> Unit:
+    let v = note_vectors()
+    let text = vtext(v, "checkpoint_text")
+    assert(not is_ok(verify_note(text, op_name(v), op_public(v))))
+    assert(not is_ok(verify_note(text + "\n", op_name(v), op_public(v))))
+    assert(not is_ok(sign_note("no trailing newline", op_name(v), op_seed(v))))
+    let bad = text + "\n— " + op_name(v) + " !!!notbase64\n"
+    assert(not is_ok(verify_note(bad, op_name(v), op_public(v))))
+
+fn test_checkpoint_round_trip() -> Unit:
+    let v = note_vectors()
+    let parsed = unwrap(parse_checkpoint(vtext(v, "checkpoint_text")))
+    assert(parsed.origin == op_name(v))
+    assert(parsed.size == 12345)
+    assert(parsed.root == hexb(vtext(v, "root")))
+    assert(len(parsed.extensions) == 0)
+    assert(checkpoint_text(parsed) == vtext(v, "checkpoint_text"))
+    let ext = unwrap(parse_checkpoint(vtext(v, "checkpoint_text_extension")))
+    assert(ext.size == 7)
+    assert(ext.extensions == ["extra line"])
+    assert(checkpoint_text(ext) == vtext(v, "checkpoint_text_extension"))
+
+fn test_checkpoint_rejects_bad_size_and_bad_root_length() -> Unit:
+    let root = base64_encode(crypto_sha256(bytes_from_ints([1])))
+    assert(is_ok(parse_checkpoint("o\n0\n" + root + "\n")))
+    assert(not is_ok(parse_checkpoint("o\n01\n" + root + "\n")))
+    assert(not is_ok(parse_checkpoint("o\n-1\n" + root + "\n")))
+    assert(not is_ok(parse_checkpoint("o\n1x\n" + root + "\n")))
+    assert(not is_ok(parse_checkpoint("o\n1\n" + base64_encode(bytes_from_ints([1, 2, 3])) + "\n")))
+    assert(not is_ok(parse_checkpoint("o\n1\n" + root)))
+    assert(not is_ok(parse_checkpoint("\n1\n" + root + "\n")))

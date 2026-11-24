@@ -43,3 +43,6 @@ pub fn slice_bytes(b: Bytes, from: Int, to: Int) -> Bytes:
         set out = list_push(out, octets[at])
         set at = at + 1
     return bytes_from_ints(out)
+
+pub fn text_bytes(t: Text) -> Bytes:
+    return bytes_from_text(t)

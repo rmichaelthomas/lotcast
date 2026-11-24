@@ -1017,3 +1017,51 @@ fn test_receipts_that_are_not_receipts_are_invalid() -> Unit:
     let r = anchored()
     assert_invalid_at(verdict_of(json_set(r, "log", json_null())), 1)
     assert_invalid_at(verdict_of(json_set(r, "receipt", json_text("lotcast/receipt/v2"))), 1)
+
+# ---------------------------------------------------------------- a four-source receipt with a question
+
+fn all_sources() -> Json:
+    return unwrap(json_parse(unwrap(read_text("fixtures/anchored-receipt-all-sources.json"))))
+
+fn all_salt() -> Bytes:
+    return unwrap(hex_decode(text_trim(unwrap(read_text("fixtures/anchored-receipt-all-sources.salt.hex")))))
+
+fn test_four_source_receipt_is_pending_live_for_curby_q_only() -> Unit:
+    let v = verify_anchored(all_sources(), anchored_key(), tsa_pins())
+    assert(v.result == "verified-pending-live")
+    assert(text_contains_word(v.detail, "curby-q"))
+    assert(not text_contains_word(v.detail, "nist-beacon-2"))
+    assert(json_len(json_get(all_sources(), "sources")) == 4)
+
+fn text_contains_word(haystack: Text, needle: Text) -> Bool:
+    return len(text_split(haystack, needle)) > 1
+
+fn test_question_and_salt_open_the_commitment_and_wrong_ones_do_not() -> Unit:
+    let ok = verify_anchored_with_question(all_sources(), anchored_key(), tsa_pins(), "Will this work?", all_salt())
+    assert(ok.result == "verified-pending-live")
+    assert_invalid_at(verify_anchored_with_question(all_sources(), anchored_key(), tsa_pins(), "Will this fail?", all_salt()), 6)
+    assert_invalid_at(verify_anchored_with_question(all_sources(), anchored_key(), tsa_pins(), "Will this work?", bytes_from_ints([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32])), 6)
+
+fn test_inclusion_proof_in_a_larger_log_rejects_a_changed_hash() -> Unit:
+    let r = all_sources()
+    let proof = json_get(json_get(r, "log"), "inclusion")
+    assert(json_len(proof) > 0)
+    var changed = json_push(json_array(), json_text(hex_encode(crypto_sha256(bytes_from_ints([1])))))
+    var i = 1
+    while i < json_len(proof):
+        set changed = json_push(changed, unwrap(json_index_safe(proof, i)))
+        set i = i + 1
+    assert_invalid_at(verify_anchored(nested_set(r, "log", "inclusion", changed), anchored_key(), tsa_pins()), 2)
+
+fn test_curby_q_live_claim_checked_too_early_fails_at_step_four() -> Unit:
+    let r = all_sources()
+    let listed = json_get(r, "sources")
+    let q = unwrap(json_index_safe(listed, 3))
+    let g = json_as_int(json_get(json_get(r, "anchor"), "g"))
+    var early = json_array()
+    var i = 0
+    while i < 3:
+        set early = json_push(early, unwrap(json_index_safe(listed, i)))
+        set i = i + 1
+    set early = json_push(early, json_set(q, "checked_at", json_int(g + 100)))
+    assert_invalid_at(verify_anchored(json_set(r, "sources", early), anchored_key(), tsa_pins()), 4)

@@ -78,4 +78,5 @@ assert seed.hex() == receipt["seed"], "seed"
 if (req["tradition"], req["method"]) == ("iching", "coins"):
     lines = vectors.iching_coins(vectors.Stream(seed))
     assert lines == receipt["outcome"]["lines"], "outcome"
-print("ok: entry hash, inclusion, seed and outcome match")
+checked = "entry hash, inclusion, seed" + (" and outcome" if (req["tradition"], req["method"]) == ("iching", "coins") else "")
+print("ok: " + checked + " match")

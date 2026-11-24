@@ -84,7 +84,7 @@ fn wait_for_sources(requested: List[Text], t0: Int) -> Result[List[SourceResult]
             return got
         match got:
             Err(problem):
-                if problem.code != "E_LOTCAST_PENDING":
+                if problem.code != "E_LOTCAST_PENDING" and problem.code != "E_LOTCAST_FETCH" and problem.code != "E_TWINE_FETCH" and problem.code != "E_NIST_FETCH":
                     return got
             Ok(ignored):
                 return got

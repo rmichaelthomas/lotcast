@@ -29,8 +29,42 @@ def words(seed: bytes, count: int, word_bits: int = 64):
         i += 1
     return out[:count]
 
+def canonical_options(options: dict) -> bytes:
+    return "\n".join(f"{k}={options[k]}" for k in sorted(options)).encode()
+
+def entry_hash(tradition, method, options, mode, commit, sources, not_before, nonce, subject) -> bytes:
+    entry = (b"lotcast/entry/v1" + lp(tradition.encode()) + lp(method.encode()) + lp(canonical_options(options))
+             + u8(mode) + lp(commit) + lp(",".join(sorted(sources)).encode()) + u64(not_before)
+             + lp(nonce) + lp(subject))
+    return sha512(entry)
+
+def question_commit(question: str, salt: bytes) -> bytes:
+    return sha512(b"lotcast/question/v1" + lp(question.encode()) + lp(salt))
+
+SOURCE_ORDER = ["drand-quicknet", "nist-beacon-2", "curby-rng", "curby-q"]
+
+def seed(entry_hash_: bytes, checkpoint_hash: bytes, sources: dict) -> bytes:
+    """sources: id -> (status, value); status 1 present, 0 absent, 2 not requested."""
+    body = b"lotcast/seed/v1" + lp(entry_hash_) + lp(checkpoint_hash)
+    for sid in SOURCE_ORDER:
+        status, value = sources[sid]
+        body += lp(sid.encode()) + u8(status) + lp(value)
+    return sha512(body)
+
 if __name__ == "__main__":
-    seed = bytes(64)
+    zero = bytes(64)
     print("seed zero, width 64, words 0..16:")
-    for w in words(seed, 17):
+    for w in words(zero, 17):
         print(w)
+
+    salt = bytes(range(1, 33))
+    qc = question_commit("Should I go?", salt)
+    print("question_commit('Should I go?', salt 01..20):", qc.hex())
+    ha = entry_hash("iching", "yarrow", {}, 1, qc, ["drand-quicknet"], 0, bytes([7]) * 32, b"")
+    hb = entry_hash("tarot", "rws", {"reversals": "true", "count": "3"}, 0, b"", ["drand-quicknet"], 1795000000, bytes([9]) * 32, b"")
+    print("entry A:", ha.hex())
+    print("entry B:", hb.hex())
+    drand_only = {"drand-quicknet": (1, bytes([0xAA]) * 32), "nist-beacon-2": (2, b""), "curby-rng": (2, b""), "curby-q": (2, b"")}
+    print("seed A unanchored:", seed(ha, b"", drand_only).hex())
+    cp = sha512(b"checkpoint")
+    print("seed A anchored:", seed(ha, cp, drand_only).hex())

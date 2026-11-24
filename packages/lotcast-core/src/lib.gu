@@ -2,6 +2,8 @@
 pub import "encode.gu"
 pub import "stream.gu"
 pub import "primitives.gu"
+pub import "entry.gu"
+pub import "seed.gu"
 
 pub fn lotcast_core_version() -> Text:
     return "0.1.0"

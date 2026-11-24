@@ -1,0 +1,54 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "encode.gu"
+
+# The request entry (spec §4.1) and the question commitment.
+
+pub record Request:
+    tradition: Text
+    method: Text
+    options: Map[Text, Text]
+    question_mode: Int
+    question_commit: Bytes
+    sources: List[Text]
+    not_before: Int
+    client_nonce: Bytes
+    subject_key: Bytes
+
+fn entry_error(message: Text) -> StdError:
+    return std_error("E_LOTCAST_ENTRY", message)
+
+fn contains_text(haystack: Text, needle: Text) -> Bool:
+    return len(text_split(haystack, needle)) > 1
+
+# Sorted `key=value` lines joined by newlines. A key or value holding `=` (in a key) or a newline
+# would make two different option sets encode the same, so it is an error.
+pub fn canonical_options(options: Map[Text, Text]) -> Result[Text, StdError]:
+    var keys: List[Text] = []
+    for key in options:
+        set keys = list_push(keys, key)
+    let ordered = sort(keys)
+    var lines: List[Text] = []
+    for key in ordered:
+        let value = options[key]
+        if contains_text(key, "=") or contains_text(key, "\n") or contains_text(value, "\n"):
+            return Err(entry_error("an option key may not hold = or a newline, and a value may not hold a newline"))
+        set lines = list_push(lines, key + "=" + value)
+    return Ok(text_join(lines, "\n"))
+
+pub fn entry_bytes(r: Request) -> Result[Bytes, StdError]:
+    let options = canonical_options(r.options)?
+    let sources = text_join(sort(r.sources), ",")
+    return Ok(cat([text_bytes("lotcast/entry/v1"), lp(text_bytes(r.tradition)), lp(text_bytes(r.method)), lp(text_bytes(options)), u8_bytes(r.question_mode), lp(r.question_commit), lp(text_bytes(sources)), u64_bytes(r.not_before), lp(r.client_nonce), lp(r.subject_key)]))
+
+pub fn entry_hash(r: Request) -> Result[Bytes, StdError]:
+    let bytes = entry_bytes(r)?
+    return Ok(crypto_sha512(bytes))
+
+# SHA-512("lotcast/question/v1" ‖ lp(question) ‖ lp(salt)); computed on the client, so the question
+# never leaves the machine. The salt is 32 bytes.
+pub fn question_commit(question: Text, salt: Bytes) -> Bytes:
+    assert(len(salt) == 32)
+    return crypto_sha512(cat([text_bytes("lotcast/question/v1"), lp(text_bytes(question)), lp(salt)]))

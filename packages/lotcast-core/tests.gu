@@ -91,3 +91,74 @@ fn test_uniform_rejects_words_at_or_above_the_limit() -> Unit:
     let s = stream_scripted([255, 7], 8)
     let d = uniform(s, 3)
     assert(d.value == 1)
+
+# ---- entry and seed (vectors from reference/python/vectors.py) ----
+
+fn salt_01_to_20() -> Bytes:
+    var octets: List[Int] = []
+    var k = 1
+    while k <= 32:
+        set octets = list_push(octets, k)
+        set k = k + 1
+    return bytes_from_ints(octets)
+
+fn repeated(value: Int, count: Int) -> Bytes:
+    var octets: List[Int] = []
+    var k = 0
+    while k < count:
+        set octets = list_push(octets, value)
+        set k = k + 1
+    return bytes_from_ints(octets)
+
+fn hx(text: Text) -> Bytes:
+    return unwrap(hex_decode(text))
+
+fn request_a() -> Request:
+    let commit = question_commit("Should I go?", salt_01_to_20())
+    let options: Map[Text, Text] = {}
+    return Request("iching", "yarrow", options, 1, commit, ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
+
+fn request_b(options: Map[Text, Text]) -> Request:
+    return Request("tarot", "rws", options, 0, bytes_from_ints([]), ["drand-quicknet"], 1795000000, repeated(9, 32), bytes_from_ints([]))
+
+fn drand_only() -> List[SourceValue]:
+    return [SourceValue("drand-quicknet", 1, repeated(170, 32)), SourceValue("nist-beacon-2", 2, bytes_from_ints([])), SourceValue("curby-rng", 2, bytes_from_ints([])), SourceValue("curby-q", 2, bytes_from_ints([]))]
+
+fn test_question_commit_matches_python_vector() -> Unit:
+    assert(question_commit("Should I go?", salt_01_to_20()) == hx("4f8d55e655f5f8b87c241e93cd2a6dbe5cde78bd4cdd28f3655df07bfd247623467c145636977eba073e896e8669f90d9fee6cd0086d569c0c7622b160a9e1bc"))
+
+fn test_entry_hash_matches_python_vector() -> Unit:
+    assert(unwrap(entry_hash(request_a())) == hx("6cebba2d701b7f2afb405d1dcf6cd08536e79d56bab997476ffe785ddb8262321d6080d2644f9b6d2eb2a7ba4adf438acafb35f05d3b4ae2d3c8f852eaf4abd8"))
+    let options: Map[Text, Text] = {"reversals": "true", "count": "3"}
+    assert(unwrap(entry_hash(request_b(options))) == hx("763d949f3da9e0da2d464049853342f382186a63692d82205960b5acb823a8157663edd82db6ce683a09c7dd20065c5b252c1844f728b68db462b2bacc552268"))
+
+fn test_options_order_does_not_change_the_entry_hash() -> Unit:
+    let one: Map[Text, Text] = {"count": "3", "reversals": "true"}
+    let two: Map[Text, Text] = {"reversals": "true", "count": "3"}
+    assert(unwrap(entry_hash(request_b(one))) == unwrap(entry_hash(request_b(two))))
+
+fn test_option_with_equals_sign_or_newline_is_an_error() -> Unit:
+    let bad_key: Map[Text, Text] = {"a=b": "1"}
+    let bad_value: Map[Text, Text] = {"a": "x\ny"}
+    assert(not is_ok(canonical_options(bad_key)))
+    assert(not is_ok(canonical_options(bad_value)))
+    assert(not is_ok(entry_hash(request_b(bad_key))))
+
+fn test_canonical_options_are_sorted_lines() -> Unit:
+    let options: Map[Text, Text] = {"reversals": "true", "count": "3"}
+    assert(unwrap(canonical_options(options)) == "count=3\nreversals=true")
+
+fn test_seed_matches_python_vector() -> Unit:
+    let h = unwrap(entry_hash(request_a()))
+    assert(unwrap(seed(h, bytes_from_ints([]), drand_only())) == hx("a0916580e3ec50e65bc0248595ef22ad347d01ab0fd38306f9e39c6f96139221c922c8cffcad6e6279e5a8f7100f259082a4d96955ff4e24cbdd80a561731665"))
+    let checkpoint = crypto_sha512(text_bytes("checkpoint"))
+    assert(unwrap(seed(h, checkpoint, drand_only())) == hx("c7dd47a10e6514e1f2ee531813eac72d8bfb3659827ede6ccb17e312e9822efd6a575193d7e02c0bfd12f796e957d163f5efa09abdd809800accba75b7aca322"))
+
+fn test_unanchored_and_anchored_seeds_differ() -> Unit:
+    let h = unwrap(entry_hash(request_a()))
+    assert(unwrap(seed(h, bytes_from_ints([]), drand_only())) != unwrap(seed(h, crypto_sha512(text_bytes("checkpoint")), drand_only())))
+
+fn test_seed_sources_out_of_order_is_rejected() -> Unit:
+    let h = unwrap(entry_hash(request_a()))
+    assert(not is_ok(seed(h, bytes_from_ints([]), [SourceValue("nist-beacon-2", 2, bytes_from_ints([])), SourceValue("drand-quicknet", 1, repeated(170, 32)), SourceValue("curby-rng", 2, bytes_from_ints([])), SourceValue("curby-q", 2, bytes_from_ints([]))])))
+    assert(is_ok(seed(h, bytes_from_ints([]), drand_only())))

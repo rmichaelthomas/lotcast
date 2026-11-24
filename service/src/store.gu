@@ -1,0 +1,109 @@
+import "std:types"
+import "std:encoding"
+import "std:fs"
+import "std:json"
+import "std:text"
+import "pkg:lotcast-log/src/lib.gu"
+
+# The service's files, one JSON document each, every write atomic (write then rename). Each file has
+# one writer: `inbox/` is written by HTTP handlers and emptied by the epoch loop; `draws/` and
+# `epochs/` belong to the epoch loop; `anchors/` to the stamper; `receipts/` and `status/` to the
+# watcher. Under `log/` lives the tlog-tiles log itself.
+
+pub record Store:
+    root: Text
+
+fn store_error(message: Text) -> StdError:
+    return std_error("E_STORE", message)
+
+fn subdir(name: Text) -> Text:
+    return name
+
+pub fn store_open(root: Text) -> Result[Store, StdError]:
+    for name in ["inbox", "draws", "epochs", "anchors", "receipts", "status", "state"]:
+        let made = make_dirs(root + "/" + name)?
+    let store = Store(root)
+    let drawn = store_names(store, "draws")?
+    for id in drawn:
+        let read = store_get_json(store, "draws/" + id + ".json")
+        if not is_ok(read):
+            return Err(store_error("draws/" + id + ".json is not readable JSON; fix or remove it before serving"))
+    return Ok(store)
+
+# `*.json` file names in a subdirectory, without the extension (temporary files are skipped).
+fn store_names(store: Store, dir: Text) -> Result[List[Text], StdError]:
+    let listed = fs_list_dir(store.root + "/" + dir)
+    if not is_ok(listed):
+        return Err(store_error("cannot list " + dir))
+    var out: List[Text] = []
+    for name in sort(unwrap(listed)):
+        let size = len(name)
+        if size > 5 and text_slice(name, size - 5, size) == ".json":
+            set out = list_push(out, text_slice(name, 0, size - 5))
+    return Ok(out)
+
+pub fn store_put_json(store: Store, relative: Text, value: Json) -> Result[Bool, StdError]:
+    if not is_ok(write_text_atomic(store.root + "/" + relative, json_stringify(value))):
+        return Err(store_error("cannot write " + relative))
+    return Ok(true)
+
+pub fn store_get_json(store: Store, relative: Text) -> Result[Json, StdError]:
+    let body = read_text(store.root + "/" + relative)
+    if not is_ok(body):
+        return Err(store_error("cannot read " + relative))
+    let parsed = json_parse(unwrap(body))
+    if not is_ok(parsed):
+        return Err(store_error(relative + " is not JSON"))
+    return Ok(unwrap(parsed))
+
+pub fn store_has(store: Store, relative: Text) -> Bool:
+    let r = fs_exists(store.root + "/" + relative)
+    if not is_ok(r):
+        return false
+    return unwrap(r)
+
+# The first 32 hex characters of the entry hash name a draw.
+pub fn draw_id(entry_hash: Bytes) -> Text:
+    return text_slice(hex_encode(entry_hash), 0, 32)
+
+pub fn draw_record(id: Text, index: Int, entry_hash_hex: Text, promise: Text, epoch: Int, deadline: Int, request: Json) -> Json:
+    var d = json_object()
+    set d = json_set(d, "id", json_text(id))
+    set d = json_set(d, "index", json_int(index))
+    set d = json_set(d, "entry_hash", json_text(entry_hash_hex))
+    set d = json_set(d, "promise", json_text(promise))
+    set d = json_set(d, "epoch", json_int(epoch))
+    set d = json_set(d, "deadline", json_int(deadline))
+    set d = json_set(d, "request", request)
+    return d
+
+# Stores a draw once: a second put for the same id returns the draw that is already there.
+pub fn store_put_draw(store: Store, id: Text, draw: Json) -> Result[Json, StdError]:
+    let path = "draws/" + id + ".json"
+    if store_has(store, path):
+        return store_get_json(store, path)
+    let saved = store_put_json(store, path, draw)?
+    return Ok(draw)
+
+pub fn store_get_draw(store: Store, id: Text) -> Result[Json, StdError]:
+    return store_get_json(store, "draws/" + id + ".json")
+
+pub fn store_draw_ids(store: Store) -> List[Text]:
+    let names = store_names(store, "draws")
+    if not is_ok(names):
+        let none: List[Text] = []
+        return none
+    return unwrap(names)
+
+pub fn store_put_inbox(store: Store, id: Text, request: Json) -> Result[Bool, StdError]:
+    return store_put_json(store, "inbox/" + id + ".json", request)
+
+pub fn store_inbox_ids(store: Store) -> List[Text]:
+    let names = store_names(store, "inbox")
+    if not is_ok(names):
+        let none: List[Text] = []
+        return none
+    return unwrap(names)
+
+pub fn store_remove_inbox(store: Store, id: Text) -> Bool:
+    return is_ok(fs_remove(store.root + "/inbox/" + id + ".json"))

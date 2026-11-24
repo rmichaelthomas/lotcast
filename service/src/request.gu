@@ -1,0 +1,215 @@
+import "std:types"
+import "std:encoding"
+import "std:json"
+import "std:text"
+import "pkg:lotcast-core/src/lib.gu"
+
+# Validation of POST /v1/draws (spec 8.1). A request is {tradition, method, options?, commitment?,
+# sources?, not_before?, nonce} and nothing else: no question text, IP address or account is ever
+# accepted, so none can reach the log or the store.
+
+pub record ApiError:
+    status: Int
+    code: Text
+    message: Text
+
+pub fn api_error(status: Int, code: Text, message: Text) -> ApiError:
+    return ApiError(status, code, message)
+
+fn bad(message: Text) -> ApiError:
+    return ApiError(400, "E_REQUEST", message)
+
+pub fn max_body_bytes() -> Int:
+    return 65536
+
+pub fn max_not_before_days() -> Int:
+    return 400
+
+fn all_sources() -> List[Text]:
+    return ["curby-q", "curby-rng", "drand-quicknet", "nist-beacon-2"]
+
+fn allowed_keys() -> List[Text]:
+    return ["tradition", "method", "options", "commitment", "sources", "not_before", "nonce"]
+
+fn is_allowed(key: Text) -> Bool:
+    for k in allowed_keys():
+        if k == key:
+            return true
+    return false
+
+fn get_text(body: Json, key: Text) -> Result[Text, ApiError]:
+    let r = json_get_text_safe(body, key)
+    if not is_ok(r):
+        return Err(bad(key + " is required and must be text"))
+    return Ok(unwrap(r))
+
+fn hex_field(body: Json, key: Text, size: Int) -> Result[Bytes, ApiError]:
+    let t = get_text(body, key)?
+    let decoded = hex_decode(t)
+    if not is_ok(decoded) or len(unwrap(decoded)) != size:
+        return Err(bad(key + " must be " + int_to_text(size) + " bytes written as hex"))
+    return Ok(unwrap(decoded))
+
+fn parse_options(body: Json) -> Result[Map[Text, Text], ApiError]:
+    var out: Map[Text, Text] = {}
+    if not json_has(body, "options"):
+        return Ok(out)
+    let raw = json_get_safe(body, "options")
+    if not is_ok(raw) or not is_object(unwrap(raw)):
+        return Err(bad("options must be an object of text values"))
+    for key in object_keys(unwrap(raw)):
+        let v = json_get_text_safe(unwrap(raw), key)
+        if not is_ok(v):
+            return Err(bad("option " + key + " must be text"))
+        set out = map_set(out, key, unwrap(v))
+    return Ok(out)
+
+fn parse_sources(body: Json) -> Result[List[Text], ApiError]:
+    if not json_has(body, "sources"):
+        return Ok(all_sources())
+    let raw = json_get_safe(body, "sources")
+    if not is_ok(raw) or not is_array(unwrap(raw)):
+        return Err(ApiError(400, "E_SOURCES", "sources must be a list of source ids"))
+    var out: List[Text] = []
+    var previous = ""
+    var has_drand = false
+    for i in range(0, json_len(unwrap(raw))):
+        let item = json_text_safe(unwrap(json_index_safe(unwrap(raw), i)))
+        if not is_ok(item):
+            return Err(ApiError(400, "E_SOURCES", "sources must be a list of source ids"))
+        let id = unwrap(item)
+        var known = false
+        for k in all_sources():
+            if k == id:
+                set known = true
+        if not known:
+            return Err(ApiError(400, "E_SOURCES", "unknown source: " + id))
+        if id <= previous:
+            return Err(ApiError(400, "E_SOURCES", "sources must be sorted and unique, so the entry hash is the one you computed"))
+        set previous = id
+        if id == "drand-quicknet":
+            set has_drand = true
+        set out = list_push(out, id)
+    if not has_drand:
+        return Err(ApiError(400, "E_SOURCES", "drand-quicknet cannot be left out"))
+    return Ok(out)
+
+fn method_known(tradition: Text, method: Text) -> Result[Text, ApiError]:
+    for m in catalogue():
+        if m.tradition == tradition and m.method == method:
+            return Ok(m.status)
+    return Err(bad("unknown tradition or method: " + tradition + "/" + method))
+
+# Runs the method once on a throwaway stream so a bad option is reported now, not after the draw
+# has been logged.
+fn check_options(tradition: Text, method: Text, options: Map[Text, Text]) -> Result[Bool, ApiError]:
+    let trial = run_method(stream_new(bytes_from_ints([0]), 64), tradition, method, options)
+    if is_ok(trial):
+        return Ok(true)
+    match trial:
+        Err(problem):
+            if problem.code == "E_LOTCAST_COUNT":
+                return Err(ApiError(400, "E_COUNT", problem.message))
+            if problem.code == "E_LOTCAST_AUDIT_PENDING":
+                return Err(ApiError(400, "E_METHOD_PENDING", problem.message))
+            return Err(bad(problem.message))
+        Ok(ignored):
+            return Ok(true)
+
+fn parse_not_before(body: Json, now: Int) -> Result[Int, ApiError]:
+    if not json_has(body, "not_before"):
+        return Ok(0)
+    let r = json_get_int_safe(body, "not_before")
+    if not is_ok(r) or unwrap(r) < 0 or unwrap(r) > now + 400 * 86400:
+        return Err(bad("not_before is unix seconds from 0 to 400 days from now"))
+    return Ok(unwrap(r))
+
+# Checks a request body and returns the entry the log will hold. `now` is unix seconds.
+pub fn parse_draw_request(body_bytes: Bytes, now: Int) -> Result[Request, ApiError]:
+    if len(body_bytes) > max_body_bytes():
+        return Err(ApiError(413, "E_TOO_LARGE", "the request body is limited to 65536 bytes"))
+    let text = encoding_utf8_decode(body_bytes)
+    if not is_ok(text):
+        return Err(bad("the body is not UTF-8"))
+    let parsed = json_parse(unwrap(text))
+    if not is_ok(parsed) or not is_object(unwrap(parsed)):
+        return Err(bad("the body must be a JSON object"))
+    let body = unwrap(parsed)
+    for key in ["question", "timelock", "subject", "ip", "account"]:
+        if json_has(body, key):
+            if key == "timelock":
+                return Err(ApiError(400, "E_TLOCK_UNSUPPORTED", "timelocked questions are not supported by this service yet"))
+            if key == "question":
+                return Err(bad("send a commitment, never the question: the log is public and permanent"))
+            return Err(bad(key + " is not accepted: requests carry no identity"))
+    for key in object_keys(body):
+        if not is_allowed(key):
+            return Err(bad("unknown field: " + key))
+    let tradition = get_text(body, "tradition")?
+    let method = get_text(body, "method")?
+    let status = method_known(tradition, method)?
+    if status == "audit-pending":
+        return Err(ApiError(400, "E_METHOD_PENDING", tradition + "/" + method + " has not been audited yet and refuses requests"))
+    let options = parse_options(body)?
+    let checked = check_options(tradition, method, options)?
+    let sources = parse_sources(body)?
+    let not_before = parse_not_before(body, now)?
+    let nonce = hex_field(body, "nonce", 32)?
+    var mode = 0
+    var commit = bytes_from_ints([])
+    if json_has(body, "commitment"):
+        set mode = 1
+        set commit = hex_field(body, "commitment", 64)?
+    return Ok(Request(tradition, method, options, mode, commit, sources, not_before, nonce, bytes_from_ints([])))
+
+# The keys of a JSON object. Guion has no key listing, so this reads them from the compact
+# serialisation: a string that follows `{` or `,` at depth 1 is a key.
+pub fn object_keys(j: Json) -> List[Text]:
+    let text = json_stringify(j)
+    var keys: List[Text] = []
+    var depth = 0
+    var in_string = false
+    var escaped = false
+    var expect_key = false
+    var current = ""
+    var capturing = false
+    for i in range(0, len(text)):
+        let c = text_slice(text, i, i + 1)
+        if in_string:
+            if escaped:
+                set escaped = false
+                if capturing:
+                    set current = current + c
+            else:
+                if c == "\\":
+                    set escaped = true
+                    if capturing:
+                        set current = current + c
+                else:
+                    if c == "\"":
+                        set in_string = false
+                        if capturing:
+                            set keys = list_push(keys, current)
+                            set capturing = false
+                    else:
+                        if capturing:
+                            set current = current + c
+        else:
+            if c == "\"":
+                set in_string = true
+                if depth == 1 and expect_key:
+                    set capturing = true
+                    set current = ""
+                    set expect_key = false
+            else:
+                if c == "{" or c == "[":
+                    set depth = depth + 1
+                    if depth == 1 and c == "{":
+                        set expect_key = true
+                else:
+                    if c == "}" or c == "]":
+                        set depth = depth - 1
+                    else:
+                        if c == "," and depth == 1:
+                            set expect_key = true
+    return keys

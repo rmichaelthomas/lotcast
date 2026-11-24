@@ -1,5 +1,9 @@
 import "std:types"
 import "std:text"
+import "std:json"
+import "std:encoding"
+import "std:fs"
+import "pkg:lotcast-core/src/lib.gu"
 import "src/lib.gu"
 
 fn main() -> Int:
@@ -39,3 +43,157 @@ fn test_config_bad_values() -> Unit:
 fn test_config_bounds_are_accepted() -> Unit:
     let c = unwrap(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--port", "1", "--epoch-seconds", "1", "--trust-proxy", "5", "--workers", "64"], false))
     assert(c.port == 1 and c.epoch_seconds == 1 and c.trust_proxy == 5 and c.workers == 64)
+
+# ---------------------------------------------------------------- request validation
+
+fn nonce_hex() -> Text:
+    return "0101010101010101010101010101010101010101010101010101010101010101"
+
+fn body_of(extra: Text) -> Bytes:
+    return text_bytes("{\"tradition\":\"iching\",\"method\":\"coins\",\"nonce\":\"" + nonce_hex() + "\"" + extra + "}")
+
+fn code_of(r: Result[Request, ApiError]) -> Text:
+    match r:
+        Err(problem):
+            return problem.code
+        Ok(ignored):
+            return "ok"
+
+fn status_of(r: Result[Request, ApiError]) -> Int:
+    match r:
+        Err(problem):
+            return problem.status
+        Ok(ignored):
+            return 0
+
+fn test_request_minimal_is_accepted_with_all_four_sources() -> Unit:
+    let r = unwrap(parse_draw_request(body_of(""), 1000))
+    assert(r.tradition == "iching" and r.method == "coins")
+    assert(r.sources == ["curby-q", "curby-rng", "drand-quicknet", "nist-beacon-2"])
+    assert(r.not_before == 0 and r.question_mode == 0)
+
+fn test_request_unknown_method_is_e_request() -> Unit:
+    let r = parse_draw_request(text_bytes("{\"tradition\":\"iching\",\"method\":\"tea\",\"nonce\":\"" + nonce_hex() + "\"}"), 1000)
+    assert(code_of(r) == "E_REQUEST" and status_of(r) == 400)
+
+fn test_request_unknown_option_is_e_request() -> Unit:
+    assert(code_of(parse_draw_request(body_of(",\"options\":{\"count\":\"2\"}"), 1000)) == "E_REQUEST")
+
+fn test_request_count_above_deck_is_e_count() -> Unit:
+    let b = text_bytes("{\"tradition\":\"tarot\",\"method\":\"rws\",\"options\":{\"count\":\"79\"},\"nonce\":\"" + nonce_hex() + "\"}")
+    assert(code_of(parse_draw_request(b, 1000)) == "E_COUNT")
+    let ok = text_bytes("{\"tradition\":\"tarot\",\"method\":\"rws\",\"options\":{\"count\":\"78\"},\"nonce\":\"" + nonce_hex() + "\"}")
+    assert(code_of(parse_draw_request(ok, 1000)) == "ok")
+
+fn test_request_sources_without_drand_is_e_sources() -> Unit:
+    assert(code_of(parse_draw_request(body_of(",\"sources\":[\"nist-beacon-2\"]"), 1000)) == "E_SOURCES")
+    assert(code_of(parse_draw_request(body_of(",\"sources\":[\"drand-quicknet\",\"moon\"]"), 1000)) == "E_SOURCES")
+    assert(code_of(parse_draw_request(body_of(",\"sources\":[\"nist-beacon-2\",\"drand-quicknet\"]"), 1000)) == "E_SOURCES")
+    assert(code_of(parse_draw_request(body_of(",\"sources\":[\"drand-quicknet\"]"), 1000)) == "ok")
+
+fn test_request_pending_audit_method_is_e_method_pending() -> Unit:
+    let b = text_bytes("{\"tradition\":\"tarot\",\"method\":\"marseille\",\"nonce\":\"" + nonce_hex() + "\"}")
+    assert(code_of(parse_draw_request(b, 1000)) == "E_METHOD_PENDING")
+    let t = text_bytes("{\"tradition\":\"tarot\",\"method\":\"thoth\",\"nonce\":\"" + nonce_hex() + "\"}")
+    assert(code_of(parse_draw_request(t, 1000)) == "E_METHOD_PENDING")
+
+fn test_request_not_before_bounds() -> Unit:
+    let now = 1000000
+    assert(code_of(parse_draw_request(body_of(",\"not_before\":" + int_to_text(now + 400 * 86400)), now)) == "ok")
+    assert(code_of(parse_draw_request(body_of(",\"not_before\":" + int_to_text(now + 400 * 86400 + 1)), now)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(body_of(",\"not_before\":-1"), now)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(body_of(",\"not_before\":5"), now)) == "ok")
+
+fn test_request_body_size_limit() -> Unit:
+    var pad = ""
+    for i in range(0, 100):
+        set pad = pad + "0123456789"
+    let base = body_of("")
+    let room = 65536 - len(base) - len(",\"x\":\"\"")
+    var filler = ""
+    while len(filler) < room:
+        set filler = filler + pad
+    let exact = text_bytes("{\"tradition\":\"iching\",\"method\":\"coins\",\"nonce\":\"" + nonce_hex() + "\",\"x\":\"" + text_slice(filler, 0, room) + "\"}")
+    assert(len(exact) == 65536)
+    # exactly 65536 bytes is not refused for its size (it is refused for the unknown key x)
+    assert(status_of(parse_draw_request(exact, 1000)) == 400)
+    let over = text_bytes("{\"tradition\":\"iching\",\"method\":\"coins\",\"nonce\":\"" + nonce_hex() + "\",\"x\":\"" + text_slice(filler, 0, room + 1) + "\"}")
+    assert(len(over) == 65537)
+    assert(code_of(parse_draw_request(over, 1000)) == "E_TOO_LARGE")
+    assert(status_of(parse_draw_request(over, 1000)) == 413)
+
+fn test_request_refuses_question_text_and_identity_keys() -> Unit:
+    assert(code_of(parse_draw_request(body_of(",\"question\":\"will it rain\""), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(body_of(",\"ip\":\"1.2.3.4\""), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(body_of(",\"account\":\"a\""), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(body_of(",\"timelock\":\"x\""), 1000)) == "E_TLOCK_UNSUPPORTED")
+    assert(code_of(parse_draw_request(body_of(",\"subject\":\"x\""), 1000)) == "E_REQUEST")
+
+fn test_request_nonce_and_commitment_shape() -> Unit:
+    assert(code_of(parse_draw_request(text_bytes("{\"tradition\":\"iching\",\"method\":\"coins\"}"), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(text_bytes("{\"tradition\":\"iching\",\"method\":\"coins\",\"nonce\":\"abcd\"}"), 1000)) == "E_REQUEST")
+    var commit = ""
+    for i in range(0, 64):
+        set commit = commit + "ab"
+    let r = unwrap(parse_draw_request(body_of(",\"commitment\":\"" + commit + "\""), 1000))
+    assert(r.question_mode == 1 and len(r.question_commit) == 64)
+    assert(code_of(parse_draw_request(body_of(",\"commitment\":\"abcd\""), 1000)) == "E_REQUEST")
+
+fn test_request_not_json_or_not_an_object() -> Unit:
+    assert(code_of(parse_draw_request(text_bytes("not json"), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(text_bytes("[1]"), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(text_bytes("{\"tradition\":1,\"method\":\"coins\",\"nonce\":\"" + nonce_hex() + "\"}"), 1000)) == "E_REQUEST")
+
+fn test_object_keys_reads_only_top_level() -> Unit:
+    let j = unwrap(json_parse("{\"a\":1,\"b\":{\"c\":2,\"d\":[{\"e\":3}]},\"f\":\"x,\\\"g\\\":1\"}"))
+    assert(object_keys(j) == ["a", "b", "f"])
+
+# ---------------------------------------------------------------- store
+
+fn temp_root() -> Text:
+    return unwrap(fs_temp_dir("lotcast-store"))
+
+fn sample_draw(id: Text, index: Int) -> Json:
+    return draw_record(id, index, "ab" + id, "promise-text", 7, 99, json_set(json_object(), "tradition", json_text("iching")))
+
+fn test_store_put_get_round_trip() -> Unit:
+    let root = temp_root()
+    let store = unwrap(store_open(root))
+    let first = unwrap(store_put_draw(store, "aaaa", sample_draw("aaaa", 3)))
+    assert(json_as_int(json_get(first, "index")) == 3)
+    let got = unwrap(store_get_draw(store, "aaaa"))
+    assert(json_as_text(json_get(got, "promise")) == "promise-text")
+    assert(not is_ok(store_get_draw(store, "bbbb")))
+
+fn test_store_second_put_returns_the_first_draw() -> Unit:
+    let store = unwrap(store_open(temp_root()))
+    let a = unwrap(store_put_draw(store, "cccc", sample_draw("cccc", 1)))
+    let b = unwrap(store_put_draw(store, "cccc", sample_draw("cccc", 9)))
+    assert(json_as_int(json_get(b, "index")) == 1)
+    assert(json_as_int(json_get(a, "index")) == 1)
+
+fn test_store_open_reports_a_corrupt_draw_file() -> Unit:
+    let root = temp_root()
+    let store = unwrap(store_open(root))
+    let wrote = write_text_atomic(root + "/draws/dddd.json", "{not json")
+    assert(not is_ok(store_open(root)))
+
+fn test_store_open_ignores_an_interrupted_write() -> Unit:
+    let root = temp_root()
+    let store = unwrap(store_open(root))
+    let put = unwrap(store_put_draw(store, "eeee", sample_draw("eeee", 2)))
+    let leftover = write_text_atomic(root + "/draws/ffff.json.tmp", "{half")
+    let again = unwrap(store_open(root))
+    assert(store_draw_ids(again) == ["eeee"])
+
+fn test_store_inbox_lists_and_removes() -> Unit:
+    let store = unwrap(store_open(temp_root()))
+    let a = unwrap(store_put_inbox(store, "1111", json_set(json_object(), "x", json_int(1))))
+    let b = unwrap(store_put_inbox(store, "2222", json_set(json_object(), "x", json_int(2))))
+    assert(store_inbox_ids(store) == ["1111", "2222"])
+    let gone = store_remove_inbox(store, "1111")
+    assert(store_inbox_ids(store) == ["2222"])
+
+fn test_draw_id_is_the_first_32_hex_of_the_entry_hash() -> Unit:
+    let h = unwrap(hex_decode("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"))
+    assert(draw_id(h) == "00112233445566778899aabbccddeeff")

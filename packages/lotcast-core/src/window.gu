@@ -1,0 +1,112 @@
+import "std:types"
+import "std:text"
+
+# The inclusion rule's arithmetic (spec 4.2), kept apart from any network or pulse format so the
+# builder and the verifier call the same code. Times are unix milliseconds unless a name says seconds.
+
+fn window_error(message: Text) -> StdError:
+    return std_error("E_LOTCAST_WINDOW", message)
+
+# Window W in seconds, measured from the sources' own history (fixtures/sources/windows.json):
+# NIST 3 x 60 s, CURBy-RNG 3 x 60 s, CURBy-Q 3 x the median round time of 630 s.
+pub fn window_seconds(id: Text) -> Result[Int, StdError]:
+    if id == "nist-beacon-2":
+        return Ok(180)
+    if id == "curby-rng":
+        return Ok(180)
+    if id == "curby-q":
+        return Ok(1890)
+    return Err(window_error("no window is defined for " + id))
+
+fn all_digits(text: Text, start: Int, count: Int) -> Bool:
+    var index = 0
+    while index < count:
+        if text_find("0123456789", text_slice(text, start + index, start + index + 1), 0) < 0:
+            return false
+        set index = index + 1
+    return true
+
+fn digits_at(text: Text, start: Int, count: Int) -> Int:
+    var value = 0
+    var index = 0
+    while index < count:
+        set value = value * 10 + text_find("0123456789", text_slice(text, start + index, start + index + 1), 0)
+        set index = index + 1
+    return value
+
+fn is_leap_year(year: Int) -> Bool:
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+fn days_in_month(year: Int, month: Int) -> Int:
+    if month == 2:
+        if is_leap_year(year):
+            return 29
+        return 28
+    if month == 4 or month == 6 or month == 9 or month == 11:
+        return 30
+    return 31
+
+fn days_from_civil(year: Int, month: Int, day: Int) -> Int:
+    var shifted = year
+    if month <= 2:
+        set shifted = year - 1
+    let era = shifted // 400
+    let year_of_era = shifted - era * 400
+    var month_index = month - 3
+    if month <= 2:
+        set month_index = month + 9
+    let day_of_year = (153 * month_index + 2) // 5 + day - 1
+    let day_of_era = year_of_era * 365 + year_of_era // 4 - year_of_era // 100 + day_of_year
+    return era * 146097 + day_of_era - 719468
+
+# "2026-11-24T07:01:00.338Z" (ISO 8601 UTC, optional fraction of any length) as unix milliseconds;
+# digits past the third are dropped.
+pub fn iso_ms(stamp: Text) -> Result[Int, StdError]:
+    let size = len(stamp)
+    let bad = window_error("not an ISO 8601 UTC time: " + stamp)
+    if size < 20 or text_slice(stamp, size - 1, size) != "Z":
+        return Err(bad)
+    if text_slice(stamp, 4, 5) != "-" or text_slice(stamp, 7, 8) != "-" or text_slice(stamp, 10, 11) != "T":
+        return Err(bad)
+    if text_slice(stamp, 13, 14) != ":" or text_slice(stamp, 16, 17) != ":":
+        return Err(bad)
+    var millis = 0
+    if size > 20:
+        if text_slice(stamp, 19, 20) != "." or size < 22:
+            return Err(bad)
+        if not all_digits(stamp, 20, size - 21):
+            return Err(bad)
+        var fraction = text_slice(stamp, 20, size - 1) + "000"
+        set millis = digits_at(fraction, 0, 3)
+    if not all_digits(stamp, 0, 4) or not all_digits(stamp, 5, 2) or not all_digits(stamp, 8, 2):
+        return Err(bad)
+    if not all_digits(stamp, 11, 2) or not all_digits(stamp, 14, 2) or not all_digits(stamp, 17, 2):
+        return Err(bad)
+    let year = digits_at(stamp, 0, 4)
+    let month = digits_at(stamp, 5, 2)
+    let day = digits_at(stamp, 8, 2)
+    let hour = digits_at(stamp, 11, 2)
+    let minute = digits_at(stamp, 14, 2)
+    let second = digits_at(stamp, 17, 2)
+    if year < 1970 or month < 1 or month > 12 or day < 1 or day > days_in_month(year, month) or hour > 23 or minute > 59 or second > 59:
+        return Err(bad)
+    return Ok((days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second) * 1000 + millis)
+
+# Where a pulse `next_ms`, whose predecessor is stamped `prev_ms`, stands against t0 and its window:
+#   "not-after"  the pulse is not later than t0
+#   "not-first"  its predecessor is already later than t0, so it is not the first pulse after t0
+#   "present"    it is the first pulse after t0 and arrived within t0 + W
+#   "gap"        it is the first pulse after t0 but arrived after t0 + W: the pair proves absence
+pub fn judge(t0: Int, w_seconds: Int, prev_ms: Int, next_ms: Int) -> Text:
+    if next_ms <= t0 * 1000:
+        return "not-after"
+    if prev_ms > t0 * 1000:
+        return "not-first"
+    if next_ms <= (t0 + w_seconds) * 1000:
+        return "present"
+    return "gap"
+
+# An absent-live claim holds when the latest verified pulse is not later than t0 and the check was
+# made at or after t0 + W.
+pub fn live_ok(t0: Int, w_seconds: Int, latest_ms: Int, checked_at: Int) -> Bool:
+    return latest_ms <= t0 * 1000 and checked_at >= t0 + w_seconds

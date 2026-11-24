@@ -8,7 +8,11 @@ pub import "registry_data.gu"
 pub import "iching.gu"
 pub import "tarot.gu"
 pub import "catalogue.gu"
+pub import "window.gu"
+pub import "sources.gu"
+pub import "resolve.gu"
 pub import "receipt.gu"
+pub import "anchored.gu"
 
 pub fn lotcast_core_version() -> Text:
     return "0.1.0"

@@ -3,3 +3,5 @@
 /scratch/
 __pycache__/
 *.pyc
+.guion/
+.guion-tmp/

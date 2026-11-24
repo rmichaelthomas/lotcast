@@ -2,24 +2,72 @@ import "std:types"
 import "std:encoding"
 import "std:json"
 import "std:text"
+import "pkg:lotcast-log/src/lib.gu"
 import "src/lib.gu"
 
-# Re-checks a receipt offline. It reads the file, recomputes the entry, the seed and the outcome, and
-# checks the drand round's BLS signature.
+# Re-checks a receipt offline: reads the file, recomputes the entry, the log inclusion, the
+# timestamps, the seed and the outcome, and checks every beacon pulse it carries.
 #
-#   guion run verify_receipt.gu RECEIPT.json [--question TEXT --salt HEX]
+#   guion run verify_receipt.gu RECEIPT.json [--operator-key HEX] [--question TEXT --salt HEX] [--live]
 #
-# Prints the result on the first line: verified-unanchored or invalid (receipts with a log can also
-# give verified or verified-pending-live once the log exists). For
-# invalid it names the failing step (1 entry, 4 sources, 5 outcome, 6 question) and why; otherwise
-# it lists the steps this receipt does not cover. Exit 0 when verified, 1 when invalid, 2 when the
-# file cannot be read.
+# A receipt with a log needs the operator's public key (draw.gu prints it as operator_key=HEX). A
+# receipt with no log is checked as before and is at best verified-unanchored.
+#
+# Prints the result on the first line: verified, verified-pending-live, verified-unanchored or
+# invalid. For invalid it names the failing step (1 entry and promise, 2 checkpoint and inclusion,
+# 3 timestamps, 4 sources, 5 outcome, 6 question) and why; otherwise it says what the result covers.
+# A verified-pending-live receipt is not fully checked until the live half is done: with --live (needs
+# --allow-clock and --allow-http-host for the beacons) the absent-live sources are asked again against
+# the live chains; a source that now has a pulse for this draw makes the receipt invalid at step 4.
+# Exit 0 when verified (verified, verified-unanchored, or pending-live confirmed with --live), 1 when
+# invalid, 2 when the input cannot be read, 3 when the live check is still owed (no --live, or a window
+# that has not closed yet).
+
+fn usage() -> Int:
+    eprint("usage: verify_receipt.gu RECEIPT.json [--operator-key HEX] [--question TEXT --salt HEX] [--live]")
+    return 2
 
 fn main() -> Int:
     let all = args()
-    if len(all) != 1 and len(all) != 5:
-        eprint("usage: verify_receipt.gu RECEIPT.json [--question TEXT --salt HEX]")
-        return 2
+    if len(all) < 1:
+        return usage()
+    var operator_key = bytes_from_ints([])
+    var question = ""
+    var salt = bytes_from_ints([])
+    var asked = false
+    var have_salt = false
+    var live = false
+    var i = 1
+    while i < len(all):
+        if all[i] == "--live":
+            set live = true
+            set i = i + 1
+            continue
+        if i + 1 >= len(all):
+            return usage()
+        if all[i] == "--operator-key":
+            let decoded = hex_decode(all[i + 1])
+            if not is_ok(decoded) or len(unwrap(decoded)) != 32:
+                eprint("the operator key must be 32 bytes of hex")
+                return 2
+            set operator_key = unwrap(decoded)
+        else:
+            if all[i] == "--question":
+                set question = all[i + 1]
+                set asked = true
+            else:
+                if all[i] == "--salt":
+                    let decoded = hex_decode(all[i + 1])
+                    if not is_ok(decoded):
+                        eprint("the salt is not hex")
+                        return 2
+                    set salt = unwrap(decoded)
+                    set have_salt = true
+                else:
+                    return usage()
+        set i = i + 2
+    if asked != have_salt:
+        return usage()
     let body = read_text(all[0])
     if not is_ok(body):
         eprint("cannot read " + all[0])
@@ -28,16 +76,33 @@ fn main() -> Int:
     if not is_ok(parsed):
         eprint(all[0] + " is not JSON")
         return 2
-    var verdict = verify_receipt(unwrap(parsed))
-    if len(all) == 5:
-        if all[1] != "--question" or all[3] != "--salt":
-            eprint("usage: verify_receipt.gu RECEIPT.json [--question TEXT --salt HEX]")
-            return 2
-        let salt = hex_decode(all[4])
-        if not is_ok(salt):
-            eprint("the salt is not hex")
-            return 2
-        set verdict = verify_receipt_with_question(unwrap(parsed), all[2], unwrap(salt))
+    let log = json_get_safe(unwrap(parsed), "log")
+    if is_ok(log) and not json_is_null(unwrap(log)) and len(operator_key) == 0:
+        eprint("this receipt has a log: pass the operator's public key with --operator-key HEX")
+        return 2
+    let verdict = verify_any(unwrap(parsed), operator_key, tsa_pins(), asked, question, salt)
+    if verdict.result == "verified-pending-live":
+        if not live:
+            print(verdict.result)
+            print(verdict.detail)
+            print("NOT fully checked: rerun with --live to ask the live chains, or treat this receipt as unconfirmed.")
+            return 3
+        let confirmed = live_recheck(unwrap(parsed))
+        if not is_ok(confirmed):
+            match confirmed:
+                Err(problem):
+                    if problem.code == "E_LOTCAST_PENDING":
+                        print(verdict.result)
+                        print(problem.message)
+                        return 3
+                    print("invalid")
+                    print("failed step 4: " + problem.message)
+                    return 1
+                Ok(ignored):
+                    return 2
+        print("verified")
+        print("Every step passed offline, and the live chains confirm that these sources still have no pulse for this draw: " + text_join(unwrap(confirmed), ", ") + ".")
+        return 0
     print(verdict.result)
     if verdict.result == "invalid":
         print("failed step " + int_to_text(verdict.failed_step) + ": " + verdict.detail)

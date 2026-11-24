@@ -1,0 +1,159 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "encode.gu"
+
+# C2SP signed notes and the tlog checkpoint text. A note is the signed text (which ends with a
+# newline), one blank line, then one signature line per signer:
+#     "— <name> <base64(key hash || signature)>\n"
+# The key hash is the first four bytes of SHA-256(name || 0x0A || 0x01 || public key); 0x01 is Ed25519.
+
+pub record Checkpoint:
+    origin: Text
+    size: Int
+    root: Bytes
+    extensions: List[Text]
+
+record NoteParts:
+    text: Text
+    signatures: List[Text]
+
+fn note_error(message: Text) -> StdError:
+    return std_error("E_LOG_NOTE", message)
+
+pub fn key_hash(name: Text, public_key: Bytes) -> Bytes:
+    let digest = crypto_sha256(cat([text_bytes(name), u8_bytes(10), u8_bytes(1), public_key]))
+    return slice_bytes(digest, 0, 4)
+
+fn signature_line(text: Text, name: Text, seed: Bytes) -> Result[Text, StdError]:
+    let public = crypto_ed25519_public_key(seed)?
+    let signature = crypto_ed25519_sign(seed, text_bytes(text))?
+    return Ok("— " + name + " " + base64_encode(cat([key_hash(name, public), signature])) + "\n")
+
+fn split_note(note: Text) -> Result[NoteParts, StdError]:
+    let lines = text_split(note, "\n")
+    let count = len(lines)
+    if count < 4 or lines[count - 1] != "":
+        return Err(note_error("a note ends with a newline and has text, a blank line and signatures"))
+    var separator = -1
+    var at = 0
+    while at < count - 1:
+        if lines[at] == "":
+            set separator = at
+        set at = at + 1
+    if separator < 1:
+        return Err(note_error("a note needs a blank line between its text and its signatures"))
+    if separator == count - 2:
+        return Err(note_error("a note needs at least one signature"))
+    var text = ""
+    var i = 0
+    while i < separator:
+        set text = text + lines[i] + "\n"
+        set i = i + 1
+    var signatures: List[Text] = []
+    set i = separator + 1
+    while i < count - 1:
+        set signatures = list_push(signatures, lines[i])
+        set i = i + 1
+    return Ok(NoteParts(text, signatures))
+
+pub fn sign_note(text: Text, name: Text, seed: Bytes) -> Result[Text, StdError]:
+    if len(text) == 0 or text_slice(text, len(text) - 1, len(text)) != "\n":
+        return Err(note_error("note text must end with a newline"))
+    let line = signature_line(text, name, seed)?
+    return Ok(text + "\n" + line)
+
+# A cosignature: another signer's line over the same text.
+pub fn add_signature(note: Text, name: Text, seed: Bytes) -> Result[Text, StdError]:
+    let parts = split_note(note)?
+    let line = signature_line(parts.text, name, seed)?
+    return Ok(note + line)
+
+# The note's text when `public_key` signed it under `name`; None when that signer is absent or its
+# signature is wrong. Lines for other names or other key hashes are ignored, as the spec requires.
+pub fn verify_note(note: Text, name: Text, public_key: Bytes) -> Result[Option[Text], StdError]:
+    let parts = split_note(note)?
+    let expected = key_hash(name, public_key)
+    for line in parts.signatures:
+        let fields = text_split(line, " ")
+        if len(fields) == 3 and fields[0] == "—" and fields[1] == name:
+            let decoded = base64_decode(fields[2])
+            if not is_ok(decoded):
+                return Err(note_error("signature line is not base64"))
+            let blob = unwrap(decoded)
+            if len(blob) == 68 and slice_bytes(blob, 0, 4) == expected:
+                let good = crypto_ed25519_verify(public_key, text_bytes(parts.text), slice_bytes(blob, 4, 68))?
+                if good:
+                    return Ok(Some(parts.text))
+    return Ok(None)
+
+pub fn note_text(note: Text) -> Result[Text, StdError]:
+    let parts = split_note(note)?
+    return Ok(parts.text)
+
+pub fn checkpoint_text(c: Checkpoint) -> Text:
+    var out = c.origin + "\n" + int_to_text(c.size) + "\n" + base64_encode(c.root) + "\n"
+    for e in c.extensions:
+        set out = out + e + "\n"
+    return out
+
+pub fn all_digits(t: Text) -> Bool:
+    if len(t) == 0:
+        return false
+    var i = 0
+    while i < len(t):
+        let ch = text_slice(t, i, i + 1)
+        if ch < "0" or ch > "9":
+            return false
+        set i = i + 1
+    return true
+
+pub fn parse_checkpoint(text: Text) -> Result[Checkpoint, StdError]:
+    let lines = text_split(text, "\n")
+    let count = len(lines)
+    if count < 4 or lines[count - 1] != "":
+        return Err(note_error("a checkpoint has an origin, a size and a root, each on its own line"))
+    if lines[0] == "":
+        return Err(note_error("the origin line is empty"))
+    let size_text = lines[1]
+    if not all_digits(size_text) or (len(size_text) > 1 and text_slice(size_text, 0, 1) == "0"):
+        return Err(note_error("the size is not a plain decimal number"))
+    let size = unwrap(text_parse_int(size_text))
+    let decoded = base64_decode(lines[2])
+    if not is_ok(decoded) or len(unwrap(decoded)) != 32:
+        return Err(note_error("the root is not 32 bytes of base64"))
+    var extensions: List[Text] = []
+    var i = 3
+    while i < count - 1:
+        set extensions = list_push(extensions, lines[i])
+        set i = i + 1
+    return Ok(Checkpoint(lines[0], size, unwrap(decoded), extensions))
+
+# The line a checkpoint carries to bind its anchor: `lotcast/epoch <epoch> <deadline>`. The operator
+# signs it before stamping; every timestamp must prove the checkpoint existed by `deadline` (unix
+# seconds), and a receipt's anchor time is `deadline`, not anything the tokens say.
+pub record EpochInfo:
+    epoch: Int
+    deadline: Int
+
+pub fn epoch_extension(epoch: Int, deadline: Int) -> Text:
+    return "lotcast/epoch " + int_to_text(epoch) + " " + int_to_text(deadline)
+
+fn plain_number(t: Text) -> Bool:
+    if not all_digits(t):
+        return false
+    return len(t) == 1 or text_slice(t, 0, 1) != "0"
+
+# The epoch line of a checkpoint's extensions: exactly one, with two plain decimal numbers.
+pub fn parse_epoch(extensions: List[Text]) -> Result[EpochInfo, StdError]:
+    var found: List[Text] = []
+    for line in extensions:
+        if len(line) >= 14 and text_slice(line, 0, 14) == "lotcast/epoch ":
+            set found = list_push(found, line)
+    if len(found) != 1:
+        return Err(note_error("a checkpoint carries exactly one lotcast/epoch line"))
+    let fields = text_split(found[0], " ")
+    if len(fields) != 3 or not plain_number(fields[1]) or not plain_number(fields[2]):
+        return Err(note_error("the lotcast/epoch line is not `lotcast/epoch EPOCH DEADLINE` with plain decimal numbers"))
+    return Ok(EpochInfo(unwrap(text_parse_int(fields[1])), unwrap(text_parse_int(fields[2]))))

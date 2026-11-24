@@ -1,0 +1,203 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "std:fs"
+import "encode.gu"
+import "merkle.gu"
+import "note.gu"
+import "tiles.gu"
+
+# A single-writer tlog-tiles log kept in a directory: `checkpoint` (a signed note), `tile/L/N` hash
+# tiles and `tile/entries/N` entry bundles. Opening a log re-derives every tile from the stored
+# entries and compares it with the files and the signed checkpoint, so a corrupt or truncated log
+# fails closed.
+
+pub record LogState:
+    dir: Text
+    origin: Text
+    size: Int
+    entries: List[Bytes]
+    hashes: List[Bytes]
+    checkpoint: Text
+
+pub record Appended:
+    state: LogState
+    indexes: List[Int]
+    added: Int
+
+fn log_error(message: Text) -> StdError:
+    return std_error("E_LOG", message)
+
+fn power256(level: Int) -> Int:
+    var p = 1
+    var i = 0
+    while i < level:
+        set p = p * 256
+        set i = i + 1
+    return p
+
+fn width_of(count: Int, tile: Int) -> Int:
+    let rest = count - tile * 256
+    if rest > 256:
+        return 256
+    return rest
+
+fn partial_of(width: Int) -> Int:
+    if width == 256:
+        return 0
+    return width
+
+# Writes the tile files that changed between sizes `old_size` and `hashes`' length.
+fn write_tiles(dir: Text, hashes: List[Bytes], old_size: Int) -> Result[Bool, StdError]:
+    var level = 0
+    while true:
+        let at_level = level_hashes(hashes, level)
+        let count = len(at_level)
+        if count == 0:
+            break
+        let old_count = old_size // power256(level)
+        var tile = old_count // 256
+        while tile * 256 < count:
+            let width = width_of(count, tile)
+            let written = put_file(dir, tile_path(level, tile, partial_of(width)), join_hashes(at_level, tile * 256, tile * 256 + width))?
+            set tile = tile + 1
+        set level = level + 1
+    return Ok(true)
+
+fn write_bundles(dir: Text, entries: List[Bytes], old_size: Int) -> Result[Bool, StdError]:
+    var tile = old_size // 256
+    while tile * 256 < len(entries):
+        let width = width_of(len(entries), tile)
+        let blob = bundle_bytes(entries, tile * 256, tile * 256 + width)?
+        let written = put_file(dir, entry_bundle_path(tile, partial_of(width)), blob)?
+        set tile = tile + 1
+    return Ok(true)
+
+fn empty_state(dir: Text, origin: Text) -> LogState:
+    return LogState(dir, origin, 0, [], [], "")
+
+pub fn log_root(state: LogState) -> Bytes:
+    return root_of_hashes(state.hashes)
+
+pub fn log_checkpoint(state: LogState) -> Text:
+    return state.checkpoint
+
+fn utf8(b: Bytes) -> Result[Text, StdError]:
+    let r = encoding_utf8_decode(b)
+    if not is_ok(r):
+        return Err(log_error("a log file is not UTF-8"))
+    return Ok(unwrap(r))
+
+# Opens the log in `dir`, or an empty one when no checkpoint exists yet.
+pub fn log_open(dir: Text, origin: Text, key_name: Text, public_key: Bytes) -> Result[LogState, StdError]:
+    let made = make_dirs(dir)?
+    if not has_file(dir, "checkpoint"):
+        if has_file(dir, "tile"):
+            return Err(log_error("the log has tiles but no checkpoint: restoring the checkpoint is needed before appending, or the indexes would be reused"))
+        return Ok(empty_state(dir, origin))
+    let note = utf8(get_file(dir, "checkpoint")?)?
+    let signed = verify_note(note, key_name, public_key)?
+    var text = ""
+    match signed:
+        Some(t):
+            set text = t
+        None:
+            return Err(log_error("the checkpoint is not signed by the operator key"))
+    let cp = parse_checkpoint(text)?
+    if cp.origin != origin:
+        return Err(log_error("the checkpoint names a different origin"))
+    var entries: List[Bytes] = []
+    var tile = 0
+    while tile * 256 < cp.size:
+        let width = width_of(cp.size, tile)
+        let blob = get_file(dir, entry_bundle_path(tile, partial_of(width)))?
+        let got = parse_bundle(blob)?
+        if len(got) != width:
+            return Err(log_error("an entry bundle has the wrong number of entries"))
+        for e in got:
+            set entries = list_push(entries, e)
+        set tile = tile + 1
+    let hashes = leaf_hashes(entries)
+    if root_of_hashes(hashes) != cp.root:
+        return Err(log_error("the stored entries do not match the signed checkpoint root"))
+    var level = 0
+    while true:
+        let at_level = level_hashes(hashes, level)
+        let count = len(at_level)
+        if count == 0:
+            break
+        var t = 0
+        while t * 256 < count:
+            let width = width_of(count, t)
+            let stored = get_file(dir, tile_path(level, t, partial_of(width)))?
+            if stored != join_hashes(at_level, t * 256, t * 256 + width):
+                return Err(log_error("a stored tile does not match the entries"))
+            set t = t + 1
+        set level = level + 1
+    return Ok(LogState(dir, origin, cp.size, entries, hashes, note))
+
+fn find_index(hashes: List[Bytes], target: Bytes) -> Int:
+    var i = 0
+    for h in hashes:
+        if h == target:
+            return i
+        set i = i + 1
+    return -1
+
+# Appends the entries that are not already in the log (a repeated entry keeps its first index),
+# writes the changed tiles and bundles, then signs and writes the new checkpoint last.
+pub fn log_append_many(state: LogState, new_entries: List[Bytes], key_name: Text, seed: Bytes, extensions: List[Text]) -> Result[Appended, StdError]:
+    var entries = state.entries
+    var hashes = state.hashes
+    var indexes: List[Int] = []
+    for e in new_entries:
+        let h = leaf_hash(e)
+        let found = find_index(hashes, h)
+        if found >= 0:
+            set indexes = list_push(indexes, found)
+        else:
+            set indexes = list_push(indexes, len(hashes))
+            set entries = list_push(entries, e)
+            set hashes = list_push(hashes, h)
+    if len(hashes) == state.size:
+        return Ok(Appended(state, indexes, 0))
+    let on_disk = disk_checkpoint(state.dir)?
+    if on_disk != state.checkpoint:
+        return Err(log_error("another writer changed this log since it was opened"))
+    let tiles_done = write_tiles(state.dir, hashes, state.size)?
+    let bundles_done = write_bundles(state.dir, entries, state.size)?
+    let cp = Checkpoint(state.origin, len(hashes), root_of_hashes(hashes), extensions)
+    let note = sign_note(checkpoint_text(cp), key_name, seed)?
+    let saved = put_file(state.dir, "checkpoint", text_bytes(note))?
+    return Ok(Appended(LogState(state.dir, state.origin, len(hashes), entries, hashes, note), indexes, len(hashes) - state.size))
+
+pub fn log_append(state: LogState, entry: Bytes, key_name: Text, seed: Bytes, extensions: List[Text]) -> Result[Appended, StdError]:
+    return log_append_many(state, [entry], key_name, seed, extensions)
+
+# The checkpoint note on disk, or "" when the log has none yet.
+fn disk_checkpoint(dir: Text) -> Result[Text, StdError]:
+    if not has_file(dir, "checkpoint"):
+        return Ok("")
+    return utf8(get_file(dir, "checkpoint")?)
+
+# An exclusive writer lock: a directory that only one process can create. Hold it from opening the
+# log until the append is written, and release it afterwards. A crashed writer leaves it behind;
+# the error says where, and removing it by hand is safe once no draw is running.
+pub fn log_lock(dir: Text) -> Result[Bool, StdError]:
+    let made = make_dirs(dir)?
+    let path = dir + "/lock"
+    if has_file(dir, "lock"):
+        return Err(log_error("the log is locked by another draw (remove " + path + " if none is running)"))
+    if not is_ok(fs_make_dir(path)):
+        return Err(log_error("cannot take the log lock at " + path))
+    return Ok(true)
+
+pub fn log_unlock(dir: Text) -> Bool:
+    return is_ok(fs_remove(dir + "/lock"))
+
+pub fn log_inclusion(state: LogState, index: Int) -> Result[List[Bytes], StdError]:
+    return inclusion_proof_of_hashes(state.hashes, index)
+
+pub fn log_consistency(state: LogState, old_size: Int) -> Result[List[Bytes], StdError]:
+    return consistency_proof_of_hashes(state.hashes, old_size)

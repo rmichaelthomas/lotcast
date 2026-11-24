@@ -1,0 +1,302 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "std:json"
+import "std:http"
+import "pkg:beacons/src/lib.gu"
+import "encode.gu"
+import "window.gu"
+import "sources.gu"
+
+# The network side of the sources: find the pulses the inclusion rule names, put them in the
+# evidence shape sources.gu checks, and return what `check_*` makes of that evidence. Nothing here
+# is trusted: a resolver's answer is only ever the result of the same checker the verifier runs.
+#
+# E_LOTCAST_PENDING means the window has not closed yet: try again later.
+
+fn resolve_error(code: Text, message: Text) -> StdError:
+    return std_error(code, message)
+
+fn pending(id: Text, until: Int) -> StdError:
+    return resolve_error("E_LOTCAST_PENDING", id + " has no pulse after t0 yet; the window closes at unix time " + int_to_text(until))
+
+fn now_seconds() -> Int:
+    return unix_time_ms() // 1000
+
+fn fetch_json(url: Text) -> Result[Json, StdError]:
+    match http_get(url):
+        Err(failure):
+            return Err(resolve_error("E_LOTCAST_FETCH", url + ": " + http_error_message(failure)))
+        Ok(body):
+            match json_parse(body):
+                Ok(value):
+                    return Ok(value)
+                Err(problem):
+                    return Err(resolve_error("E_LOTCAST_FETCH", url + " did not answer with JSON"))
+
+# ---------------------------------------------------------------- NIST
+
+fn nist_pulse_json(url: Text) -> Result[Json, StdError]:
+    let answer = fetch_json(url)?
+    let inner = json_get_safe(answer, "pulse")
+    if not is_ok(inner):
+        return Err(resolve_error("E_LOTCAST_FETCH", url + " answered without a pulse"))
+    return Ok(unwrap(inner))
+
+fn nist_at(index: Int) -> Result[Json, StdError]:
+    return nist_pulse_json("https://beacon.nist.gov/beacon/2.0/chain/2/pulse/" + int_to_text(index))
+
+# The last chain 2 pulse not later than t0, by binary search over pulse indices (time only moves
+# forward along a chain, whatever the gaps). `top` is an index known to be later than t0.
+fn nist_before(top: Int, t0: Int) -> Result[Json, StdError]:
+    var best = nist_at(1)?
+    if nist_ms(best)? > t0 * 1000:
+        return Err(resolve_error("E_LOTCAST_RESOLVE", "t0 is before the NIST chain's first pulse"))
+    var lo = 1
+    var hi = top
+    var steps = 0
+    while hi - lo > 1 and steps < 64:
+        let mid = (lo + hi) // 2
+        let probe = nist_at(mid)?
+        if nist_ms(probe)? <= t0 * 1000:
+            set lo = mid
+            set best = probe
+        else:
+            set hi = mid
+        set steps = steps + 1
+    return Ok(best)
+
+fn nist_ms(pulse: Json) -> Result[Int, StdError]:
+    let parsed = nist_pulse_from_json(pulse)?
+    return iso_ms(parsed.time_stamp)
+
+pub fn resolve_nist(t0: Int) -> Result[SourceResult, StdError]:
+    let w = window_seconds("nist-beacon-2")?
+    let last_json = nist_pulse_json("https://beacon.nist.gov/beacon/2.0/pulse/last")?
+    let last = nist_pulse_from_json(last_json)?
+    let last_ms = iso_ms(last.time_stamp)?
+    if last_ms <= t0 * 1000:
+        let now = now_seconds()
+        if now < t0 + w:
+            return Err(pending("nist-beacon-2", t0 + w))
+        var live = json_object()
+        set live = json_set(live, "status", json_text("absent-live"))
+        set live = json_set(live, "latest", last_json)
+        set live = json_set(live, "certificate_pem", json_text(nist_fetch_certificate(last)?))
+        set live = json_set(live, "checked_at", json_int(now))
+        return check_nist(t0, live)
+    let before = nist_before(last.pulse_index, t0)?
+    let before_pulse = nist_pulse_from_json(before)?
+    let current = nist_at(before_pulse.pulse_index + 1)?
+    if nist_ms(current)? <= t0 * 1000 or nist_ms(before)? > t0 * 1000:
+        return Err(resolve_error("E_LOTCAST_RESOLVE", "could not find the first NIST pulse after t0"))
+    let pulse = nist_pulse_from_json(current)?
+    let prior = nist_pulse_from_json(before)?
+    var evidence = json_object()
+    set evidence = json_set(evidence, "previous", before)
+    set evidence = json_set(evidence, "certificate_pem", json_text(nist_fetch_certificate(pulse)?))
+    set evidence = json_set(evidence, "previous_certificate_pem", json_text(nist_fetch_certificate(prior)?))
+    if nist_ms(current)? <= (t0 + w) * 1000:
+        set evidence = json_set(evidence, "status", json_text("present"))
+        set evidence = json_set(evidence, "pulse", current)
+    else:
+        set evidence = json_set(evidence, "status", json_text("absent-proven"))
+        set evidence = json_set(evidence, "next", current)
+    return check_nist(t0, evidence)
+
+# ---------------------------------------------------------------- CURBy (Twine)
+
+# A record the way the host serves it, so evidence round-trips through twine_record_from_json.
+fn record_json(r: TwineRecord) -> Json:
+    var cid = json_object()
+    set cid = json_set(cid, "/", json_text(r.cid))
+    var data = json_object()
+    set data = json_set(data, "content", r.content)
+    set data = json_set(data, "signature", json_text(r.signature))
+    var out = json_object()
+    set out = json_set(out, "cid", cid)
+    set out = json_set(out, "data", data)
+    return out
+
+fn twine_index(r: TwineRecord) -> Result[Int, StdError]:
+    match json_get_int_safe(r.content, "index"):
+        Ok(i):
+            return Ok(i)
+        Err(problem):
+            return Err(resolve_error("E_LOTCAST_FETCH", "a pulse has no index"))
+
+fn twine_ms(r: TwineRecord) -> Result[Int, StdError]:
+    let payload = json_get_safe(r.content, "payload")
+    if not is_ok(payload):
+        return Err(resolve_error("E_LOTCAST_FETCH", "a pulse has no payload"))
+    let stamp = json_get_text_safe(unwrap(payload), "timestamp")
+    if not is_ok(stamp):
+        return Err(resolve_error("E_LOTCAST_FETCH", "a pulse has no timestamp"))
+    return iso_ms(unwrap(stamp))
+
+# The last pulse not later than t0, by binary search over indices (time only moves forward along
+# a chain). `top` is an index known to be later than t0.
+fn twine_before(chain: Text, top: Int, t0: Int) -> Result[TwineRecord, StdError]:
+    var lo = 1
+    var hi = top
+    var best = twine_fetch_pulse(chain, "1")?
+    if twine_ms(best)? > t0 * 1000:
+        return Err(resolve_error("E_LOTCAST_RESOLVE", "t0 is before the chain's first pulse"))
+    var steps = 0
+    while hi - lo > 1 and steps < 64:
+        let mid = (lo + hi) // 2
+        let probe = twine_fetch_pulse(chain, int_to_text(mid))?
+        if twine_ms(probe)? <= t0 * 1000:
+            set lo = mid
+            set best = probe
+        else:
+            set hi = mid
+        set steps = steps + 1
+    return Ok(best)
+
+fn twine_live(id: Text, chain: TwineRecord, latest: TwineRecord, t0: Int, checked: Int) -> Json:
+    var e = json_object()
+    set e = json_set(e, "status", json_text("absent-live"))
+    set e = json_set(e, "chain", record_json(chain))
+    set e = json_set(e, "latest", record_json(latest))
+    return json_set(e, "checked_at", json_int(checked))
+
+pub fn resolve_curby_rng(t0: Int) -> Result[SourceResult, StdError]:
+    let w = window_seconds("curby-rng")?
+    let chain = twine_fetch_chain(curby_rng_chain())?
+    let latest = twine_fetch_latest(curby_rng_chain())?
+    let latest_ms = twine_ms(latest)?
+    if latest_ms <= t0 * 1000:
+        let now = now_seconds()
+        if now < t0 + w:
+            return Err(pending("curby-rng", t0 + w))
+        return check_curby_rng(t0, twine_live("curby-rng", chain, latest, t0, now))
+    let before = twine_before(curby_rng_chain(), twine_index(latest)?, t0)?
+    let next = twine_fetch_pulse(curby_rng_chain(), int_to_text(twine_index(before)? + 1))?
+    var evidence = json_object()
+    set evidence = json_set(evidence, "chain", record_json(chain))
+    set evidence = json_set(evidence, "previous", record_json(before))
+    if twine_ms(next)? <= (t0 + w) * 1000:
+        set evidence = json_set(evidence, "status", json_text("present"))
+        set evidence = json_set(evidence, "pulse", record_json(next))
+    else:
+        set evidence = json_set(evidence, "status", json_text("absent-proven"))
+        set evidence = json_set(evidence, "next", record_json(next))
+    return check_curby_rng(t0, evidence)
+
+fn q_row_of(r: TwineRecord) -> Result[QRow, StdError]:
+    let payload = json_get_safe(r.content, "payload")
+    if not is_ok(payload):
+        return Err(resolve_error("E_LOTCAST_FETCH", "a pulse has no payload"))
+    let stage = json_get_text_safe(unwrap(payload), "stage")
+    let round = json_get_int_safe(unwrap(payload), "round")
+    if not is_ok(stage) or not is_ok(round):
+        return Err(resolve_error("E_LOTCAST_FETCH", "a CURBy-Q pulse has no stage or round"))
+    return Ok(QRow(unwrap(stage), unwrap(round), twine_ms(r)?))
+
+pub fn resolve_curby_q(t0: Int) -> Result[SourceResult, StdError]:
+    let w = window_seconds("curby-q")?
+    let chain = twine_fetch_chain(curby_q_chain())?
+    let latest = twine_fetch_latest(curby_q_chain())?
+    let latest_ms = twine_ms(latest)?
+    if latest_ms <= t0 * 1000:
+        let now = now_seconds()
+        if now < t0 + w:
+            return Err(pending("curby-q", t0 + w))
+        return check_curby_q(t0, twine_live("curby-q", chain, latest, t0, now))
+    let before = twine_before(curby_q_chain(), twine_index(latest)?, t0)?
+    var pulses = json_array()
+    set pulses = json_push(pulses, record_json(before))
+    var rows: List[QRow] = [q_row_of(before)?]
+    var index = twine_index(before)?
+    var verdict = "incomplete"
+    var steps = 0
+    while verdict == "incomplete" and steps < 400:
+        set index = index + 1
+        let next = twine_fetch_pulse(curby_q_chain(), int_to_text(index))
+        if not is_ok(next):
+            let now = now_seconds()
+            if now < t0 + w:
+                return Err(pending("curby-q", t0 + w))
+            # A missing next pulse counts only when the chain's own latest pulse is the last one we hold:
+            # a network blip must not become a claim that the chain is idle.
+            let tip = twine_fetch_latest(curby_q_chain())?
+            if twine_index(tip)? != index - 1:
+                return Err(resolve_error("E_LOTCAST_FETCH", "the chain has pulses beyond the ones read"))
+            var stalled = json_object()
+            set stalled = json_set(stalled, "status", json_text("absent-live"))
+            set stalled = json_set(stalled, "chain", record_json(chain))
+            set stalled = json_set(stalled, "pulses", pulses)
+            set stalled = json_set(stalled, "checked_at", json_int(now))
+            return check_curby_q(t0, stalled)
+        set pulses = json_push(pulses, record_json(unwrap(next)))
+        set rows = list_push(rows, q_row_of(unwrap(next))?)
+        set verdict = q_classify(t0, w, rows)
+        set steps = steps + 1
+    var evidence = json_object()
+    set evidence = json_set(evidence, "chain", record_json(chain))
+    set evidence = json_set(evidence, "pulses", pulses)
+    if verdict == "present":
+        set evidence = json_set(evidence, "status", json_text("present"))
+    else:
+        set evidence = json_set(evidence, "status", json_text("absent-proven"))
+    return check_curby_q(t0, evidence)
+
+# The three non-drand sources in the fixed order, each resolved or marked not requested.
+pub fn resolve_sources(requested: List[Text], t0: Int) -> Result[List[SourceResult], StdError]:
+    var out: List[SourceResult] = []
+    for id in ["nist-beacon-2", "curby-rng", "curby-q"]:
+        var wanted = false
+        for r in requested:
+            if r == id:
+                set wanted = true
+        if not wanted:
+            set out = list_push(out, not_requested(id))
+        else:
+            if id == "nist-beacon-2":
+                set out = list_push(out, resolve_nist(t0)?)
+            if id == "curby-rng":
+                set out = list_push(out, resolve_curby_rng(t0)?)
+            if id == "curby-q":
+                set out = list_push(out, resolve_curby_q(t0)?)
+    return Ok(out)
+
+# The live half of verified-pending-live: for each source the receipt marks absent-live, ask the live
+# chain again with the same t0. Returns the ids confirmed still absent. A source that now has a pulse
+# for this draw is an error (E_LOTCAST_LIVE): the receipt hid it. E_LOTCAST_PENDING when the window
+# has not closed yet.
+pub fn live_recheck(receipt: Json) -> Result[List[Text], StdError]:
+    let anchor = json_get_safe(receipt, "anchor")
+    let listed = json_get_safe(receipt, "sources")
+    if not is_ok(anchor) or not is_ok(listed):
+        return Err(resolve_error("E_LOTCAST_LIVE", "the receipt has no anchor or sources"))
+    let t0 = json_get_int_safe(unwrap(anchor), "t0")
+    if not is_ok(t0):
+        return Err(resolve_error("E_LOTCAST_LIVE", "the receipt has no t0"))
+    var confirmed: List[Text] = []
+    var i = 0
+    while i < json_len(unwrap(listed)):
+        let source = unwrap(json_index_safe(unwrap(listed), i))
+        let status = json_get_text_safe(source, "status")
+        let id = json_get_text_safe(source, "id")
+        if is_ok(status) and is_ok(id) and unwrap(status) == "absent-live":
+            var now_result = resolve_nist(unwrap(t0))
+            if unwrap(id) == "curby-rng":
+                set now_result = resolve_curby_rng(unwrap(t0))
+            if unwrap(id) == "curby-q":
+                set now_result = resolve_curby_q(unwrap(t0))
+            if not is_ok(now_result):
+                return Err(unwrap_err_of(now_result))
+            if unwrap(now_result).status != "absent-live":
+                return Err(resolve_error("E_LOTCAST_LIVE", unwrap(id) + " now has a pulse for this draw (" + unwrap(now_result).status + "), but the receipt says it was absent"))
+            set confirmed = list_push(confirmed, unwrap(id))
+        set i = i + 1
+    return Ok(confirmed)
+
+fn unwrap_err_of(r: Result[SourceResult, StdError]) -> StdError:
+    match r:
+        Err(problem):
+            return problem
+        Ok(ignored):
+            return resolve_error("E_LOTCAST_LIVE", "unexpected success")

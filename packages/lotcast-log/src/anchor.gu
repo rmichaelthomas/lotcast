@@ -1,0 +1,132 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "std:json"
+import "std:http"
+import "encode.gu"
+import "note.gu"
+import "tsa_pins.gu"
+
+# RFC 3161 anchoring of checkpoints (spec 3.2). Two TSAs run by different companies each stamp
+# SHA-512 of the checkpoint note; a token is accepted only when a pinned issuer issued the signing
+# certificate the token carries.
+
+pub record TsaPin:
+    id: Text
+    host: Text
+    url: Text
+    issuer: Text
+
+fn anchor_error(message: Text) -> StdError:
+    return std_error("E_LOG_ANCHOR", message)
+
+pub fn tsa_pins() -> List[TsaPin]:
+    var pins: List[TsaPin] = []
+    set pins = list_push(pins, TsaPin("digicert", tsa_host_digicert(), tsa_url_digicert(), tsa_issuer_digicert()))
+    set pins = list_push(pins, TsaPin("sectigo", tsa_host_sectigo(), tsa_url_sectigo(), tsa_issuer_sectigo()))
+    set pins = list_push(pins, TsaPin("freetsa", tsa_host_freetsa(), tsa_url_freetsa(), tsa_issuer_freetsa()))
+    return pins
+
+pub fn pin_by_id(id: Text) -> Result[TsaPin, StdError]:
+    for pin in tsa_pins():
+        if pin.id == id:
+            return Ok(pin)
+    return Err(anchor_error("no pinned TSA is named " + id))
+
+# Posts a TimeStampReq for `digest` (64 bytes, SHA-512) and returns the token. Retries the same
+# request up to three times.
+pub fn tsa_stamp(pin: TsaPin, digest: Bytes) -> Result[Bytes, StdError]:
+    let request = crypto_tsa_request(digest, bytes_from_ints([]))?
+    var attempt = 1
+    var last = "no attempt was made"
+    while attempt <= 3:
+        let answer = http_request_bytes("POST", pin.url, {"content-type": "application/timestamp-query"}, request, 20000)
+        if is_ok(answer):
+            let response = unwrap(answer)
+            if response.status == 200:
+                let token = crypto_tsa_response_token(response.body)
+                if is_ok(token):
+                    return Ok(unwrap(token))
+                set last = "the TSA refused or sent a malformed answer"
+            else:
+                set last = "the TSA answered HTTP " + int_to_text(response.status)
+        else:
+            set last = "the TSA could not be reached"
+        sleep_ms(attempt * 1000)
+        set attempt = attempt + 1
+    return Err(anchor_error(pin.id + ": " + last))
+
+# The token's content when one of its carried certificates is issued by the pinned issuer and
+# verifies the token over `digest`.
+pub fn tsa_check(pin: TsaPin, token: Bytes, digest: Bytes) -> Result[TsaToken, StdError]:
+    let issuer = base64_decode(pin.issuer)?
+    let carried = crypto_tsa_certificates(token)?
+    for cert in carried:
+        let verdict = crypto_tsa_verify(token, digest, cert, issuer)
+        if is_ok(verdict):
+            match unwrap(verdict):
+                Some(content):
+                    return Ok(content)
+                None:
+                    continue
+    return Err(anchor_error(pin.id + ": no certificate in the token verifies under the pinned issuer"))
+
+fn ceil_seconds(ms: Int) -> Int:
+    return (ms + 999) // 1000
+
+# The time every token proves the checkpoint existed by: max(genTime + accuracy) + 1 second, in
+# whole seconds, rounding each time up. A checkpoint is anchored when this is not later than the
+# deadline the operator signed into it (`lotcast/epoch`); the receipt's anchor time is that
+# deadline, so re-stamping the same checkpoint later cannot move it.
+pub fn proven_by_seconds(tokens: List[TsaToken]) -> Int:
+    assert(len(tokens) > 0)
+    var latest = 0
+    for t in tokens:
+        let seconds = ceil_seconds(t.gen_time_ms + t.accuracy_ms)
+        if seconds > latest:
+            set latest = seconds
+    return latest + 1
+
+# Which TSAs to use given how long (in seconds) each has been failing: the default pair, or after
+# 600 seconds the working one plus FreeTSA. Empty when neither default is working.
+pub fn choose_tsas(down_seconds: Map[Text, Int]) -> List[Text]:
+    var digicert_down = false
+    var sectigo_down = false
+    if map_has(down_seconds, "digicert"):
+        set digicert_down = down_seconds["digicert"] > 600
+    if map_has(down_seconds, "sectigo"):
+        set sectigo_down = down_seconds["sectigo"] > 600
+    if digicert_down and sectigo_down:
+        return []
+    if digicert_down:
+        return ["sectigo", "freetsa"]
+    if sectigo_down:
+        return ["digicert", "freetsa"]
+    return ["digicert", "sectigo"]
+
+# SHA-512 of the checkpoint's signed text (not the signature lines, so cosignatures added later do
+# not change what was stamped). `note` is the whole signed note.
+pub fn checkpoint_digest(note: Text) -> Result[Bytes, StdError]:
+    return Ok(crypto_sha512(text_bytes(note_text(note)?)))
+
+# Stamps the checkpoint note with each named TSA and returns `{"timestamps": [...], "proven_by": N}`.
+pub fn anchor_checkpoint(note: Text, tsa_ids: List[Text]) -> Result[Json, StdError]:
+    let digest = checkpoint_digest(note)?
+    var stamps = json_array()
+    var contents: List[TsaToken] = []
+    for id in tsa_ids:
+        let pin = pin_by_id(id)?
+        let token = tsa_stamp(pin, digest)?
+        let content = tsa_check(pin, token, digest)?
+        set contents = list_push(contents, content)
+        var entry = json_object()
+        set entry = json_set(entry, "tsa", json_text(id))
+        set entry = json_set(entry, "token", json_text(base64_encode(token)))
+        set stamps = json_push(stamps, entry)
+    if len(contents) < 2:
+        return Err(anchor_error("two TSAs are needed to anchor a checkpoint"))
+    var out = json_object()
+    set out = json_set(out, "timestamps", stamps)
+    set out = json_set(out, "proven_by", json_int(proven_by_seconds(contents)))
+    return Ok(out)

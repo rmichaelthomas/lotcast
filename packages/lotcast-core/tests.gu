@@ -5,6 +5,7 @@ import "std:text"
 import "std:json"
 import "src/lib.gu"
 import "pkg:beacons/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
 
 fn main() -> Int:
     return 0
@@ -629,3 +630,544 @@ fn test_option_names_and_values_are_case_sensitive() -> Unit:
     let upper_value: Map[Text, Text] = {"reversals": "True"}
     assert(error_code(run("tarot", "rws", upper_name)) == "E_LOTCAST_OPTION")
     assert(error_code(run("tarot", "rws", upper_value)) == "E_LOTCAST_OPTION")
+
+fn test_iso_ms_parses_known_instants() -> Unit:
+    assert(unwrap(iso_ms("1970-01-01T00:00:00Z")) == 0)
+    assert(unwrap(iso_ms("1970-01-01T00:00:01.5Z")) == 1500)
+    assert(unwrap(iso_ms("2026-11-24T07:01:00.338Z")) == 1795503660338)
+    assert(unwrap(iso_ms("2026-11-24T07:01:00.3389999Z")) == 1795503660338)
+    assert(unwrap(iso_ms("2000-02-29T23:59:59.999Z")) == 951868799999)
+    assert(unwrap(iso_ms("2025-08-22T19:43:39.561Z")) == 1755891819561)
+
+fn test_iso_ms_rejects_malformed_times() -> Unit:
+    for bad in ["", "2026-11-24", "2026-11-24T07:01:00", "2026-13-01T00:00:00Z", "2026-02-30T00:00:00Z", "2026-11-24T24:00:00Z", "2026-11-24T07:01:00.Z", "2026-11-24 07:01:00Z", "2026-11-24T07:01:0xZ", "1969-12-31T23:59:59Z", "2026-11-24T07:01:00+01:00"]:
+        assert(not is_ok(iso_ms(bad)))
+
+fn test_window_seconds_per_source() -> Unit:
+    assert(unwrap(window_seconds("nist-beacon-2")) == 180)
+    assert(unwrap(window_seconds("curby-rng")) == 180)
+    assert(unwrap(window_seconds("curby-q")) == 1890)
+    assert(not is_ok(window_seconds("drand-quicknet")))
+
+fn test_judge_covers_each_position() -> Unit:
+    # t0 = 1000 s, W = 180 s
+    assert(judge(1000, 180, 990000, 1000000) == "not-after")
+    assert(judge(1000, 180, 990000, 999999) == "not-after")
+    assert(judge(1000, 180, 1000001, 1030000) == "not-first")
+    assert(judge(1000, 180, 1000000, 1000001) == "present")
+    assert(judge(1000, 180, 970000, 1030000) == "present")
+    assert(judge(1000, 180, 970000, 1180000) == "present")
+    assert(judge(1000, 180, 970000, 1180001) == "gap")
+    assert(judge(1000, 180, 1000000, 1240000) == "gap")
+
+fn test_live_ok_needs_old_pulse_and_a_late_enough_check() -> Unit:
+    assert(live_ok(1000, 180, 1000000, 1180))
+    assert(live_ok(1000, 180, 999000, 5000))
+    assert(not live_ok(1000, 180, 1000001, 5000))
+    assert(not live_ok(1000, 180, 999000, 1179))
+
+# ---------------------------------------------------------------- sources (offline, real pulses)
+
+fn fixture(name: Text) -> Json:
+    return unwrap(json_parse(unwrap(read_text("fixtures/sources/" + name))))
+
+fn nth(list: Json, i: Int) -> Json:
+    return unwrap(json_index_safe(list, i))
+
+fn pulse_ts_ms(stamp: Text) -> Int:
+    return unwrap(iso_ms(stamp))
+
+fn nist_evidence(status: Text, a: Int, b: Int, key: Text) -> Json:
+    let f = fixture("nist.json")
+    let pulses = json_get(f, "pulses")
+    var e = json_object()
+    set e = json_set(e, "status", json_text(status))
+    set e = json_set(e, "previous", nth(pulses, a))
+    set e = json_set(e, key, nth(pulses, b))
+    set e = json_set(e, "certificate_pem", json_get(f, "certificate_pem"))
+    return e
+
+fn nist_t0_after(i: Int, plus_seconds: Int) -> Int:
+    let pulses = json_get(fixture("nist.json"), "pulses")
+    return pulse_ts_ms(json_as_text(json_get(nth(pulses, i), "timeStamp"))) // 1000 + plus_seconds
+
+fn test_nist_present_first_pulse_after_t0() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    let r = unwrap(check_nist(t0, nist_evidence("present", 3, 4, "pulse")))
+    assert(r.status == "present")
+    assert(len(r.value) == 64)
+    assert(status_code(r.status) == 1)
+
+fn test_nist_present_rejected_when_previous_is_after_t0() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    assert(not is_ok(check_nist(t0, nist_evidence("present", 4, 5, "pulse"))))
+
+fn test_nist_present_rejected_for_non_consecutive_or_not_after_t0() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    assert(not is_ok(check_nist(t0, nist_evidence("present", 3, 5, "pulse"))))
+    assert(not is_ok(check_nist(nist_t0_after(4, 10), nist_evidence("present", 3, 4, "pulse"))))
+
+fn test_nist_absent_proven_needs_a_real_gap_around_the_window() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    let proven = unwrap(check_nist_with(t0, 30, nist_evidence("absent-proven", 3, 4, "next")))
+    assert(proven.status == "absent-proven")
+    assert(len(proven.value) == 0)
+    assert(status_code(proven.status) == 0)
+
+fn test_nist_absent_claimed_while_pulse_in_window_is_rejected() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    assert(not is_ok(check_nist(t0, nist_evidence("absent-proven", 3, 4, "next"))))
+
+fn test_nist_absent_live_requires_old_pulse_and_late_check() -> Unit:
+    let f = fixture("nist.json")
+    let t0 = nist_t0_after(7, 5)
+    var e = json_object()
+    set e = json_set(e, "status", json_text("absent-live"))
+    set e = json_set(e, "latest", nth(json_get(f, "pulses"), 7))
+    set e = json_set(e, "certificate_pem", json_get(f, "certificate_pem"))
+    let ok = json_set(e, "checked_at", json_int(t0 + 180))
+    assert(unwrap(check_nist(t0, ok)).status == "absent-live")
+    assert(not is_ok(check_nist(t0, json_set(e, "checked_at", json_int(t0 + 179)))))
+    assert(not is_ok(check_nist(nist_t0_after(7, -5), json_set(e, "checked_at", json_int(t0 + 999)))))
+
+fn test_nist_tampered_pulse_is_rejected() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    let e = nist_evidence("present", 3, 4, "pulse")
+    let pulse = json_get(e, "pulse")
+    let flipped = json_set(pulse, "localRandomValue", json_text(text_replace(json_as_text(json_get(pulse, "localRandomValue")), "A", "B")))
+    assert(json_stringify(flipped) != json_stringify(pulse))
+    assert(not is_ok(check_nist(t0, json_set(e, "pulse", flipped))))
+    assert(not is_ok(check_nist(t0, json_set(e, "status", json_text("maybe")))))
+
+fn rng_evidence(status: Text, a: Int, b: Int, key: Text) -> Json:
+    let f = fixture("curby-rng.json")
+    let pulses = json_get(f, "pulses")
+    var e = json_object()
+    set e = json_set(e, "status", json_text(status))
+    set e = json_set(e, "chain", json_get(f, "chain"))
+    set e = json_set(e, "previous", nth(pulses, a))
+    set e = json_set(e, key, nth(pulses, b))
+    return e
+
+fn rng_ms(i: Int) -> Int:
+    let pulses = json_get(fixture("curby-rng.json"), "pulses")
+    return pulse_ts_ms(json_as_text(json_get(json_get(json_get(json_get(nth(pulses, i), "data"), "content"), "payload"), "timestamp")))
+
+fn test_curby_rng_present_first_pulse_after_t0() -> Unit:
+    let t0 = rng_ms(3) // 1000 + 1
+    let r = unwrap(check_curby_rng(t0, rng_evidence("present", 3, 4, "pulse")))
+    assert(r.status == "present")
+    assert(len(r.value) == 64)
+
+fn test_curby_rng_present_rejected_when_previous_is_after_t0() -> Unit:
+    let t0 = rng_ms(3) // 1000 + 1
+    assert(not is_ok(check_curby_rng(t0, rng_evidence("present", 4, 5, "pulse"))))
+    assert(not is_ok(check_curby_rng(t0, rng_evidence("present", 3, 5, "pulse"))))
+
+fn test_curby_rng_absent_proven_with_a_gap_and_rejected_without() -> Unit:
+    let t0 = rng_ms(3) // 1000 + 1
+    let small = (rng_ms(4) - t0 * 1000) // 1000 - 1
+    assert(small > 0)
+    assert(unwrap(check_curby_rng_with(t0, small, rng_evidence("absent-proven", 3, 4, "next"))).status == "absent-proven")
+    assert(not is_ok(check_curby_rng(t0, rng_evidence("absent-proven", 3, 4, "next"))))
+
+fn test_curby_rng_absent_live_and_pinned_chain() -> Unit:
+    let f = fixture("curby-rng.json")
+    let t0 = rng_ms(7) // 1000 + 1
+    var e = json_object()
+    set e = json_set(e, "status", json_text("absent-live"))
+    set e = json_set(e, "chain", json_get(f, "chain"))
+    set e = json_set(e, "latest", nth(json_get(f, "pulses"), 7))
+    assert(unwrap(check_curby_rng(t0, json_set(e, "checked_at", json_int(t0 + 180)))).status == "absent-live")
+    assert(not is_ok(check_curby_rng(t0, json_set(e, "checked_at", json_int(t0 + 100)))))
+    let q = fixture("curby-q.json")
+    assert(not is_ok(check_curby_rng(t0, json_set(json_set(e, "chain", json_get(q, "chain")), "checked_at", json_int(t0 + 180)))))
+
+fn qrow(stage: Text, round: Int, seconds: Int) -> QRow:
+    return QRow(stage, round, seconds * 1000)
+
+fn test_q_classify_present_gap_and_incomplete() -> Unit:
+    # t0 = 1000 s, W = 100 s, deadline 1100 s
+    let before = qrow("randomness", 1, 990)
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020), qrow("randomness", 2, 1090)]) == "present")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020), qrow("randomness", 2, 1100)]) == "present")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020), qrow("randomness", 2, 1101)]) == "gap")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020), qrow("request", 3, 1300)]) == "gap")
+    assert(q_classify(1000, 100, [before, qrow("randomness", 1, 1050), qrow("request", 2, 1400)]) == "gap")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010)]) == "incomplete")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020)]) == "incomplete")
+
+fn test_q_classify_rejects_a_pulse_hidden_in_the_window() -> Unit:
+    let before = qrow("randomness", 1, 990)
+    # the first round's randomness pulse arrived at 1090 but the run goes on to a pulse at 1300
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("randomness", 2, 1090), qrow("request", 3, 1300)]) == "invalid")
+    # a pulse not later than t0 after the first row, or time running backwards
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1000), qrow("randomness", 2, 1090)]) == "invalid")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1020), qrow("randomness", 2, 1010)]) == "invalid")
+    assert(q_classify(1000, 100, [qrow("randomness", 1, 1001), qrow("request", 2, 1010)]) == "invalid")
+    assert(q_classify(1000, 100, [before]) == "incomplete")
+
+fn q_evidence(status: Text) -> Json:
+    let f = fixture("curby-q.json")
+    var list = json_array()
+    for key in ["before", "request", "precommit", "randomness"]:
+        set list = json_push(list, json_get(f, key))
+    var e = json_object()
+    set e = json_set(e, "status", json_text(status))
+    set e = json_set(e, "chain", json_get(f, "chain"))
+    return json_set(e, "pulses", list)
+
+fn q_ms(key: Text) -> Int:
+    let payload = json_get(json_get(json_get(json_get(fixture("curby-q.json"), key), "data"), "content"), "payload")
+    return pulse_ts_ms(json_as_text(json_get(payload, "timestamp")))
+
+fn test_curby_q_present_complete_round() -> Unit:
+    let t0 = q_ms("before") // 1000 + 1
+    let w = (q_ms("randomness") - t0 * 1000) // 1000 + 5
+    let r = unwrap(check_curby_q_with(t0, w, q_evidence("present")))
+    assert(r.status == "present")
+    assert(len(r.value) == 64)
+
+fn test_curby_q_present_rejected_when_randomness_arrives_after_the_window() -> Unit:
+    let t0 = q_ms("before") // 1000 + 1
+    let w = (q_ms("precommit") - t0 * 1000) // 1000 + 1
+    assert(not is_ok(check_curby_q_with(t0, w, q_evidence("present"))))
+
+fn test_curby_q_absent_proven_when_the_round_finishes_after_the_window() -> Unit:
+    let t0 = q_ms("before") // 1000 + 1
+    let w = (q_ms("precommit") - t0 * 1000) // 1000 + 1
+    let r = unwrap(check_curby_q_with(t0, w, q_evidence("absent-proven")))
+    assert(r.status == "absent-proven")
+    assert(len(r.value) == 0)
+
+fn test_curby_q_absent_claimed_while_randomness_is_in_window_is_rejected() -> Unit:
+    let t0 = q_ms("before") // 1000 + 1
+    let w = (q_ms("randomness") - t0 * 1000) // 1000 + 5
+    assert(not is_ok(check_curby_q_with(t0, w, q_evidence("absent-proven"))))
+
+fn test_curby_q_broken_run_is_rejected() -> Unit:
+    let t0 = q_ms("before") // 1000 + 1
+    let w = (q_ms("randomness") - t0 * 1000) // 1000 + 5
+    let e = q_evidence("present")
+    let f = fixture("curby-q.json")
+    var skipped = json_array()
+    for key in ["before", "request", "randomness"]:
+        set skipped = json_push(skipped, json_get(f, key))
+    assert(not is_ok(check_curby_q_with(t0, w, json_set(e, "pulses", skipped))))
+
+fn test_curby_q_idle_is_absent_live_with_the_latest_pulse() -> Unit:
+    let f = fixture("curby-q.json")
+    let latest = json_get(f, "latest")
+    let stamp = json_as_text(json_get(json_get(json_get(json_get(latest, "data"), "content"), "payload"), "timestamp"))
+    let t0 = pulse_ts_ms(stamp) // 1000 + 1
+    var e = json_object()
+    set e = json_set(e, "status", json_text("absent-live"))
+    set e = json_set(e, "chain", json_get(f, "chain"))
+    set e = json_set(e, "latest", latest)
+    let ok = unwrap(check_curby_q(t0, json_set(e, "checked_at", json_int(t0 + 1890))))
+    assert(ok.status == "absent-live")
+    assert(status_code(ok.status) == 0)
+    assert(not is_ok(check_curby_q(t0, json_set(e, "checked_at", json_int(t0 + 1889)))))
+
+fn test_not_requested_sources_carry_status_two() -> Unit:
+    let r = not_requested("curby-q")
+    assert(status_code(r.status) == 2)
+    assert(len(r.value) == 0)
+    assert(source_value(r).status == 2)
+
+# ---------------------------------------------------------------- anchored receipts (a real receipt)
+
+fn anchored() -> Json:
+    return unwrap(json_parse(unwrap(read_text("fixtures/anchored-receipt.json"))))
+
+fn anchored_key() -> Bytes:
+    return unwrap(hex_decode(text_trim(unwrap(read_text("fixtures/anchored-operator-key.hex")))))
+
+fn verdict_of(receipt: Json) -> Verdict:
+    return verify_anchored(receipt, anchored_key(), tsa_pins())
+
+fn nested_set(receipt: Json, outer: Text, key: Text, value: Json) -> Json:
+    return json_set(receipt, outer, json_set(json_get(receipt, outer), key, value))
+
+fn assert_invalid_at(v: Verdict, step: Int) -> Unit:
+    assert(v.result == "invalid")
+    assert(v.failed_step == step)
+
+fn test_anchored_receipt_verifies() -> Unit:
+    let v = verdict_of(anchored())
+    assert(v.result == "verified")
+    assert(len(v.not_checked) == 0)
+    let r = anchored()
+    assert(json_as_int(json_get(json_get(r, "anchor"), "t0")) == json_as_int(json_get(json_get(r, "anchor"), "g")))
+    assert(json_len(json_get(r, "sources")) == 3)
+
+fn test_wrong_operator_key_fails_at_step_one() -> Unit:
+    let other = unwrap(crypto_ed25519_public_key(unwrap(hex_decode("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"))))
+    assert_invalid_at(verify_anchored(anchored(), other, tsa_pins()), 1)
+
+fn test_checkpoint_resigned_by_another_key_fails_at_step_two() -> Unit:
+    let r = anchored()
+    let log = json_get(r, "log")
+    let text = unwrap(note_text(json_as_text(json_get(log, "checkpoint"))))
+    let seed2 = unwrap(hex_decode("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"))
+    let resigned = unwrap(sign_note(text, json_as_text(json_get(log, "origin")), seed2))
+    assert_invalid_at(verdict_of(nested_set(r, "log", "checkpoint", json_text(resigned))), 2)
+
+fn test_inclusion_proof_for_another_leaf_fails_at_step_two() -> Unit:
+    let r = anchored()
+    let padded = json_push(json_array(), json_text(hex_encode(crypto_sha256(bytes_from_ints([9])))))
+    assert_invalid_at(verdict_of(nested_set(r, "log", "inclusion", padded)), 2)
+
+fn test_changed_request_fails_at_step_one() -> Unit:
+    let r = anchored()
+    let nonce = json_as_text(json_get(json_get(r, "request"), "client_nonce"))
+    let changed = nested_set(r, "request", "client_nonce", json_text(text_replace(nonce, text_slice(nonce, 0, 2), "ff")))
+    assert(json_stringify(changed) != json_stringify(r))
+    assert_invalid_at(verdict_of(changed), 1)
+
+fn test_promise_for_another_index_fails_at_step_one() -> Unit:
+    let r = anchored()
+    assert_invalid_at(verdict_of(nested_set(r, "log", "index", json_int(1))), 1)
+    assert_invalid_at(verdict_of(json_set(r, "promise", json_null())), 1)
+
+fn test_timestamp_for_another_checkpoint_fails_at_step_three() -> Unit:
+    let r = anchored()
+    let fixtures = unwrap(json_parse(unwrap(read_text("fixtures/tsa-tokens.json"))))
+    let stamps = json_get(json_get(r, "log"), "timestamps")
+    let first = unwrap(json_index_safe(stamps, 0))
+    let swapped_token = json_set(first, "token", json_get(json_get(fixtures, "tokens"), json_as_text(json_get(first, "tsa"))))
+    let replaced = json_push(json_push(json_array(), swapped_token), unwrap(json_index_safe(stamps, 1)))
+    assert_invalid_at(verdict_of(nested_set(r, "log", "timestamps", replaced)), 3)
+
+fn test_timestamps_from_one_authority_twice_or_one_token_fail_at_step_three() -> Unit:
+    let r = anchored()
+    let stamps = json_get(json_get(r, "log"), "timestamps")
+    let first = unwrap(json_index_safe(stamps, 0))
+    let twice = json_push(json_push(json_array(), first), first)
+    assert_invalid_at(verdict_of(nested_set(r, "log", "timestamps", twice)), 3)
+    assert_invalid_at(verdict_of(nested_set(r, "log", "timestamps", json_push(json_array(), first))), 3)
+    let relabelled = json_push(json_push(json_array(), json_set(first, "tsa", json_text("freetsa"))), unwrap(json_index_safe(stamps, 1)))
+    assert_invalid_at(verdict_of(nested_set(r, "log", "timestamps", relabelled)), 3)
+
+fn test_anchor_time_that_the_tokens_do_not_prove_fails_at_step_three() -> Unit:
+    let r = anchored()
+    let g = json_as_int(json_get(json_get(r, "anchor"), "g"))
+    assert_invalid_at(verdict_of(nested_set(r, "anchor", "g", json_int(g - 1))), 3)
+    assert_invalid_at(verdict_of(nested_set(r, "anchor", "t0", json_int(g - 1))), 3)
+    assert_invalid_at(verdict_of(nested_set(r, "anchor", "not_before", json_int(g + 100))), 3)
+
+fn test_dropped_or_altered_source_fails_at_step_four() -> Unit:
+    let r = anchored()
+    let listed = json_get(r, "sources")
+    var without_nist = json_array()
+    set without_nist = json_push(without_nist, unwrap(json_index_safe(listed, 0)))
+    set without_nist = json_push(without_nist, unwrap(json_index_safe(listed, 2)))
+    assert_invalid_at(verdict_of(json_set(r, "sources", without_nist)), 4)
+    let nist = unwrap(json_index_safe(listed, 1))
+    var claimed_absent = json_array()
+    set claimed_absent = json_push(claimed_absent, unwrap(json_index_safe(listed, 0)))
+    set claimed_absent = json_push(claimed_absent, json_set(json_set(nist, "status", json_text("absent-proven")), "next", json_get(nist, "pulse")))
+    set claimed_absent = json_push(claimed_absent, unwrap(json_index_safe(listed, 2)))
+    assert_invalid_at(verdict_of(json_set(r, "sources", claimed_absent)), 4)
+
+fn test_a_present_pulse_that_is_not_the_first_after_t0_fails_at_step_four() -> Unit:
+    let r = anchored()
+    let g = json_as_int(json_get(json_get(r, "anchor"), "g"))
+    # The same source evidence checked against a t0 that makes the pulse not the first one after it.
+    let listed = json_get(r, "sources")
+    let nist = unwrap(json_index_safe(listed, 1))
+    assert(is_ok(check_nist(g, nist)))
+    assert(not is_ok(check_nist(g + 120, nist)))
+    assert(not is_ok(check_nist(g - 120, nist)))
+
+fn test_altered_drand_value_fails_at_step_four() -> Unit:
+    let r = anchored()
+    let listed = json_get(r, "sources")
+    let drand = unwrap(json_index_safe(listed, 0))
+    let randomness = json_as_text(json_get(drand, "randomness"))
+    let forged = json_set(drand, "randomness", json_text(text_replace(randomness, text_slice(randomness, 0, 2), "00")))
+    var replaced = json_array()
+    set replaced = json_push(replaced, forged)
+    set replaced = json_push(replaced, unwrap(json_index_safe(listed, 1)))
+    set replaced = json_push(replaced, unwrap(json_index_safe(listed, 2)))
+    assert_invalid_at(verdict_of(json_set(r, "sources", replaced)), 4)
+
+fn test_altered_outcome_or_seed_fails_at_step_five() -> Unit:
+    let r = anchored()
+    var other = json_object()
+    set other = json_set(other, "lines", json_push(json_array(), json_int(7)))
+    assert_invalid_at(verdict_of(json_set(r, "outcome", other)), 5)
+    let seed_hex = json_as_text(json_get(r, "seed"))
+    assert_invalid_at(verdict_of(json_set(r, "seed", json_text(text_replace(seed_hex, text_slice(seed_hex, 0, 2), "00")))), 5)
+
+fn test_question_check_on_a_receipt_with_no_question_fails_at_step_six() -> Unit:
+    let r = anchored()
+    let v = verify_anchored_with_question(r, anchored_key(), tsa_pins(), "anything", bytes_from_ints([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]))
+    assert_invalid_at(v, 6)
+
+fn test_dispatch_and_the_unanchored_function_on_an_anchored_receipt() -> Unit:
+    let r = anchored()
+    assert(verify_any(r, anchored_key(), tsa_pins(), false, "", bytes_from_ints([])).result == "verified")
+    assert(verify_receipt(r).result == "invalid")
+    assert(not is_ok(json_get_safe(json_get(r, "request"), "nothing")))
+
+fn test_receipts_that_are_not_receipts_are_invalid() -> Unit:
+    assert_invalid_at(verify_anchored(json_int(3), anchored_key(), tsa_pins()), 1)
+    assert_invalid_at(verify_anchored(json_object(), anchored_key(), tsa_pins()), 1)
+    let r = anchored()
+    assert_invalid_at(verdict_of(json_set(r, "log", json_null())), 1)
+    assert_invalid_at(verdict_of(json_set(r, "receipt", json_text("lotcast/receipt/v2"))), 1)
+
+# ---------------------------------------------------------------- a four-source receipt with a question
+
+fn all_sources() -> Json:
+    return unwrap(json_parse(unwrap(read_text("fixtures/anchored-receipt-all-sources.json"))))
+
+fn all_salt() -> Bytes:
+    return unwrap(hex_decode(text_trim(unwrap(read_text("fixtures/anchored-receipt-all-sources.salt.hex")))))
+
+fn test_four_source_receipt_is_pending_live_for_curby_q_only() -> Unit:
+    let v = verify_anchored(all_sources(), anchored_key(), tsa_pins())
+    assert(v.result == "verified-pending-live")
+    assert(text_contains_word(v.detail, "curby-q"))
+    assert(not text_contains_word(v.detail, "nist-beacon-2"))
+    assert(json_len(json_get(all_sources(), "sources")) == 4)
+
+fn text_contains_word(haystack: Text, needle: Text) -> Bool:
+    return len(text_split(haystack, needle)) > 1
+
+fn test_question_and_salt_open_the_commitment_and_wrong_ones_do_not() -> Unit:
+    let ok = verify_anchored_with_question(all_sources(), anchored_key(), tsa_pins(), "Will this work?", all_salt())
+    assert(ok.result == "verified-pending-live")
+    assert_invalid_at(verify_anchored_with_question(all_sources(), anchored_key(), tsa_pins(), "Will this fail?", all_salt()), 6)
+    assert_invalid_at(verify_anchored_with_question(all_sources(), anchored_key(), tsa_pins(), "Will this work?", bytes_from_ints([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32])), 6)
+
+fn test_inclusion_proof_in_a_larger_log_rejects_a_changed_hash() -> Unit:
+    let r = all_sources()
+    let proof = json_get(json_get(r, "log"), "inclusion")
+    assert(json_len(proof) > 0)
+    var changed = json_push(json_array(), json_text(hex_encode(crypto_sha256(bytes_from_ints([1])))))
+    var i = 1
+    while i < json_len(proof):
+        set changed = json_push(changed, unwrap(json_index_safe(proof, i)))
+        set i = i + 1
+    assert_invalid_at(verify_anchored(nested_set(r, "log", "inclusion", changed), anchored_key(), tsa_pins()), 2)
+
+fn test_curby_q_live_claim_checked_too_early_fails_at_step_four() -> Unit:
+    let r = all_sources()
+    let listed = json_get(r, "sources")
+    let q = unwrap(json_index_safe(listed, 3))
+    let g = json_as_int(json_get(json_get(r, "anchor"), "g"))
+    var early = json_array()
+    var i = 0
+    while i < 3:
+        set early = json_push(early, unwrap(json_index_safe(listed, i)))
+        set i = i + 1
+    set early = json_push(early, json_set(q, "checked_at", json_int(g + 100)))
+    assert_invalid_at(verify_anchored(json_set(r, "sources", early), anchored_key(), tsa_pins()), 4)
+
+fn test_out_of_range_not_before_is_invalid_not_a_crash() -> Unit:
+    let r = anchored()
+    for bad in [-1, 4102444801, 18446744073709551615, 18446744073709551616, 99999999999999999999999]:
+        assert_invalid_at(verdict_of(nested_set(r, "request", "not_before", json_int(bad))), 1)
+    let request = Request("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 18446744073709551616, bytes_from_ints([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]), bytes_from_ints([]))
+    assert(not is_ok(entry_bytes(request)))
+    assert(not is_ok(request_fields_ok(request, true)))
+
+fn test_q_live_covers_an_idle_chain_and_a_stall_mid_round() -> Unit:
+    # t0 = 1000 s, W = 100 s: deadline 1100 s
+    let before = qrow("randomness", 1, 990)
+    assert(q_live(1000, 100, [before], 1100) == "live")
+    assert(q_live(1000, 100, [before], 1099) == "early")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1010)], 1100) == "live")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020)], 5000) == "live")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020), qrow("randomness", 2, 1090)], 1100) == "present")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1010), qrow("randomness", 1, 1020)], 1100) == "live")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1010), qrow("randomness", 2, 1101)], 1200) == "invalid")
+    assert(q_live(1000, 100, [qrow("randomness", 1, 1001)], 1100) == "invalid")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1000)], 1100) == "invalid")
+
+fn test_curby_q_stalled_round_is_absent_live_and_a_complete_one_is_not() -> Unit:
+    let f = fixture("curby-q.json")
+    let t0 = q_ms("before") // 1000 + 1
+    # deadline falls just after the precommit pulse, before the randomness pulse arrived
+    let w = (q_ms("precommit") - t0 * 1000) // 1000 + 1
+    var run = json_array()
+    for key in ["before", "request", "precommit"]:
+        set run = json_push(run, json_get(f, key))
+    var e = json_object()
+    set e = json_set(e, "status", json_text("absent-live"))
+    set e = json_set(e, "chain", json_get(f, "chain"))
+    set e = json_set(e, "pulses", run)
+    let late = json_set(e, "checked_at", json_int(t0 + w))
+    assert(unwrap(check_curby_q_with(t0, w, late)).status == "absent-live")
+    assert(not is_ok(check_curby_q_with(t0, w, json_set(e, "checked_at", json_int(t0 + w - 1)))))
+    # the same run with a longer window includes the randomness pulse's arrival: not absent
+    var complete = json_array()
+    for key in ["before", "request", "precommit", "randomness"]:
+        set complete = json_push(complete, json_get(f, key))
+    let long_w = (q_ms("randomness") - t0 * 1000) // 1000 + 5
+    assert(not is_ok(check_curby_q_with(t0, long_w, json_set(json_set(e, "pulses", complete), "checked_at", json_int(t0 + long_w)))))
+
+# ---------------------------------------------------------------- the anchor is bound to the checkpoint
+
+fn operator_seed() -> Bytes:
+    return unwrap(hex_decode(text_trim(unwrap(read_text("fixtures/anchored-operator-seed.hex")))))
+
+fn fixture_origin() -> Text:
+    return json_as_text(json_get(json_get(anchored(), "log"), "origin"))
+
+fn fixture_entry_hash() -> Bytes:
+    return unwrap(hex_decode(json_as_text(json_get(json_get(anchored(), "log"), "entry_hash"))))
+
+fn test_a_promise_for_another_epoch_fails_at_step_two() -> Unit:
+    let r = anchored()
+    let index = json_as_int(json_get(json_get(r, "log"), "index"))
+    let other = unwrap(make_promise(fixture_origin(), index, fixture_entry_hash(), 99, fixture_origin(), operator_seed()))
+    assert_invalid_at(verdict_of(json_set(r, "promise", json_text(other))), 2)
+    let same = unwrap(make_promise(fixture_origin(), index, fixture_entry_hash(), 1, fixture_origin(), operator_seed()))
+    assert(verdict_of(json_set(r, "promise", json_text(same))).result == "verified")
+
+fn test_epoch_must_be_a_plain_number_in_the_promise() -> Unit:
+    let r = anchored()
+    let index = json_as_int(json_get(json_get(r, "log"), "index"))
+    for bad in ["1abc", "01", "-1", ""]:
+        let text = fixture_origin() + " promise v1\n" + int_to_text(index) + "\n" + hex_encode(fixture_entry_hash()) + "\n" + bad + "\n"
+        let note = unwrap(sign_note(text, fixture_origin(), operator_seed()))
+        assert_invalid_at(verdict_of(json_set(r, "promise", json_text(note))), 1)
+
+fn resigned_checkpoint(extensions: List[Text]) -> Text:
+    let log = json_get(anchored(), "log")
+    let cp = unwrap(parse_checkpoint(unwrap(note_text(json_as_text(json_get(log, "checkpoint"))))))
+    return unwrap(sign_note(checkpoint_text(Checkpoint(cp.origin, cp.size, cp.root, extensions)), fixture_origin(), operator_seed()))
+
+fn test_a_checkpoint_without_one_epoch_line_fails_at_step_two() -> Unit:
+    let r = anchored()
+    assert_invalid_at(verdict_of(nested_set(r, "log", "checkpoint", json_text(resigned_checkpoint([])))), 2)
+    assert_invalid_at(verdict_of(nested_set(r, "log", "checkpoint", json_text(resigned_checkpoint([epoch_extension(1, 5), epoch_extension(1, 6)])))), 2)
+    assert_invalid_at(verdict_of(nested_set(r, "log", "checkpoint", json_text(resigned_checkpoint(["lotcast/epoch x y"])))), 2)
+
+fn test_a_checkpoint_with_a_different_deadline_cannot_reuse_the_tokens() -> Unit:
+    let r = anchored()
+    let log = json_get(r, "log")
+    let cp = unwrap(parse_checkpoint(unwrap(note_text(json_as_text(json_get(log, "checkpoint"))))))
+    let info = unwrap(parse_epoch(cp.extensions))
+    let later = resigned_checkpoint([epoch_extension(info.epoch, info.deadline + 1000)])
+    let moved = nested_set(nested_set(r, "log", "checkpoint", json_text(later)), "anchor", "g", json_int(info.deadline + 1000))
+    assert_invalid_at(verdict_of(moved), 3)
+
+fn test_tokens_must_be_stamped_by_the_deadline() -> Unit:
+    assert(stamped_in_time(1000, 1000))
+    assert(stamped_in_time(999, 1000))
+    assert(not stamped_in_time(1001, 1000))
+
+fn test_cosignatures_must_be_empty_until_witness_keys_exist() -> Unit:
+    let r = anchored()
+    let junk = json_push(json_array(), json_text("junk cosignature"))
+    assert_invalid_at(verdict_of(nested_set(r, "log", "cosignatures", junk)), 2)
+
+fn test_anchor_g_is_the_signed_deadline() -> Unit:
+    let r = anchored()
+    let log = json_get(r, "log")
+    let cp = unwrap(parse_checkpoint(unwrap(note_text(json_as_text(json_get(log, "checkpoint"))))))
+    assert(json_as_int(json_get(json_get(r, "anchor"), "g")) == unwrap(parse_epoch(cp.extensions)).deadline)

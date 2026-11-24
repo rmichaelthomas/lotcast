@@ -1,0 +1,160 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "encode.gu"
+
+# RFC 6962 hashing, with the RFC 9162 proof verification algorithms. SHA-256 throughout: the
+# tlog-tiles and signed-note formats fix it.
+
+pub fn leaf_hash(entry: Bytes) -> Bytes:
+    return crypto_sha256(cat([u8_bytes(0), entry]))
+
+pub fn node_hash(left: Bytes, right: Bytes) -> Bytes:
+    return crypto_sha256(cat([u8_bytes(1), left, right]))
+
+fn empty_root() -> Bytes:
+    return crypto_sha256(bytes_from_ints([]))
+
+# The largest power of two strictly below n (n >= 2).
+fn split(n: Int) -> Int:
+    var k = 1
+    while k * 2 < n:
+        set k = k * 2
+    return k
+
+pub fn leaf_hashes(leaves: List[Bytes]) -> List[Bytes]:
+    var out: List[Bytes] = []
+    for leaf in leaves:
+        set out = list_push(out, leaf_hash(leaf))
+    return out
+
+fn append_all(into: List[Bytes], more: List[Bytes]) -> List[Bytes]:
+    var out = into
+    for item in more:
+        set out = list_push(out, item)
+    return out
+
+# The tree hash of the leaf hashes in [lo, hi).
+pub fn subtree(hashes: List[Bytes], lo: Int, hi: Int) -> Bytes:
+    let n = hi - lo
+    if n == 0:
+        return empty_root()
+    if n == 1:
+        return hashes[lo]
+    let mid = lo + split(n)
+    return node_hash(subtree(hashes, lo, mid), subtree(hashes, mid, hi))
+
+# The root over leaf hashes that are already computed.
+pub fn root_of_hashes(hashes: List[Bytes]) -> Bytes:
+    return subtree(hashes, 0, len(hashes))
+
+pub fn tree_root(leaves: List[Bytes]) -> Bytes:
+    return root_of_hashes(leaf_hashes(leaves))
+
+fn path_in(hashes: List[Bytes], m: Int, lo: Int, hi: Int) -> List[Bytes]:
+    if hi - lo == 1:
+        return []
+    let mid = lo + split(hi - lo)
+    if m < mid:
+        return append_all(path_in(hashes, m, lo, mid), [subtree(hashes, mid, hi)])
+    return append_all(path_in(hashes, m, mid, hi), [subtree(hashes, lo, mid)])
+
+pub fn inclusion_proof_of_hashes(hashes: List[Bytes], index: Int) -> Result[List[Bytes], StdError]:
+    if index < 0 or index >= len(hashes):
+        return Err(std_error("E_LOG_INDEX", "leaf index is outside the tree"))
+    return Ok(path_in(hashes, index, 0, len(hashes)))
+
+pub fn inclusion_proof(leaves: List[Bytes], index: Int) -> Result[List[Bytes], StdError]:
+    return inclusion_proof_of_hashes(leaf_hashes(leaves), index)
+
+# The proof that the first m leaves of [lo, hi) are a prefix. `whole` is true while the old tree
+# is still the complete subtree being walked.
+fn subproof(hashes: List[Bytes], m: Int, lo: Int, hi: Int, whole: Bool) -> List[Bytes]:
+    let n = hi - lo
+    if m == n:
+        if whole:
+            return []
+        return [subtree(hashes, lo, hi)]
+    let k = split(n)
+    if m <= k:
+        return append_all(subproof(hashes, m, lo, lo + k, whole), [subtree(hashes, lo + k, hi)])
+    return append_all(subproof(hashes, m - k, lo + k, hi, false), [subtree(hashes, lo, lo + k)])
+
+pub fn consistency_proof_of_hashes(hashes: List[Bytes], old_size: Int) -> Result[List[Bytes], StdError]:
+    if old_size < 0 or old_size > len(hashes):
+        return Err(std_error("E_LOG_INDEX", "old size is outside the tree"))
+    if old_size == 0 or old_size == len(hashes):
+        return Ok([])
+    return Ok(subproof(hashes, old_size, 0, len(hashes), true))
+
+pub fn consistency_proof(leaves: List[Bytes], old_size: Int) -> Result[List[Bytes], StdError]:
+    return consistency_proof_of_hashes(leaf_hashes(leaves), old_size)
+
+# RFC 9162 section 2.1.3.2.
+pub fn verify_inclusion(leaf: Bytes, index: Int, size: Int, proof: List[Bytes], root: Bytes) -> Bool:
+    if index < 0 or index >= size:
+        return false
+    var fnode = index
+    var snode = size - 1
+    var r = leaf_hash(leaf)
+    for p in proof:
+        if snode == 0:
+            return false
+        if fnode % 2 == 1 or fnode == snode:
+            set r = node_hash(p, r)
+            if fnode % 2 == 0:
+                while fnode % 2 == 0 and fnode != 0:
+                    set fnode = fnode // 2
+                    set snode = snode // 2
+        else:
+            set r = node_hash(r, p)
+        set fnode = fnode // 2
+        set snode = snode // 2
+    return snode == 0 and r == root
+
+fn is_power_of_two(n: Int) -> Bool:
+    var k = 1
+    while k < n:
+        set k = k * 2
+    return k == n
+
+# RFC 9162 section 2.1.4.2.
+pub fn verify_consistency(old_size: Int, old_root: Bytes, new_size: Int, new_root: Bytes, proof: List[Bytes]) -> Bool:
+    if old_size < 0 or old_size > new_size:
+        return false
+    if old_size == new_size:
+        return len(proof) == 0 and old_root == new_root
+    if old_size == 0:
+        return len(proof) == 0
+    var nodes: List[Bytes] = []
+    if is_power_of_two(old_size):
+        set nodes = [old_root]
+    set nodes = append_all(nodes, proof)
+    if len(nodes) == 0:
+        return false
+    var fnode = old_size - 1
+    var snode = new_size - 1
+    while fnode % 2 == 1:
+        set fnode = fnode // 2
+        set snode = snode // 2
+    var fr = nodes[0]
+    var sr = nodes[0]
+    var at = 1
+    while at < len(nodes):
+        let c = nodes[at]
+        if snode == 0:
+            return false
+        if fnode % 2 == 1 or fnode == snode:
+            set fr = node_hash(c, fr)
+            set sr = node_hash(c, sr)
+            if fnode % 2 == 0:
+                while fnode % 2 == 0 and fnode != 0:
+                    set fnode = fnode // 2
+                    set snode = snode // 2
+        else:
+            set sr = node_hash(sr, c)
+        set fnode = fnode // 2
+        set snode = snode // 2
+        set at = at + 1
+    return fr == old_root and sr == new_root and snode == 0

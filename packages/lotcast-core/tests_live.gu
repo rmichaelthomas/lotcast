@@ -1,0 +1,37 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "std:json"
+import "src/lib.gu"
+
+# Network check of the three resolvers against the live beacons. Run:
+#     guion run --allow-clock --allow-http-host beacon.nist.gov --allow-http-host random.colorado.edu tests_live.gu
+# It prints one line per source and exits 0 when every expectation holds.
+
+fn show(label: Text, r: Result[SourceResult, StdError]) -> Text:
+    match r:
+        Ok(s):
+            return label + ": " + s.status + " (" + int_to_text(len(s.value)) + " value bytes)"
+        Err(problem):
+            return label + ": ERROR " + problem.code + " " + problem.message
+
+fn expect(label: Text, r: Result[SourceResult, StdError], want: Text) -> Int:
+    print(show(label, r))
+    match r:
+        Ok(s):
+            if s.status == want:
+                return 0
+            return 1
+        Err(problem):
+            return 1
+
+fn main() -> Int:
+    let now = unix_time_ms() // 1000
+    var failures = 0
+    set failures = failures + expect("nist, t0 = now - 10 min", resolve_nist(now - 600), "present")
+    set failures = failures + expect("curby-rng, t0 = now - 10 min", resolve_curby_rng(now - 600), "present")
+    set failures = failures + expect("curby-q (idle since 2025-08-22), t0 = now - 1 h", resolve_curby_q(now - 3600), "absent-live")
+    # A historical CURBy-Q round: t0 just after the pulse before round 28297 (the last complete round).
+    set failures = failures + expect("curby-q, historical round", resolve_curby_q(1755890859), "present")
+    return failures

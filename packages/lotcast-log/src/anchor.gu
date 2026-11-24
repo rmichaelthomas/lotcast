@@ -5,6 +5,7 @@ import "std:text"
 import "std:json"
 import "std:http"
 import "encode.gu"
+import "note.gu"
 import "tsa_pins.gu"
 
 # RFC 3161 anchoring of checkpoints (spec 3.2). Two TSAs run by different companies each stamp
@@ -101,12 +102,14 @@ pub fn choose_tsas(down_seconds: Map[Text, Int]) -> List[Text]:
         return ["digicert", "freetsa"]
     return ["digicert", "sectigo"]
 
-pub fn checkpoint_digest(note: Text) -> Bytes:
-    return crypto_sha512(text_bytes(note))
+# SHA-512 of the checkpoint's signed text (not the signature lines, so cosignatures added later do
+# not change what was stamped). `note` is the whole signed note.
+pub fn checkpoint_digest(note: Text) -> Result[Bytes, StdError]:
+    return Ok(crypto_sha512(text_bytes(note_text(note)?)))
 
 # Stamps the checkpoint note with each named TSA and returns `{"timestamps": [...], "g": N}`.
 pub fn anchor_checkpoint(note: Text, tsa_ids: List[Text]) -> Result[Json, StdError]:
-    let digest = checkpoint_digest(note)
+    let digest = checkpoint_digest(note)?
     var stamps = json_array()
     var contents: List[TsaToken] = []
     for id in tsa_ids:

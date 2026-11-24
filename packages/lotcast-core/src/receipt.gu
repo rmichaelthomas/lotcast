@@ -21,19 +21,19 @@ pub record Verdict:
     detail: Text
     not_checked: List[Int]
 
-fn receipt_id() -> Text:
+pub fn receipt_id() -> Text:
     return "lotcast/receipt/v1"
 
-fn sampler_id() -> Text:
+pub fn sampler_id() -> Text:
     return "lotcast/sampler/v1"
 
-fn registry_id() -> Text:
+pub fn registry_id() -> Text:
     return "lotcast/registry/v1"
 
-fn receipt_error(code: Text, message: Text) -> StdError:
+pub fn receipt_error(code: Text, message: Text) -> StdError:
     return std_error(code, message)
 
-fn invalid(step: Int, detail: Text) -> Verdict:
+pub fn invalid(step: Int, detail: Text) -> Verdict:
     let none: List[Int] = []
     return Verdict("invalid", step, detail, none)
 
@@ -44,7 +44,7 @@ fn four_sources(drand_randomness: Bytes) -> List[SourceValue]:
     let nothing = bytes_from_ints([])
     return [SourceValue("drand-quicknet", 1, drand_randomness), SourceValue("nist-beacon-2", 2, nothing), SourceValue("curby-rng", 2, nothing), SourceValue("curby-q", 2, nothing)]
 
-fn mode_name(mode: Int) -> Text:
+pub fn mode_name(mode: Int) -> Text:
     if mode == 0:
         return "none"
     if mode == 1:
@@ -55,7 +55,7 @@ fn mode_name(mode: Int) -> Text:
 
 # The fields this version can stand behind, checked by the builder and again by the verifier so that a
 # receipt cannot display a field that nothing checked.
-fn request_fields_ok(request: Request) -> Result[Bool, StdError]:
+pub fn request_fields_ok(request: Request, anchored: Bool) -> Result[Bool, StdError]:
     if len(request.client_nonce) != 32:
         return Err(receipt_error("E_LOTCAST_NONCE", "client_nonce must be 32 bytes"))
     if len(request.subject_key) != 0:
@@ -66,27 +66,12 @@ fn request_fields_ok(request: Request) -> Result[Bool, StdError]:
         return Err(receipt_error("E_LOTCAST_QUESTION", "a hashed question commitment is 64 bytes"))
     if request.question_mode != 0 and request.question_mode != 1:
         return Err(receipt_error("E_LOTCAST_QUESTION", "timelocked questions need the log, which this version does not have"))
-    if request.not_before != 0:
-        return Err(receipt_error("E_LOTCAST_NOT_BEFORE", "scheduled draws need the log, which this version does not have"))
+    if request.not_before != 0 and not anchored:
+        return Err(receipt_error("E_LOTCAST_NOT_BEFORE", "scheduled draws need the log; this receipt has none"))
     return Ok(true)
 
-# ---------------------------------------------------------------- build
-
-pub fn build_receipt(request: Request, t0: Int, drand: DrandRound) -> Result[Json, StdError]:
-    if len(request.sources) != 1 or request.sources[0] != "drand-quicknet":
-        return Err(receipt_error("E_LOTCAST_SOURCE", "this version draws from drand-quicknet only"))
-    let fields = request_fields_ok(request)?
-    let chain = drand_quicknet()
-    if t0 < chain.genesis_time:
-        return Err(receipt_error("E_LOTCAST_ROUND", "t0 is before the quicknet genesis"))
-    if drand.round != drand_round_at(chain, t0) + 1:
-        return Err(receipt_error("E_LOTCAST_ROUND", "the round is not the first quicknet round after t0"))
-    let checked = drand_verify(chain, drand)?
-    if not checked:
-        return Err(receipt_error("E_LOTCAST_ROUND", "the drand round does not verify"))
-    let hash = entry_hash(request)?
-    let s = seed(hash, bytes_from_ints([]), four_sources(drand.randomness))?
-    let outcome = run_method(stream_new(s, 64), request.tradition, request.method, request.options)?
+# The request as the receipt shows it.
+pub fn request_to_json(request: Request) -> Json:
     var options = json_object()
     for key in request.options:
         set options = json_set(options, key, json_text(request.options[key]))
@@ -108,6 +93,26 @@ pub fn build_receipt(request: Request, t0: Int, drand: DrandRound) -> Result[Jso
     set request_json = json_set(request_json, "not_before", json_int(request.not_before))
     set request_json = json_set(request_json, "client_nonce", json_text(hex_encode(request.client_nonce)))
     set request_json = json_set(request_json, "subject", subject)
+    return request_json
+
+# ---------------------------------------------------------------- build
+
+pub fn build_receipt(request: Request, t0: Int, drand: DrandRound) -> Result[Json, StdError]:
+    if len(request.sources) != 1 or request.sources[0] != "drand-quicknet":
+        return Err(receipt_error("E_LOTCAST_SOURCE", "this version draws from drand-quicknet only"))
+    let fields = request_fields_ok(request, false)?
+    let chain = drand_quicknet()
+    if t0 < chain.genesis_time:
+        return Err(receipt_error("E_LOTCAST_ROUND", "t0 is before the quicknet genesis"))
+    if drand.round != drand_round_at(chain, t0) + 1:
+        return Err(receipt_error("E_LOTCAST_ROUND", "the round is not the first quicknet round after t0"))
+    let checked = drand_verify(chain, drand)?
+    if not checked:
+        return Err(receipt_error("E_LOTCAST_ROUND", "the drand round does not verify"))
+    let hash = entry_hash(request)?
+    let s = seed(hash, bytes_from_ints([]), four_sources(drand.randomness))?
+    let outcome = run_method(stream_new(s, 64), request.tradition, request.method, request.options)?
+    let request_json = request_to_json(request)
     var source = json_object()
     set source = json_set(source, "id", json_text("drand-quicknet"))
     set source = json_set(source, "status", json_text("present"))
@@ -136,25 +141,25 @@ pub fn build_receipt(request: Request, t0: Int, drand: DrandRound) -> Result[Jso
 
 # Readers that never stop the program on input we do not control. Each error is the reason text.
 
-fn field_text(j: Json, key: Text) -> Result[Text, Text]:
+pub fn field_text(j: Json, key: Text) -> Result[Text, Text]:
     let r = json_get_text_safe(j, key)
     if not is_ok(r):
         return Err(key + " is missing or not text")
     return Ok(unwrap(r))
 
-fn field_int(j: Json, key: Text) -> Result[Int, Text]:
+pub fn field_int(j: Json, key: Text) -> Result[Int, Text]:
     let r = json_get_int_safe(j, key)
     if not is_ok(r):
         return Err(key + " is missing or not a whole number")
     return Ok(unwrap(r))
 
-fn field_json(j: Json, key: Text) -> Result[Json, Text]:
+pub fn field_json(j: Json, key: Text) -> Result[Json, Text]:
     let r = json_get_safe(j, key)
     if not is_ok(r):
         return Err(key + " is missing")
     return Ok(unwrap(r))
 
-fn field_hex(j: Json, key: Text) -> Result[Bytes, Text]:
+pub fn field_hex(j: Json, key: Text) -> Result[Bytes, Text]:
     let t = field_text(j, key)?
     let decoded = hex_decode(t)
     if not is_ok(decoded):
@@ -162,21 +167,21 @@ fn field_hex(j: Json, key: Text) -> Result[Bytes, Text]:
     return Ok(unwrap(decoded))
 
 # JSON null or hex text -> empty or the bytes.
-fn optional_hex(j: Json, key: Text) -> Result[Bytes, Text]:
+pub fn optional_hex(j: Json, key: Text) -> Result[Bytes, Text]:
     let v = field_json(j, key)?
     if json_is_null(v):
         return Ok(bytes_from_ints([]))
     return field_hex(j, key)
 
-fn is_object(j: Json) -> Bool:
+pub fn is_object(j: Json) -> Bool:
     let t = json_stringify(j)
     return len(t) > 0 and text_slice(t, 0, 1) == "{"
 
-fn is_array(j: Json) -> Bool:
+pub fn is_array(j: Json) -> Bool:
     let t = json_stringify(j)
     return len(t) > 0 and text_slice(t, 0, 1) == "["
 
-fn text_items(j: Json) -> Result[List[Text], Text]:
+pub fn text_items(j: Json) -> Result[List[Text], Text]:
     if not is_array(j):
         return Err("expected a list")
     var out: List[Text] = []
@@ -205,7 +210,7 @@ fn parse_options(tradition: Text, method: Text, options: Json) -> Result[Map[Tex
         return Err("the request carries an option this method does not take")
     return Ok(out)
 
-fn parse_request(receipt: Json) -> Result[Request, Text]:
+pub fn parse_request(receipt: Json) -> Result[Request, Text]:
     let request = field_json(receipt, "request")?
     let tradition = field_text(request, "tradition")?
     let method = field_text(request, "method")?
@@ -301,7 +306,7 @@ fn verify_inner(receipt: Json, check_question: Bool, question: Text, salt: Bytes
             Ok(ignored):
                 return invalid(1, "unreadable request")
     let request = unwrap(parsed)
-    let fields = request_fields_ok(request)
+    let fields = request_fields_ok(request, false)
     if not is_ok(fields):
         match fields:
             Err(reason):

@@ -1,0 +1,442 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:json"
+import "std:text"
+import "pkg:beacons/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+import "encode.gu"
+import "stream.gu"
+import "entry.gu"
+import "seed.gu"
+import "catalogue.gu"
+import "window.gu"
+import "sources.gu"
+import "receipt.gu"
+
+# Anchored receipts (spec 5.2): a receipt whose request is in the operator's signed log, whose
+# checkpoint carries two RFC 3161 timestamps, and whose sources are resolved after the anchor time.
+# `verify_anchored` runs verification steps 1 to 7 offline and is the same code the builder calls on
+# what it just built, so a receipt the builder returns is one the verifier accepts.
+#
+# Steps: 1 entry and promise, 2 checkpoint and inclusion, 3 timestamps and anchor time, 4 sources,
+# 5 seed and outcome, 6 question. Step 7 is the verdict: verified, verified-pending-live (one or
+# more sources absent-live) or invalid.
+
+fn source_ids() -> List[Text]:
+    return ["drand-quicknet", "nist-beacon-2", "curby-rng", "curby-q"]
+
+# The signed text of a promise: the operator's word that this entry will be index `index` in its log.
+pub fn promise_text(origin: Text, index: Int, entry_hash: Bytes, epoch: Int) -> Text:
+    return origin + " promise v1\n" + int_to_text(index) + "\n" + hex_encode(entry_hash) + "\n" + int_to_text(epoch) + "\n"
+
+pub fn make_promise(origin: Text, index: Int, entry_hash: Bytes, epoch: Int, key_name: Text, seed_bytes: Bytes) -> Result[Text, StdError]:
+    return sign_note(promise_text(origin, index, entry_hash, epoch), key_name, seed_bytes)
+
+fn hex_list(j: Json, what: Text) -> Result[List[Bytes], Text]:
+    if not is_array(j):
+        return Err(what + " is not a list")
+    var out: List[Bytes] = []
+    var i = 0
+    while i < json_len(j):
+        let item = json_index_safe(j, i)
+        if not is_ok(item):
+            return Err(what + " has an unreadable item")
+        let t = json_text_safe(unwrap(item))
+        if not is_ok(t):
+            return Err(what + " has an item that is not text")
+        let decoded = hex_decode(unwrap(t))
+        if not is_ok(decoded):
+            return Err(what + " has an item that is not hex")
+        set out = list_push(out, unwrap(decoded))
+        set i = i + 1
+    return Ok(out)
+
+pub record LogInfo:
+    origin: Text
+    index: Int
+    checkpoint: Text
+    checkpoint_text: Text
+    size: Int
+    root: Bytes
+
+# Step 1: the log entry matches the request and the operator's promise names it.
+fn check_entry_and_promise(receipt: Json, log: Json, entry_hash_bytes: Bytes, operator_key: Bytes) -> Result[Bool, Text]:
+    let origin = field_text(log, "origin")?
+    let index = field_int(log, "index")?
+    let recorded = field_hex(log, "entry_hash")?
+    if recorded != entry_hash_bytes:
+        return Err("the log's entry hash is not the hash of this request")
+    let promise = field_text(receipt, "promise")?
+    let signed = verify_note(promise, origin, operator_key)
+    if not is_ok(signed):
+        return Err("the promise is not a well-formed signed note")
+    var text = ""
+    match unwrap(signed):
+        Some(t):
+            set text = t
+        None:
+            return Err("the promise is not signed by the operator key")
+    let lines = text_split(text, "\n")
+    if len(lines) != 5 or lines[4] != "" or lines[0] != origin + " promise v1":
+        return Err("the promise is not in the lotcast promise format")
+    if lines[1] != int_to_text(index) or lines[2] != hex_encode(entry_hash_bytes):
+        return Err("the promise names a different index or entry")
+    if len(lines[3]) == 0 or text_find("0123456789", text_slice(lines[3], 0, 1), 0) < 0:
+        return Err("the promise epoch is not a number")
+    return Ok(true)
+
+# Step 2: the checkpoint is the operator's and holds the entry at the stated index.
+fn check_checkpoint(log: Json, entry: Bytes, operator_key: Bytes) -> Result[LogInfo, Text]:
+    let origin = field_text(log, "origin")?
+    let index = field_int(log, "index")?
+    let note = field_text(log, "checkpoint")?
+    let proof = hex_list(field_json(log, "inclusion")?, "inclusion")?
+    let signed = verify_note(note, origin, operator_key)
+    if not is_ok(signed):
+        return Err("the checkpoint is not a well-formed signed note")
+    var text = ""
+    match unwrap(signed):
+        Some(t):
+            set text = t
+        None:
+            return Err("the checkpoint is not signed by the operator key")
+    let parsed = parse_checkpoint(text)
+    if not is_ok(parsed):
+        return Err("the checkpoint text is malformed")
+    let cp = unwrap(parsed)
+    if cp.origin != origin:
+        return Err("the checkpoint names a different origin")
+    if index < 0 or index >= cp.size:
+        return Err("the entry index is outside the checkpoint")
+    if not verify_inclusion(entry, index, cp.size, proof, cp.root):
+        return Err("the inclusion proof does not match the checkpoint root")
+    let cosignatures = field_json(log, "cosignatures")?
+    if not is_array(cosignatures):
+        return Err("cosignatures is not a list")
+    return Ok(LogInfo(origin, index, note, text, cp.size, cp.root))
+
+fn find_pin(pins: List[TsaPin], id: Text) -> Result[TsaPin, Text]:
+    for pin in pins:
+        if pin.id == id:
+            return Ok(pin)
+    return Err("the receipt names a time-stamp authority this verifier does not pin: " + id)
+
+# The `g` the timestamps prove (two tokens from two different pinned authorities over SHA-512 of the
+# checkpoint text).
+pub fn timestamps_g(log: Json, note: Text, pins: List[TsaPin]) -> Result[Int, Text]:
+    let stamps = field_json(log, "timestamps")?
+    if not is_array(stamps) or json_len(stamps) != 2:
+        return Err("a receipt carries exactly two timestamps")
+    let digest = checkpoint_digest(note)
+    if not is_ok(digest):
+        return Err("the checkpoint cannot be digested")
+    var seen: List[Text] = []
+    var contents: List[TsaToken] = []
+    var i = 0
+    while i < 2:
+        let stamp = unwrap(json_index_safe(stamps, i))
+        let id = field_text(stamp, "tsa")?
+        for earlier in seen:
+            if earlier == id:
+                return Err("the two timestamps come from the same authority")
+        set seen = list_push(seen, id)
+        let pin = find_pin(pins, id)?
+        let raw = base64_decode(field_text(stamp, "token")?)
+        if not is_ok(raw):
+            return Err("a timestamp token is not base64")
+        let checked = tsa_check(pin, unwrap(raw), unwrap(digest))
+        if not is_ok(checked):
+            return Err(id + ": the timestamp does not verify under the pinned issuer for this checkpoint")
+        set contents = list_push(contents, unwrap(checked))
+        set i = i + 1
+    return Ok(anchor_g(contents))
+
+# Step 3: both timestamps verify; the receipt's g and t0 are what they imply.
+fn check_anchor(receipt: Json, log: Json, note: Text, request: Request, pins: List[TsaPin]) -> Result[Int, Text]:
+    let g = timestamps_g(log, note, pins)?
+    let anchor = field_json(receipt, "anchor")?
+    if field_int(anchor, "g")? != g:
+        return Err("anchor.g is not what the timestamps prove")
+    if field_int(anchor, "not_before")? != request.not_before:
+        return Err("anchor.not_before does not match the request")
+    var t0 = g
+    if request.not_before > g:
+        set t0 = request.not_before
+    if field_int(anchor, "t0")? != t0:
+        return Err("anchor.t0 is not the later of g and not_before")
+    return Ok(t0)
+
+fn check_drand_source(source: Json, t0: Int) -> Result[Bytes, Text]:
+    if field_text(source, "status")? != "present":
+        return Err("the drand-quicknet source is not present")
+    let chain = drand_quicknet()
+    if t0 < chain.genesis_time:
+        return Err("t0 is before the quicknet genesis")
+    let round = field_int(source, "round")?
+    let signature = field_hex(source, "signature")?
+    let randomness = field_hex(source, "randomness")?
+    if round != drand_round_at(chain, t0) + 1:
+        return Err("the round is not the first quicknet round after t0")
+    let checked = drand_verify(chain, DrandRound(round, randomness, signature))
+    if not is_ok(checked) or not unwrap(checked):
+        return Err("the drand round's signature or randomness does not verify")
+    return Ok(randomness)
+
+fn wanted(request: Request, id: Text) -> Bool:
+    for r in request.sources:
+        if r == id:
+            return true
+    return false
+
+fn known_source(id: Text) -> Bool:
+    for k in source_ids():
+        if k == id:
+            return true
+    return false
+
+fn sources_listing_problem(request: Request) -> Text:
+    var previous = ""
+    for id in request.sources:
+        if not known_source(id):
+            return "the request names an unknown source: " + id
+        if id <= previous:
+            return "the requested sources are not sorted and unique"
+        set previous = id
+    if not wanted(request, "drand-quicknet"):
+        return "drand-quicknet cannot be left out"
+    return ""
+
+pub record Checked:
+    values: List[SourceValue]
+    live: List[Text]
+
+# Step 4: every requested source proves its status; returns the seed inputs and the absent-live ids.
+fn check_sources(receipt: Json, request: Request, t0: Int) -> Result[Checked, Text]:
+    let listed = field_json(receipt, "sources")?
+    if not is_array(listed):
+        return Err("sources is not a list")
+    var expected: List[Text] = []
+    for id in source_ids():
+        if wanted(request, id):
+            set expected = list_push(expected, id)
+    if json_len(listed) != len(expected):
+        return Err("the receipt's sources are not exactly the requested sources, in seed order")
+    var values: List[SourceValue] = []
+    var live: List[Text] = []
+    var at = 0
+    for id in source_ids():
+        if not wanted(request, id):
+            set values = list_push(values, source_value(not_requested(id)))
+        else:
+            let source = unwrap(json_index_safe(listed, at))
+            set at = at + 1
+            if field_text(source, "id")? != id:
+                return Err("the receipt's sources are not exactly the requested sources, in seed order")
+            if id == "drand-quicknet":
+                set values = list_push(values, SourceValue(id, 1, check_drand_source(source, t0)?))
+            else:
+                var result = check_nist(t0, source)
+                if id == "curby-rng":
+                    set result = check_curby_rng(t0, source)
+                if id == "curby-q":
+                    set result = check_curby_q(t0, source)
+                if not is_ok(result):
+                    match result:
+                        Err(problem):
+                            return Err(id + ": " + problem.message)
+                        Ok(ignored):
+                            return Err(id + ": unreadable")
+                let checked = unwrap(result)
+                set values = list_push(values, source_value(checked))
+                if checked.status == "absent-live":
+                    set live = list_push(live, id)
+    return Ok(Checked(values, live))
+
+fn verify_anchored_inner(receipt: Json, operator_key: Bytes, pins: List[TsaPin], check_question: Bool, question: Text, salt: Bytes) -> Verdict:
+    if not is_object(receipt):
+        return invalid(1, "the receipt is not a JSON object")
+    let rid = field_text(receipt, "receipt")
+    let sid = field_text(receipt, "sampler")
+    let gid = field_text(receipt, "registry")
+    if not is_ok(rid) or unwrap(rid) != receipt_id():
+        return invalid(1, "unknown receipt id")
+    if not is_ok(sid) or unwrap(sid) != sampler_id():
+        return invalid(1, "unknown sampler id")
+    if not is_ok(gid) or unwrap(gid) != registry_id():
+        return invalid(1, "unknown registry id")
+    let parsed = parse_request(receipt)
+    if not is_ok(parsed):
+        match parsed:
+            Err(why):
+                return invalid(1, why)
+            Ok(ignored):
+                return invalid(1, "unreadable request")
+    let request = unwrap(parsed)
+    let fields = request_fields_ok(request, true)
+    if not is_ok(fields):
+        match fields:
+            Err(why):
+                return invalid(1, why.message)
+            Ok(ignored):
+                return invalid(1, "unreadable request")
+    let listing = sources_listing_problem(request)
+    if listing != "":
+        return invalid(1, listing)
+    let entry = entry_bytes(request)
+    if not is_ok(entry):
+        return invalid(1, "the request cannot be encoded")
+    let hash = crypto_sha512(unwrap(entry))
+    let log = field_json(receipt, "log")
+    if not is_ok(log) or not is_object(unwrap(log)):
+        return invalid(1, "log is missing")
+    let promised = check_entry_and_promise(receipt, unwrap(log), hash, operator_key)
+    if not is_ok(promised):
+        match promised:
+            Err(why):
+                return invalid(1, why)
+            Ok(ignored):
+                return invalid(1, "unreadable promise")
+    let info = check_checkpoint(unwrap(log), unwrap(entry), operator_key)
+    if not is_ok(info):
+        match info:
+            Err(why):
+                return invalid(2, why)
+            Ok(ignored):
+                return invalid(2, "unreadable checkpoint")
+    let t0 = check_anchor(receipt, unwrap(log), unwrap(info).checkpoint, request, pins)
+    if not is_ok(t0):
+        match t0:
+            Err(why):
+                return invalid(3, why)
+            Ok(ignored):
+                return invalid(3, "unreadable anchor")
+    let checked = check_sources(receipt, request, unwrap(t0))
+    if not is_ok(checked):
+        match checked:
+            Err(why):
+                return invalid(4, why)
+            Ok(ignored):
+                return invalid(4, "unreadable sources")
+    let checkpoint_hash = crypto_sha512(text_bytes(unwrap(info).checkpoint_text))
+    let s = seed(hash, checkpoint_hash, unwrap(checked).values)
+    if not is_ok(s):
+        return invalid(5, "the seed cannot be built")
+    let claimed = json_get_safe(receipt, "outcome")
+    if not is_ok(claimed):
+        return invalid(5, "the receipt has no outcome")
+    let outcome = run_method(stream_new(unwrap(s), 64), request.tradition, request.method, request.options)
+    if not is_ok(outcome):
+        return invalid(5, "the sampler refuses this request")
+    if json_stringify(unwrap(outcome)) != json_stringify(unwrap(claimed)):
+        return invalid(5, "the outcome does not follow from the seed")
+    let recorded_seed = field_hex(receipt, "seed")
+    if not is_ok(recorded_seed) or unwrap(recorded_seed) != unwrap(s):
+        return invalid(5, "the recorded seed does not match the recomputed seed")
+    let attachments = json_get_safe(receipt, "attachments")
+    if not is_ok(attachments) or not is_array(unwrap(attachments)):
+        return invalid(1, "attachments is not a list")
+    if check_question:
+        if request.question_mode != 1:
+            return invalid(6, "this receipt carries no hashed question to check")
+        if len(salt) != 32:
+            return invalid(6, "the salt must be 32 bytes")
+        if question_commit(question, salt) != request.question_commit:
+            return invalid(6, "the question and salt do not match the commitment")
+    let none: List[Int] = []
+    if len(unwrap(checked).live) > 0:
+        return Verdict("verified-pending-live", 0, "Every check passed offline except the live check of: " + text_join(unwrap(checked).live, ", ") + ". Those sources had no pulse after t0 when the receipt was made; repeat the check against the live chain.", none)
+    return Verdict("verified", 0, "Every step passed offline: the request was in the signed log, stamped by two time-stamp authorities before the beacons' pulses, and the outcome follows from the seed.", none)
+
+pub fn verify_anchored(receipt: Json, operator_key: Bytes, pins: List[TsaPin]) -> Verdict:
+    return verify_anchored_inner(receipt, operator_key, pins, false, "", bytes_from_ints([]))
+
+pub fn verify_anchored_with_question(receipt: Json, operator_key: Bytes, pins: List[TsaPin], question: Text, salt: Bytes) -> Verdict:
+    return verify_anchored_inner(receipt, operator_key, pins, true, question, salt)
+
+# One entry point for scripts: a receipt with no log is checked as an unanchored one.
+pub fn verify_any(receipt: Json, operator_key: Bytes, pins: List[TsaPin], check_question: Bool, question: Text, salt: Bytes) -> Verdict:
+    let log = json_get_safe(receipt, "log")
+    if is_ok(log) and json_is_null(unwrap(log)):
+        if check_question:
+            return verify_receipt_with_question(receipt, question, salt)
+        return verify_receipt(receipt)
+    return verify_anchored_inner(receipt, operator_key, pins, check_question, question, salt)
+
+# Builds an anchored receipt from the pieces the draw flow produced and returns it only if the
+# verifier accepts it. `log_part` is {origin, index, entry_hash, checkpoint, inclusion, cosignatures,
+# timestamps}; `others` are the non-drand sources in seed order (not-requested ones included).
+pub fn build_anchored_receipt(request: Request, log_part: Json, promise: Text, drand: DrandRound, others: List[SourceResult], operator_key: Bytes, pins: List[TsaPin]) -> Result[Json, StdError]:
+    let fields = request_fields_ok(request, true)?
+    let listing = sources_listing_problem(request)
+    if listing != "":
+        return Err(receipt_error("E_LOTCAST_SOURCE", listing))
+    let note_read = field_text(log_part, "checkpoint")
+    if not is_ok(note_read):
+        return Err(receipt_error("E_LOTCAST_RECEIPT", "the log part has no checkpoint"))
+    let note = unwrap(note_read)
+    let g_result = timestamps_g(log_part, note, pins)
+    if not is_ok(g_result):
+        match g_result:
+            Err(why):
+                return Err(receipt_error("E_LOTCAST_ANCHOR", why))
+            Ok(ignored):
+                return Err(receipt_error("E_LOTCAST_ANCHOR", "unreadable timestamps"))
+    let g = unwrap(g_result)
+    var t0 = g
+    if request.not_before > g:
+        set t0 = request.not_before
+    let hash = entry_hash(request)?
+    let checkpoint_text_value = note_text(note)?
+    var values: List[SourceValue] = [SourceValue("drand-quicknet", 1, drand.randomness)]
+    for r in others:
+        set values = list_push(values, source_value(r))
+    let s = seed(hash, crypto_sha512(text_bytes(checkpoint_text_value)), values)?
+    let outcome = run_method(stream_new(s, 64), request.tradition, request.method, request.options)?
+    var drand_source = json_object()
+    set drand_source = json_set(drand_source, "id", json_text("drand-quicknet"))
+    set drand_source = json_set(drand_source, "status", json_text("present"))
+    set drand_source = json_set(drand_source, "round", json_int(drand.round))
+    set drand_source = json_set(drand_source, "signature", json_text(hex_encode(drand.signature)))
+    set drand_source = json_set(drand_source, "randomness", json_text(hex_encode(drand.randomness)))
+    var listed = json_push(json_array(), drand_source)
+    for r in others:
+        if r.status != "not-requested":
+            set listed = json_push(listed, json_set(r.evidence, "id", json_text(r.id)))
+    var log_json = log_part
+    var anchor = json_object()
+    set anchor = json_set(anchor, "g", json_int(g))
+    set anchor = json_set(anchor, "not_before", json_int(request.not_before))
+    set anchor = json_set(anchor, "t0", json_int(t0))
+    var receipt = json_object()
+    set receipt = json_set(receipt, "receipt", json_text(receipt_id()))
+    set receipt = json_set(receipt, "sampler", json_text(sampler_id()))
+    set receipt = json_set(receipt, "registry", json_text(registry_id()))
+    set receipt = json_set(receipt, "request", request_to_json(request))
+    set receipt = json_set(receipt, "promise", json_text(promise))
+    set receipt = json_set(receipt, "log", log_json)
+    set receipt = json_set(receipt, "anchor", anchor)
+    set receipt = json_set(receipt, "sources", listed)
+    set receipt = json_set(receipt, "seed", json_text(hex_encode(s)))
+    set receipt = json_set(receipt, "outcome", outcome)
+    set receipt = json_set(receipt, "attachments", json_array())
+    let verdict = verify_anchored(receipt, operator_key, pins)
+    if verdict.result == "invalid":
+        return Err(receipt_error("E_LOTCAST_SELFCHECK", "the receipt just built fails verification at step " + int_to_text(verdict.failed_step) + ": " + verdict.detail))
+    return Ok(receipt)
+
+# The `log` object of a receipt from the pieces of an append and an anchoring: `anchored` is what
+# anchor_checkpoint returned ({timestamps, g}).
+pub fn make_log_part(origin: Text, index: Int, entry_hash_bytes: Bytes, checkpoint: Text, inclusion: List[Bytes], anchored: Json) -> Json:
+    var proof = json_array()
+    for h in inclusion:
+        set proof = json_push(proof, json_text(hex_encode(h)))
+    var out = json_object()
+    set out = json_set(out, "origin", json_text(origin))
+    set out = json_set(out, "index", json_int(index))
+    set out = json_set(out, "entry_hash", json_text(hex_encode(entry_hash_bytes)))
+    set out = json_set(out, "checkpoint", json_text(checkpoint))
+    set out = json_set(out, "inclusion", proof)
+    set out = json_set(out, "cosignatures", json_array())
+    set out = json_set(out, "timestamps", json_get(anchored, "timestamps"))
+    return out

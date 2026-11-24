@@ -1,5 +1,4 @@
 # lotcast-log: the Merkle log, signed notes, tiles and TSA anchoring.
-pub import "encode.gu"
 pub import "merkle.gu"
 pub import "note.gu"
 pub import "tiles.gu"

@@ -5,6 +5,7 @@ import "std:json"
 import "std:text"
 import "std:process"
 import "pkg:beacons/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
 import "src/lib.gu"
 
 # Draws once from the next real drand quicknet round and prints the receipt (JSON) to stdout.
@@ -19,8 +20,15 @@ import "src/lib.gu"
 # commitment, and the 32-byte salt is printed to stderr as `salt=<hex>`; keep it to open the
 # commitment later (verify_receipt.gu --question TEXT --salt HEX).
 #
-# This version has no log or timestamps, so the receipt is unanchored: it shows the outcome follows
+# Unanchored (the default): there is no log or timestamp, so the receipt shows the outcome follows
 # from a real drand round and the request, not that the request was fixed before that round.
+#
+# Anchored: add --log-dir DIR --key-file FILE (and optionally --origin NAME, --sources a,b,c,
+# --not-before UNIX). The request is appended to the operator's log in DIR, the checkpoint is
+# stamped by two time-stamp authorities, and every requested source is read after the stamped time.
+# The key file holds the operator's 32-byte Ed25519 seed as 64 hex characters (--new-key creates it
+# when absent). The operator's public key is printed to stderr as `operator_key=<hex>`; verifying
+# needs it (verify_receipt.gu --operator-key HEX).
 
 fn fail(message: Text) -> Int:
     eprint(message)
@@ -47,33 +55,190 @@ fn fetch_when_ready(chain: DrandChain, round: Int) -> Result[DrandRound, StdErro
         set attempts = attempts + 1
     return drand_fetch(chain, round)
 
+fn is_known_source(id: Text) -> Bool:
+    for k in ["drand-quicknet", "nist-beacon-2", "curby-rng", "curby-q"]:
+        if k == id:
+            return true
+    return false
+
+# Sources from "a,b,c": drand-quicknet always included, sorted, no repeats, every id known.
+fn parse_sources(arg: Text) -> Result[List[Text], Text]:
+    var ids: List[Text] = ["drand-quicknet"]
+    if arg != "":
+        for id in text_split(arg, ","):
+            if not is_known_source(id):
+                return Err("unknown source: " + id)
+            var seen = false
+            for have in ids:
+                if have == id:
+                    set seen = true
+            if not seen:
+                set ids = list_push(ids, id)
+    return Ok(sort(ids))
+
+fn wait_for_sources(requested: List[Text], t0: Int) -> Result[List[SourceResult], StdError]:
+    var attempts = 0
+    while attempts < 400:
+        let got = resolve_sources(requested, t0)
+        if is_ok(got):
+            return got
+        match got:
+            Err(problem):
+                if problem.code != "E_LOTCAST_PENDING":
+                    return got
+            Ok(ignored):
+                return got
+        sleep_ms(10000)
+        set attempts = attempts + 1
+    return resolve_sources(requested, t0)
+
+fn read_seed_file(path: Text, create: Bool) -> Result[Bytes, Text]:
+    let body = read_text(path)
+    if is_ok(body):
+        let decoded = hex_decode(text_trim(unwrap(body)))
+        if not is_ok(decoded) or len(unwrap(decoded)) != 32:
+            return Err(path + " must hold the 32-byte seed as 64 hex characters")
+        return Ok(unwrap(decoded))
+    if not create:
+        return Err("cannot read " + path + " (use --new-key to create it)")
+    let fresh = crypto_random_bytes(32)
+    if not is_ok(fresh):
+        return Err("no secure randomness available")
+    if not is_ok(write_text_atomic(path, hex_encode(unwrap(fresh)) + "\n")):
+        return Err("cannot write " + path)
+    return Ok(unwrap(fresh))
+
+fn anchored_draw(request: Request, log_dir: Text, key_file: Text, new_key: Bool, origin: Text) -> Int:
+    let seed_read = read_seed_file(key_file, new_key)
+    if not is_ok(seed_read):
+        match seed_read:
+            Err(why):
+                return fail(why)
+            Ok(ignored):
+                return fail("unreadable key file")
+    let operator_seed = unwrap(seed_read)
+    let public = crypto_ed25519_public_key(operator_seed)
+    if not is_ok(public):
+        return fail("the key file does not hold a usable seed")
+    eprint("operator_key=" + hex_encode(unwrap(public)))
+    let opened = log_open(log_dir, origin, origin, unwrap(public))
+    if not is_ok(opened):
+        match opened:
+            Err(problem):
+                return fail(problem.code + ": " + problem.message)
+            Ok(ignored):
+                return fail("cannot open the log")
+    let entry = entry_bytes(request)
+    let hash = entry_hash(request)
+    if not is_ok(entry) or not is_ok(hash):
+        return fail("the request cannot be encoded")
+    let appended = log_append(unwrap(opened), unwrap(entry), origin, operator_seed)
+    if not is_ok(appended):
+        match appended:
+            Err(problem):
+                return fail(problem.code + ": " + problem.message)
+            Ok(ignored):
+                return fail("cannot append to the log")
+    let state = unwrap(appended).state
+    let index = unwrap(appended).indexes[0]
+    let promise = make_promise(origin, index, unwrap(hash), state.size, origin, operator_seed)
+    let proof = log_inclusion(state, index)
+    if not is_ok(promise) or not is_ok(proof):
+        return fail("cannot sign the promise or build the inclusion proof")
+    let anchored = anchor_checkpoint(state.checkpoint, ["digicert", "sectigo"])
+    if not is_ok(anchored):
+        match anchored:
+            Err(problem):
+                return fail(problem.code + ": " + problem.message)
+            Ok(ignored):
+                return fail("cannot anchor the checkpoint")
+    let g = json_as_int(json_get(unwrap(anchored), "g"))
+    var t0 = g
+    if request.not_before > g:
+        set t0 = request.not_before
+    let chain = drand_quicknet()
+    let round = fetch_when_ready(chain, drand_round_at(chain, t0) + 1)
+    if not is_ok(round):
+        return fail("could not fetch the drand round")
+    let others = wait_for_sources(request.sources, t0)
+    if not is_ok(others):
+        match others:
+            Err(problem):
+                return fail(problem.code + ": " + problem.message)
+            Ok(ignored):
+                return fail("cannot resolve the sources")
+    let log_part = make_log_part(origin, index, unwrap(hash), state.checkpoint, unwrap(proof), unwrap(anchored))
+    let receipt = build_anchored_receipt(request, log_part, unwrap(promise), unwrap(round), unwrap(others), unwrap(public), tsa_pins())
+    match receipt:
+        Ok(document):
+            print(json_stringify(document))
+            return 0
+        Err(problem):
+            return fail(problem.code + ": " + problem.message)
+
 fn main() -> Int:
     let all = args()
     if len(all) < 2:
-        return fail("usage: draw.gu TRADITION METHOD [KEY=VALUE ...] [--question TEXT]")
+        return fail("usage: draw.gu TRADITION METHOD [KEY=VALUE ...] [--question TEXT] [--log-dir DIR --key-file FILE [--new-key] [--origin NAME] [--sources a,b] [--not-before UNIX]]")
     let tradition = all[0]
     let method = all[1]
     var options: Map[Text, Text] = {}
     var question = ""
     var asked = false
+    var log_dir = ""
+    var key_file = ""
+    var origin = "lotcast.local/log"
+    var source_arg = ""
+    var not_before = 0
+    var new_key = false
     var i = 2
     while i < len(all):
-        if all[i] == "--question":
-            if i + 1 >= len(all):
-                return fail("--question needs the question text")
-            if asked:
-                return fail("--question given twice")
-            set question = all[i + 1]
-            set asked = true
-            set i = i + 2
-        else:
-            let pair = split_option(all[i])
-            if len(pair) != 2:
-                return fail("unrecognised argument: " + all[i])
-            if map_has(options, pair[0]):
-                return fail("option given twice: " + pair[0])
-            set options = map_set(options, pair[0], pair[1])
+        if all[i] == "--new-key":
+            set new_key = true
             set i = i + 1
+        else:
+            if all[i] == "--question" or all[i] == "--log-dir" or all[i] == "--key-file" or all[i] == "--origin" or all[i] == "--sources" or all[i] == "--not-before":
+                if i + 1 >= len(all):
+                    return fail(all[i] + " needs a value")
+                if all[i] == "--question":
+                    if asked:
+                        return fail("--question given twice")
+                    set question = all[i + 1]
+                    set asked = true
+                if all[i] == "--log-dir":
+                    set log_dir = all[i + 1]
+                if all[i] == "--key-file":
+                    set key_file = all[i + 1]
+                if all[i] == "--origin":
+                    set origin = all[i + 1]
+                if all[i] == "--sources":
+                    set source_arg = all[i + 1]
+                if all[i] == "--not-before":
+                    let parsed = text_parse_int(all[i + 1])
+                    if not is_ok(parsed) or unwrap(parsed) < 0:
+                        return fail("--not-before takes unix seconds")
+                    set not_before = unwrap(parsed)
+                set i = i + 2
+            else:
+                let pair = split_option(all[i])
+                if len(pair) != 2:
+                    return fail("unrecognised argument: " + all[i])
+                if map_has(options, pair[0]):
+                    return fail("option given twice: " + pair[0])
+                set options = map_set(options, pair[0], pair[1])
+                set i = i + 1
+    let anchored = log_dir != "" or key_file != ""
+    if anchored and (log_dir == "" or key_file == ""):
+        return fail("--log-dir and --key-file go together")
+    if not anchored and (source_arg != "" or not_before != 0 or new_key):
+        return fail("--sources, --not-before and --new-key need --log-dir and --key-file")
+    let listed = parse_sources(source_arg)
+    if not is_ok(listed):
+        match listed:
+            Err(why):
+                return fail(why)
+            Ok(ignored):
+                return fail("unreadable sources")
     # Check the method and its options before waiting on the network, so a typo is reported at once.
     let trial = run_method(stream_new(bytes_from_ints([0]), 64), tradition, method, options)
     if not is_ok(trial):
@@ -91,6 +256,11 @@ fn main() -> Int:
     if asked:
         set mode = 1
         set commit = question_commit(question, unwrap(salt))
+    if anchored:
+        let request = Request(tradition, method, options, mode, commit, unwrap(listed), not_before, unwrap(nonce), bytes_from_ints([]))
+        if asked:
+            eprint("salt=" + hex_encode(unwrap(salt)))
+        return anchored_draw(request, log_dir, key_file, new_key, origin)
     let request = Request(tradition, method, options, mode, commit, ["drand-quicknet"], 0, unwrap(nonce), bytes_from_ints([]))
     let chain = drand_quicknet()
     let t0 = unix_time_ms() // 1000

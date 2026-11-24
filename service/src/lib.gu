@@ -7,6 +7,7 @@ pub import "stamper.gu"
 pub import "watch.gu"
 pub import "api.gu"
 pub import "limits.gu"
+pub import "pins.gu"
 pub import "loops.gu"
 pub import "run.gu"
 

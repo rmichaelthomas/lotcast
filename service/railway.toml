@@ -1,0 +1,9 @@
+# Railway: build the image from the repository root and keep the log on a volume at /data.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "service/Dockerfile"
+
+[deploy]
+healthcheckPath = "/v1/traditions"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"

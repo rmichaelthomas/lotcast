@@ -12,6 +12,7 @@ import "store.gu"
 import "epoch.gu"
 import "stamper.gu"
 import "watch.gu"
+import "pins.gu"
 
 # The network side of the service: the real stamping, beacon and receipt functions the loops pass to
 # the epoch writer, the stamper and the watcher, and the loops themselves. A loop stops when
@@ -95,9 +96,20 @@ pub fn stamper_loop(store: Store, max_ticks: Int) -> Int:
         sleep_ms(1000)
     return ticks
 
+# One line per pinned certificate that is expiring, expired or unreadable.
+fn alert_pins(now: Int) -> Unit:
+    let report = pin_report(now)
+    let pins = json_get(report, "pins")
+    for i in range(0, json_len(pins)):
+        let p = unwrap(json_index_safe(pins, i))
+        let status = json_as_text(json_get(p, "status"))
+        if status != "ok":
+            eprint("ALERT: pinned certificate " + json_as_text(json_get(p, "name")) + " is " + status + "; replace the pin (docs/operations.md)")
+
 pub fn watch_loop(store: Store, cfg: Config, operator_key: Bytes, max_ticks: Int) -> Int:
     var ticks = 0
     var last_snapshot = 0
+    var last_alert_day = -1
     while not stopped(store) and (max_ticks == 0 or ticks < max_ticks):
         let now = now_seconds()
         let done = watch_once(store, cfg.origin, operator_key, now, real_drand, real_source, real_build)
@@ -110,6 +122,9 @@ pub fn watch_loop(store: Store, cfg: Config, operator_key: Bytes, max_ticks: Int
         if now - last_snapshot >= 60:
             let saved = store_put_json(store, "state/sources.json", sources_snapshot(now))
             set last_snapshot = now
+        if now // 86400 != last_alert_day:
+            alert_pins(now)
+            set last_alert_day = now // 86400
         set ticks = ticks + 1
         sleep_ms(2000)
     return ticks
@@ -192,4 +207,5 @@ pub fn sources_snapshot(now: Int) -> Json:
     set listed = json_push(listed, nist_entry(now))
     set listed = json_push(listed, twine_entry("curby-rng", curby_rng_chain(), 60, now))
     set listed = json_push(listed, twine_entry("curby-q", curby_q_chain(), 630, now))
-    return json_set(json_set(json_object(), "sources", listed), "checked_at", json_int(now))
+    var out = json_set(json_set(json_object(), "sources", listed), "checked_at", json_int(now))
+    return json_set(out, "pins", pin_report(now))

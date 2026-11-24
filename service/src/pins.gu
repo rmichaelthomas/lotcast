@@ -1,0 +1,53 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:json"
+import "std:text"
+import "pkg:beacons/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+
+# Pinned certificates and when they expire (spec 9): the time-stamp authorities' issuers and the
+# NIST beacon's issuers. A pin that is close to expiry, or already past it, is reported by
+# GET /v1/sources and logged once a day by the watcher, so it is replaced before verification of
+# new receipts starts to fail.
+
+pub fn classify_pin(days_left: Int) -> Text:
+    if days_left < 0:
+        return "expired"
+    if days_left < 30:
+        return "expiring"
+    return "ok"
+
+pub fn pin_entry(name: Text, der: Bytes, now: Int) -> Json:
+    var e = json_set(json_object(), "name", json_text(name))
+    let validity = crypto_x509_validity(der)
+    if not is_ok(validity) or len(unwrap(validity)) != 2:
+        return json_set(e, "status", json_text("unreadable"))
+    let not_after = unwrap(validity)[1]
+    let days = (not_after - now) // 86400
+    set e = json_set(e, "not_after", json_int(not_after))
+    set e = json_set(e, "days_left", json_int(days))
+    return json_set(e, "status", json_text(classify_pin(days)))
+
+fn pem_entry(name: Text, pem: Text, now: Int) -> Json:
+    let der = crypto_pem_decode(pem)
+    if not is_ok(der):
+        return json_set(json_set(json_object(), "name", json_text(name)), "status", json_text("unreadable"))
+    return pin_entry(name, unwrap(der), now)
+
+pub fn pin_report(now: Int) -> Json:
+    var pins = json_array()
+    for pin in tsa_pins():
+        let der = base64_decode(pin.issuer)
+        if is_ok(der):
+            set pins = json_push(pins, pin_entry("tsa-" + pin.id, unwrap(der), now))
+        else:
+            set pins = json_push(pins, json_set(json_set(json_object(), "name", json_text("tsa-" + pin.id)), "status", json_text("unreadable")))
+    set pins = json_push(pins, pem_entry("nist-issuer", nist_pinned_issuer_pem(), now))
+    set pins = json_push(pins, pem_entry("nist-legacy-issuer", nist_legacy_issuer_pem(), now))
+    set pins = json_push(pins, pem_entry("nist-chain1-issuer", nist_chain1_global_ca_g2_issuer_pem(), now))
+    var all_ok = true
+    for i in range(0, json_len(pins)):
+        if json_as_text(json_get(unwrap(json_index_safe(pins, i)), "status")) != "ok":
+            set all_ok = false
+    return json_set(json_set(json_set(json_object(), "pins", pins), "checked_at", json_int(now)), "all_ok", json_bool(all_ok))

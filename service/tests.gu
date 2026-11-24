@@ -792,3 +792,36 @@ fn test_the_anchor_is_published_beside_the_checkpoint() -> Unit:
     let public = unwrap(json_parse(unwrap(read_text(store.root + "/log/anchor/359111200.json"))))
     assert(json_as_bool(json_get(public, "void")) == false)
     assert(json_len(json_get(public, "timestamps")) == 2)
+
+# ---------------------------------------------------------------- pin report
+
+fn test_a_pin_expiring_in_29_days_is_flagged_and_one_in_31_is_not() -> Unit:
+    assert(classify_pin(29) == "expiring")
+    assert(classify_pin(30) == "ok")
+    assert(classify_pin(31) == "ok")
+    assert(classify_pin(0) == "expiring")
+    assert(classify_pin(-1) == "expired")
+
+fn test_pin_report_lists_every_pinned_certificate_with_its_days_left() -> Unit:
+    let report = pin_report(1795556000)
+    let pins = json_get(report, "pins")
+    assert(json_len(pins) >= 6)
+    for i in range(0, json_len(pins)):
+        let p = unwrap(json_index_safe(pins, i))
+        assert(json_as_text(json_get(p, "status")) == "ok")
+        assert(json_as_int(json_get(p, "days_left")) > 30)
+    assert(json_as_bool(json_get(report, "all_ok")))
+
+fn test_pin_report_fails_when_a_pin_has_expired() -> Unit:
+    let report = pin_report(2300000000)
+    assert(json_as_bool(json_get(report, "all_ok")) == false)
+    var expired = 0
+    let pins = json_get(report, "pins")
+    for i in range(0, json_len(pins)):
+        if json_as_text(json_get(unwrap(json_index_safe(pins, i)), "status")) == "expired":
+            set expired = expired + 1
+    assert(expired > 0)
+
+fn test_pin_entry_reports_a_certificate_that_cannot_be_read() -> Unit:
+    let e = pin_entry("broken", bytes_from_ints([1, 2, 3]), 1795556000)
+    assert(json_as_text(json_get(e, "status")) == "unreadable")

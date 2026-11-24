@@ -8,7 +8,7 @@ import "src/lib.gu"
 # Re-checks a receipt offline: reads the file, recomputes the entry, the log inclusion, the
 # timestamps, the seed and the outcome, and checks every beacon pulse it carries.
 #
-#   guion run verify_receipt.gu RECEIPT.json [--operator-key HEX] [--question TEXT --salt HEX]
+#   guion run verify_receipt.gu RECEIPT.json [--operator-key HEX] [--question TEXT --salt HEX] [--live]
 #
 # A receipt with a log needs the operator's public key (draw.gu prints it as operator_key=HEX). A
 # receipt with no log is checked as before and is at best verified-unanchored.
@@ -16,10 +16,15 @@ import "src/lib.gu"
 # Prints the result on the first line: verified, verified-pending-live, verified-unanchored or
 # invalid. For invalid it names the failing step (1 entry and promise, 2 checkpoint and inclusion,
 # 3 timestamps, 4 sources, 5 outcome, 6 question) and why; otherwise it says what the result covers.
-# Exit 0 when verified in any of the three ways, 1 when invalid, 2 when the input cannot be read.
+# A verified-pending-live receipt is not fully checked until the live half is done: with --live (needs
+# --allow-clock and --allow-http-host for the beacons) the absent-live sources are asked again against
+# the live chains; a source that now has a pulse for this draw makes the receipt invalid at step 4.
+# Exit 0 when verified (verified, verified-unanchored, or pending-live confirmed with --live), 1 when
+# invalid, 2 when the input cannot be read, 3 when the live check is still owed (no --live, or a window
+# that has not closed yet).
 
 fn usage() -> Int:
-    eprint("usage: verify_receipt.gu RECEIPT.json [--operator-key HEX] [--question TEXT --salt HEX]")
+    eprint("usage: verify_receipt.gu RECEIPT.json [--operator-key HEX] [--question TEXT --salt HEX] [--live]")
     return 2
 
 fn main() -> Int:
@@ -31,8 +36,13 @@ fn main() -> Int:
     var salt = bytes_from_ints([])
     var asked = false
     var have_salt = false
+    var live = false
     var i = 1
     while i < len(all):
+        if all[i] == "--live":
+            set live = true
+            set i = i + 1
+            continue
         if i + 1 >= len(all):
             return usage()
         if all[i] == "--operator-key":
@@ -71,6 +81,28 @@ fn main() -> Int:
         eprint("this receipt has a log: pass the operator's public key with --operator-key HEX")
         return 2
     let verdict = verify_any(unwrap(parsed), operator_key, tsa_pins(), asked, question, salt)
+    if verdict.result == "verified-pending-live":
+        if not live:
+            print(verdict.result)
+            print(verdict.detail)
+            print("NOT fully checked: rerun with --live to ask the live chains, or treat this receipt as unconfirmed.")
+            return 3
+        let confirmed = live_recheck(unwrap(parsed))
+        if not is_ok(confirmed):
+            match confirmed:
+                Err(problem):
+                    if problem.code == "E_LOTCAST_PENDING":
+                        print(verdict.result)
+                        print(problem.message)
+                        return 3
+                    print("invalid")
+                    print("failed step 4: " + problem.message)
+                    return 1
+                Ok(ignored):
+                    return 2
+        print("verified")
+        print("Every step passed offline, and the live chains confirm that these sources still have no pulse for this draw: " + text_join(unwrap(confirmed), ", ") + ".")
+        return 0
     print(verdict.result)
     if verdict.result == "invalid":
         print("failed step " + int_to_text(verdict.failed_step) + ": " + verdict.detail)

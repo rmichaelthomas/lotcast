@@ -143,3 +143,11 @@
 ## Out of scope for this plan (next plan, by dependency)
 
 Witness cosignature submission and mirror audit; the HTTP service, source watcher, epoch loop and draw scheduler; the MCP server and CLI binary; the browser verifier; tlock question mode beyond verifying an opened ciphertext; tradition audits; the Rust reference stream and batteries. The verifier already accepts witness cosignatures that are present, so they need no receipt change later.
+
+## Amendments after the whole-branch review
+
+The review found that deriving `g` from the timestamp tokens lets an operator pick the outcome (re-stamping one checkpoint, or presenting a later one, and choosing the token pair). The build changed, and Hunchery PR #57 changed spec 3.2 to match:
+
+- A checkpoint carries a signed `lotcast/epoch <epoch> <deadline>` line; `anchor.g` is the deadline; each token must prove the checkpoint existed by it (`proven_by_seconds(tokens) <= deadline`); the promise's epoch must equal the checkpoint's.
+- `anchor_g` became `proven_by_seconds`; `anchor_checkpoint` returns `proven_by` instead of `g`; `log_append*` take the checkpoint's extension lines; the verifier requires `cosignatures` to be an empty list until it has witness keys.
+- Also fixed: `not_before` is bounded (0 to 4102444800) and an out-of-range value is `invalid`, not a crash; a log with tiles but no checkpoint fails closed; the log has a writer lock and refuses a stale writer; a CURBy-Q chain that stalls mid-round ends as absent-live; NIST pulses are found by binary search; transient fetch errors are retried and permanent ones are not; `verify_receipt.gu` exits 3 for pending-live and checks the live chains with `--live`; the builder's self-check runs on the receipt after a JSON round trip; draw.gu falls back to FreeTSA when an authority fails.

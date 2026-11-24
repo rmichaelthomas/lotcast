@@ -39,6 +39,8 @@ pub fn canonical_options(options: Map[Text, Text]) -> Result[Text, StdError]:
     return Ok(text_join(lines, "\n"))
 
 pub fn entry_bytes(r: Request) -> Result[Bytes, StdError]:
+    if r.not_before < 0 or r.not_before > 18446744073709551615:
+        return Err(entry_error("not_before does not fit the entry's 64-bit field"))
     let options = canonical_options(r.options)?
     let sources = text_join(sort(r.sources), ",")
     return Ok(cat([text_bytes("lotcast/entry/v1"), lp(text_bytes(r.tradition)), lp(text_bytes(r.method)), lp(text_bytes(options)), u8_bytes(r.question_mode), lp(r.question_commit), lp(text_bytes(sources)), u64_bytes(r.not_before), lp(r.client_nonce), lp(r.subject_key)]))

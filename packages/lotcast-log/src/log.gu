@@ -24,6 +24,7 @@ pub record LogState:
 pub record Appended:
     state: LogState
     indexes: List[Int]
+    added: Int
 
 fn log_error(message: Text) -> StdError:
     return std_error("E_LOG", message)
@@ -92,6 +93,8 @@ fn utf8(b: Bytes) -> Result[Text, StdError]:
 pub fn log_open(dir: Text, origin: Text, key_name: Text, public_key: Bytes) -> Result[LogState, StdError]:
     let made = make_dirs(dir)?
     if not has_file(dir, "checkpoint"):
+        if has_file(dir, "tile"):
+            return Err(log_error("the log has tiles but no checkpoint: restoring the checkpoint is needed before appending, or the indexes would be reused"))
         return Ok(empty_state(dir, origin))
     let note = utf8(get_file(dir, "checkpoint")?)?
     let signed = verify_note(note, key_name, public_key)?
@@ -144,7 +147,7 @@ fn find_index(hashes: List[Bytes], target: Bytes) -> Int:
 
 # Appends the entries that are not already in the log (a repeated entry keeps its first index),
 # writes the changed tiles and bundles, then signs and writes the new checkpoint last.
-pub fn log_append_many(state: LogState, new_entries: List[Bytes], key_name: Text, seed: Bytes) -> Result[Appended, StdError]:
+pub fn log_append_many(state: LogState, new_entries: List[Bytes], key_name: Text, seed: Bytes, extensions: List[Text]) -> Result[Appended, StdError]:
     var entries = state.entries
     var hashes = state.hashes
     var indexes: List[Int] = []
@@ -158,16 +161,40 @@ pub fn log_append_many(state: LogState, new_entries: List[Bytes], key_name: Text
             set entries = list_push(entries, e)
             set hashes = list_push(hashes, h)
     if len(hashes) == state.size:
-        return Ok(Appended(state, indexes))
+        return Ok(Appended(state, indexes, 0))
+    let on_disk = disk_checkpoint(state.dir)?
+    if on_disk != state.checkpoint:
+        return Err(log_error("another writer changed this log since it was opened"))
     let tiles_done = write_tiles(state.dir, hashes, state.size)?
     let bundles_done = write_bundles(state.dir, entries, state.size)?
-    let cp = Checkpoint(state.origin, len(hashes), root_of_hashes(hashes), [])
+    let cp = Checkpoint(state.origin, len(hashes), root_of_hashes(hashes), extensions)
     let note = sign_note(checkpoint_text(cp), key_name, seed)?
     let saved = put_file(state.dir, "checkpoint", text_bytes(note))?
-    return Ok(Appended(LogState(state.dir, state.origin, len(hashes), entries, hashes, note), indexes))
+    return Ok(Appended(LogState(state.dir, state.origin, len(hashes), entries, hashes, note), indexes, len(hashes) - state.size))
 
-pub fn log_append(state: LogState, entry: Bytes, key_name: Text, seed: Bytes) -> Result[Appended, StdError]:
-    return log_append_many(state, [entry], key_name, seed)
+pub fn log_append(state: LogState, entry: Bytes, key_name: Text, seed: Bytes, extensions: List[Text]) -> Result[Appended, StdError]:
+    return log_append_many(state, [entry], key_name, seed, extensions)
+
+# The checkpoint note on disk, or "" when the log has none yet.
+fn disk_checkpoint(dir: Text) -> Result[Text, StdError]:
+    if not has_file(dir, "checkpoint"):
+        return Ok("")
+    return utf8(get_file(dir, "checkpoint")?)
+
+# An exclusive writer lock: a directory that only one process can create. Hold it from opening the
+# log until the append is written, and release it afterwards. A crashed writer leaves it behind;
+# the error says where, and removing it by hand is safe once no draw is running.
+pub fn log_lock(dir: Text) -> Result[Bool, StdError]:
+    let made = make_dirs(dir)?
+    let path = dir + "/lock"
+    if has_file(dir, "lock"):
+        return Err(log_error("the log is locked by another draw (remove " + path + " if none is running)"))
+    if not is_ok(fs_make_dir(path)):
+        return Err(log_error("cannot take the log lock at " + path))
+    return Ok(true)
+
+pub fn log_unlock(dir: Text) -> Bool:
+    return is_ok(fs_remove(dir + "/lock"))
 
 pub fn log_inclusion(state: LogState, index: Int) -> Result[List[Bytes], StdError]:
     return inclusion_proof_of_hashes(state.hashes, index)

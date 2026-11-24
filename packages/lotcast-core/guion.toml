@@ -8,7 +8,10 @@ network = [
 ]
 
 [approved-capabilities.lotcast-log]
-files = ["read", "write"]
+files = [
+    "read",
+    "write",
+]
 network = [
     "timestamp.digicert.com",
     "timestamp.sectigo.com",
@@ -17,9 +20,7 @@ network = [
 
 [capabilities]
 clock = true
-network = [
-    "beacon.nist.gov",
-]
+network = ["beacon.nist.gov"]
 
 [clock]
 enabled = true

@@ -1065,3 +1065,109 @@ fn test_curby_q_live_claim_checked_too_early_fails_at_step_four() -> Unit:
         set i = i + 1
     set early = json_push(early, json_set(q, "checked_at", json_int(g + 100)))
     assert_invalid_at(verify_anchored(json_set(r, "sources", early), anchored_key(), tsa_pins()), 4)
+
+fn test_out_of_range_not_before_is_invalid_not_a_crash() -> Unit:
+    let r = anchored()
+    for bad in [-1, 4102444801, 18446744073709551615, 18446744073709551616, 99999999999999999999999]:
+        assert_invalid_at(verdict_of(nested_set(r, "request", "not_before", json_int(bad))), 1)
+    let request = Request("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 18446744073709551616, bytes_from_ints([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]), bytes_from_ints([]))
+    assert(not is_ok(entry_bytes(request)))
+    assert(not is_ok(request_fields_ok(request, true)))
+
+fn test_q_live_covers_an_idle_chain_and_a_stall_mid_round() -> Unit:
+    # t0 = 1000 s, W = 100 s: deadline 1100 s
+    let before = qrow("randomness", 1, 990)
+    assert(q_live(1000, 100, [before], 1100) == "live")
+    assert(q_live(1000, 100, [before], 1099) == "early")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1010)], 1100) == "live")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020)], 5000) == "live")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020), qrow("randomness", 2, 1090)], 1100) == "present")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1010), qrow("randomness", 1, 1020)], 1100) == "live")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1010), qrow("randomness", 2, 1101)], 1200) == "invalid")
+    assert(q_live(1000, 100, [qrow("randomness", 1, 1001)], 1100) == "invalid")
+    assert(q_live(1000, 100, [before, qrow("request", 2, 1000)], 1100) == "invalid")
+
+fn test_curby_q_stalled_round_is_absent_live_and_a_complete_one_is_not() -> Unit:
+    let f = fixture("curby-q.json")
+    let t0 = q_ms("before") // 1000 + 1
+    # deadline falls just after the precommit pulse, before the randomness pulse arrived
+    let w = (q_ms("precommit") - t0 * 1000) // 1000 + 1
+    var run = json_array()
+    for key in ["before", "request", "precommit"]:
+        set run = json_push(run, json_get(f, key))
+    var e = json_object()
+    set e = json_set(e, "status", json_text("absent-live"))
+    set e = json_set(e, "chain", json_get(f, "chain"))
+    set e = json_set(e, "pulses", run)
+    let late = json_set(e, "checked_at", json_int(t0 + w))
+    assert(unwrap(check_curby_q_with(t0, w, late)).status == "absent-live")
+    assert(not is_ok(check_curby_q_with(t0, w, json_set(e, "checked_at", json_int(t0 + w - 1)))))
+    # the same run with a longer window includes the randomness pulse's arrival: not absent
+    var complete = json_array()
+    for key in ["before", "request", "precommit", "randomness"]:
+        set complete = json_push(complete, json_get(f, key))
+    let long_w = (q_ms("randomness") - t0 * 1000) // 1000 + 5
+    assert(not is_ok(check_curby_q_with(t0, long_w, json_set(json_set(e, "pulses", complete), "checked_at", json_int(t0 + long_w)))))
+
+# ---------------------------------------------------------------- the anchor is bound to the checkpoint
+
+fn operator_seed() -> Bytes:
+    return unwrap(hex_decode(text_trim(unwrap(read_text("fixtures/anchored-operator-seed.hex")))))
+
+fn fixture_origin() -> Text:
+    return json_as_text(json_get(json_get(anchored(), "log"), "origin"))
+
+fn fixture_entry_hash() -> Bytes:
+    return unwrap(hex_decode(json_as_text(json_get(json_get(anchored(), "log"), "entry_hash"))))
+
+fn test_a_promise_for_another_epoch_fails_at_step_two() -> Unit:
+    let r = anchored()
+    let index = json_as_int(json_get(json_get(r, "log"), "index"))
+    let other = unwrap(make_promise(fixture_origin(), index, fixture_entry_hash(), 99, fixture_origin(), operator_seed()))
+    assert_invalid_at(verdict_of(json_set(r, "promise", json_text(other))), 2)
+    let same = unwrap(make_promise(fixture_origin(), index, fixture_entry_hash(), 1, fixture_origin(), operator_seed()))
+    assert(verdict_of(json_set(r, "promise", json_text(same))).result == "verified")
+
+fn test_epoch_must_be_a_plain_number_in_the_promise() -> Unit:
+    let r = anchored()
+    let index = json_as_int(json_get(json_get(r, "log"), "index"))
+    for bad in ["1abc", "01", "-1", ""]:
+        let text = fixture_origin() + " promise v1\n" + int_to_text(index) + "\n" + hex_encode(fixture_entry_hash()) + "\n" + bad + "\n"
+        let note = unwrap(sign_note(text, fixture_origin(), operator_seed()))
+        assert_invalid_at(verdict_of(json_set(r, "promise", json_text(note))), 1)
+
+fn resigned_checkpoint(extensions: List[Text]) -> Text:
+    let log = json_get(anchored(), "log")
+    let cp = unwrap(parse_checkpoint(unwrap(note_text(json_as_text(json_get(log, "checkpoint"))))))
+    return unwrap(sign_note(checkpoint_text(Checkpoint(cp.origin, cp.size, cp.root, extensions)), fixture_origin(), operator_seed()))
+
+fn test_a_checkpoint_without_one_epoch_line_fails_at_step_two() -> Unit:
+    let r = anchored()
+    assert_invalid_at(verdict_of(nested_set(r, "log", "checkpoint", json_text(resigned_checkpoint([])))), 2)
+    assert_invalid_at(verdict_of(nested_set(r, "log", "checkpoint", json_text(resigned_checkpoint([epoch_extension(1, 5), epoch_extension(1, 6)])))), 2)
+    assert_invalid_at(verdict_of(nested_set(r, "log", "checkpoint", json_text(resigned_checkpoint(["lotcast/epoch x y"])))), 2)
+
+fn test_a_checkpoint_with_a_different_deadline_cannot_reuse_the_tokens() -> Unit:
+    let r = anchored()
+    let log = json_get(r, "log")
+    let cp = unwrap(parse_checkpoint(unwrap(note_text(json_as_text(json_get(log, "checkpoint"))))))
+    let info = unwrap(parse_epoch(cp.extensions))
+    let later = resigned_checkpoint([epoch_extension(info.epoch, info.deadline + 1000)])
+    let moved = nested_set(nested_set(r, "log", "checkpoint", json_text(later)), "anchor", "g", json_int(info.deadline + 1000))
+    assert_invalid_at(verdict_of(moved), 3)
+
+fn test_tokens_must_be_stamped_by_the_deadline() -> Unit:
+    assert(stamped_in_time(1000, 1000))
+    assert(stamped_in_time(999, 1000))
+    assert(not stamped_in_time(1001, 1000))
+
+fn test_cosignatures_must_be_empty_until_witness_keys_exist() -> Unit:
+    let r = anchored()
+    let junk = json_push(json_array(), json_text("junk cosignature"))
+    assert_invalid_at(verdict_of(nested_set(r, "log", "cosignatures", junk)), 2)
+
+fn test_anchor_g_is_the_signed_deadline() -> Unit:
+    let r = anchored()
+    let log = json_get(r, "log")
+    let cp = unwrap(parse_checkpoint(unwrap(note_text(json_as_text(json_get(log, "checkpoint"))))))
+    assert(json_as_int(json_get(json_get(r, "anchor"), "g")) == unwrap(parse_epoch(cp.extensions)).deadline)

@@ -66,6 +66,8 @@ pub fn request_fields_ok(request: Request, anchored: Bool) -> Result[Bool, StdEr
         return Err(receipt_error("E_LOTCAST_QUESTION", "a hashed question commitment is 64 bytes"))
     if request.question_mode != 0 and request.question_mode != 1:
         return Err(receipt_error("E_LOTCAST_QUESTION", "timelocked questions need the log, which this version does not have"))
+    if request.not_before < 0 or request.not_before > 4102444800:
+        return Err(receipt_error("E_LOTCAST_NOT_BEFORE", "not_before is unix seconds from 0 to 4102444800 (the year 2100)"))
     if request.not_before != 0 and not anchored:
         return Err(receipt_error("E_LOTCAST_NOT_BEFORE", "scheduled draws need the log; this receipt has none"))
     return Ok(true)

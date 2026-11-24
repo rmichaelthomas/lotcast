@@ -13,13 +13,13 @@ Two packages, both needing Guion 0.8.0 or later (the `beacons` dependency instal
 
 ### What an anchored receipt proves
 
-A draw made with a log (`draw.gu --log-dir ... --key-file ...`) puts the request in the operator's signed log, has two time-stamp authorities stamp the log checkpoint, and reads every requested beacon's first pulse *after* that stamped time. The receipt then proves:
+A draw made with a log (`draw.gu --log-dir ... --key-file ...`) puts the request in the operator's signed log, has two time-stamp authorities stamp the log checkpoint, and reads every requested beacon's first pulse *after* the deadline the operator signed into that checkpoint (`lotcast/epoch <epoch> <deadline>`). Both timestamps must prove the checkpoint existed by the deadline, and the entry's promise must name that epoch, so the operator cannot re-stamp or swap checkpoints to move the anchor time. The receipt then proves:
 
 1. the request was in the operator's log before any of the beacon pulses it uses existed (the timestamps), so the operator could not try requests until the outcome suited;
 2. each beacon pulse is the first one after that time, or the beacon had none in its window (and what that means is in the receipt);
 3. the outcome follows from the request, the checkpoint and those values, by a sampler anyone can re-run.
 
-Verdicts: `verified` (every step passed offline), `verified-pending-live` (one or more sources had no pulse after the anchor time when the receipt was made, as CURBy-Q has been idle since 2025-08-22; the receipt says which, and the live check is repeated against the chain), `verified-unanchored` (a receipt with no log, from the first slice: it shows the outcome follows from a real drand round, not that the request came first) and `invalid` (with the first failing step).
+Verdicts: `verified` (every step passed offline), `verified-pending-live` (one or more sources had no pulse for this draw when the receipt was made, as CURBy-Q has been idle since 2025-08-22, or stalled mid-round; the receipt says which, and the verifier script exits 3 until the live check is done with `--live`), `verified-unanchored` (a receipt with no log, from the first slice: it shows the outcome follows from a real drand round, not that the request came first) and `invalid` (with the first failing step).
 
 What an anchored receipt does **not** yet have: witness cosignatures from public tlog witnesses, a hosted service, scheduled draws and timelocked questions in the HTTP API, and signed subject keys. Those, the MCP server and CLI, the browser verifier, the tradition audits and the stream batteries are the next plan (spec §11). Marseille and Thoth tarot are refused until their audits exist. A single operator key signs the log; a hosted deployment adds mirrors and witnesses so that one party cannot rewrite history.
 
@@ -41,7 +41,12 @@ guion run --allow-clock --file-root . \
     draw.gu iching coins --log-dir log --key-file operator.key --new-key \
     --sources nist-beacon-2,curby-rng,curby-q > receipt.json     # prints operator_key=HEX to stderr
 guion run --file-root . verify_receipt.gu receipt.json --operator-key HEX
+# a receipt that is verified-pending-live exits 3 until the live chains are asked again:
+guion run --allow-clock --allow-http-host beacon.nist.gov --allow-http-host random.colorado.edu \
+    --file-root . verify_receipt.gu receipt.json --operator-key HEX --live
 ```
+
+`--epoch-seconds N` (default 20) is how long the two timestamps have to arrive after the entry is logged; a draw whose authorities are slower fails and says so. The log is locked while a draw writes to it (a crashed draw can leave `lock/` in the log directory: remove it once no draw is running). A request that is already in the log is refused rather than drawn again. If a draw fails after its entry was logged, the index is printed to stderr; the entry stays in the log.
 
 A draw with CURBy-Q waits until its window has closed (about 32 minutes while the chain is idle). The other sources take one to three minutes. `--question TEXT` keeps the question on your machine: the receipt holds only its SHA-512 commitment and the salt is printed to stderr.
 

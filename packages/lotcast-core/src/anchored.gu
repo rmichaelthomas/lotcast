@@ -59,9 +59,11 @@ pub record LogInfo:
     checkpoint_text: Text
     size: Int
     root: Bytes
+    epoch: Int
+    deadline: Int
 
 # Step 1: the log entry matches the request and the operator's promise names it.
-fn check_entry_and_promise(receipt: Json, log: Json, entry_hash_bytes: Bytes, operator_key: Bytes) -> Result[Bool, Text]:
+fn check_entry_and_promise(receipt: Json, log: Json, entry_hash_bytes: Bytes, operator_key: Bytes) -> Result[Int, Text]:
     let origin = field_text(log, "origin")?
     let index = field_int(log, "index")?
     let recorded = field_hex(log, "entry_hash")?
@@ -82,12 +84,13 @@ fn check_entry_and_promise(receipt: Json, log: Json, entry_hash_bytes: Bytes, op
         return Err("the promise is not in the lotcast promise format")
     if lines[1] != int_to_text(index) or lines[2] != hex_encode(entry_hash_bytes):
         return Err("the promise names a different index or entry")
-    if len(lines[3]) == 0 or text_find("0123456789", text_slice(lines[3], 0, 1), 0) < 0:
-        return Err("the promise epoch is not a number")
-    return Ok(true)
+    if not all_digits(lines[3]) or (len(lines[3]) > 1 and text_slice(lines[3], 0, 1) == "0"):
+        return Err("the promise epoch is not a plain decimal number")
+    return Ok(unwrap(text_parse_int(lines[3])))
 
-# Step 2: the checkpoint is the operator's and holds the entry at the stated index.
-fn check_checkpoint(log: Json, entry: Bytes, operator_key: Bytes) -> Result[LogInfo, Text]:
+# Step 2: the checkpoint is the operator's, is the epoch the promise named, and holds the entry at
+# the stated index.
+fn check_checkpoint(log: Json, entry: Bytes, operator_key: Bytes, promised_epoch: Int) -> Result[LogInfo, Text]:
     let origin = field_text(log, "origin")?
     let index = field_int(log, "index")?
     let note = field_text(log, "checkpoint")?
@@ -111,10 +114,15 @@ fn check_checkpoint(log: Json, entry: Bytes, operator_key: Bytes) -> Result[LogI
         return Err("the entry index is outside the checkpoint")
     if not verify_inclusion(entry, index, cp.size, proof, cp.root):
         return Err("the inclusion proof does not match the checkpoint root")
+    let epoch = parse_epoch(cp.extensions)
+    if not is_ok(epoch):
+        return Err("the checkpoint does not name its epoch and deadline")
+    if unwrap(epoch).epoch != promised_epoch:
+        return Err("the checkpoint is not the epoch the promise named")
     let cosignatures = field_json(log, "cosignatures")?
-    if not is_array(cosignatures):
-        return Err("cosignatures is not a list")
-    return Ok(LogInfo(origin, index, note, text, cp.size, cp.root))
+    if not is_array(cosignatures) or json_len(cosignatures) != 0:
+        return Err("cosignatures must be an empty list: this verifier has no witness keys to check them against")
+    return Ok(LogInfo(origin, index, note, text, cp.size, cp.root, unwrap(epoch).epoch, unwrap(epoch).deadline))
 
 fn find_pin(pins: List[TsaPin], id: Text) -> Result[TsaPin, Text]:
     for pin in pins:
@@ -122,9 +130,9 @@ fn find_pin(pins: List[TsaPin], id: Text) -> Result[TsaPin, Text]:
             return Ok(pin)
     return Err("the receipt names a time-stamp authority this verifier does not pin: " + id)
 
-# The `g` the timestamps prove (two tokens from two different pinned authorities over SHA-512 of the
-# checkpoint text).
-pub fn timestamps_g(log: Json, note: Text, pins: List[TsaPin]) -> Result[Int, Text]:
+# The time the timestamps prove the checkpoint existed by (two tokens from two different pinned
+# authorities over SHA-512 of the checkpoint text).
+pub fn timestamps_proven_by(log: Json, note: Text, pins: List[TsaPin]) -> Result[Int, Text]:
     let stamps = field_json(log, "timestamps")?
     if not is_array(stamps) or json_len(stamps) != 2:
         return Err("a receipt carries exactly two timestamps")
@@ -150,18 +158,27 @@ pub fn timestamps_g(log: Json, note: Text, pins: List[TsaPin]) -> Result[Int, Te
             return Err(id + ": the timestamp does not verify under the pinned issuer for this checkpoint")
         set contents = list_push(contents, unwrap(checked))
         set i = i + 1
-    return Ok(anchor_g(contents))
+    return Ok(proven_by_seconds(contents))
 
-# Step 3: both timestamps verify; the receipt's g and t0 are what they imply.
-fn check_anchor(receipt: Json, log: Json, note: Text, request: Request, pins: List[TsaPin]) -> Result[Int, Text]:
-    let g = timestamps_g(log, note, pins)?
+# The tokens prove the checkpoint existed by `proven` (seconds); that must not be later than the
+# deadline the operator signed.
+pub fn stamped_in_time(proven: Int, deadline: Int) -> Bool:
+    return proven <= deadline
+
+# Step 3: both timestamps prove the checkpoint existed by the deadline it carries; the receipt's g is
+# that deadline and t0 is the later of g and not_before. Nothing the tokens say can move g, so
+# re-stamping the checkpoint later, or presenting a later checkpoint, changes nothing.
+fn check_anchor(receipt: Json, log: Json, info: LogInfo, request: Request, pins: List[TsaPin]) -> Result[Int, Text]:
+    let proven = timestamps_proven_by(log, info.checkpoint, pins)?
+    if not stamped_in_time(proven, info.deadline):
+        return Err("a timestamp is later than the deadline the checkpoint signed: the checkpoint was stamped too late to anchor that time")
     let anchor = field_json(receipt, "anchor")?
-    if field_int(anchor, "g")? != g:
-        return Err("anchor.g is not what the timestamps prove")
+    if field_int(anchor, "g")? != info.deadline:
+        return Err("anchor.g is not the deadline the checkpoint signed")
     if field_int(anchor, "not_before")? != request.not_before:
         return Err("anchor.not_before does not match the request")
-    var t0 = g
-    if request.not_before > g:
+    var t0 = info.deadline
+    if request.not_before > info.deadline:
         set t0 = request.not_before
     if field_int(anchor, "t0")? != t0:
         return Err("anchor.t0 is not the later of g and not_before")
@@ -297,14 +314,14 @@ fn verify_anchored_inner(receipt: Json, operator_key: Bytes, pins: List[TsaPin],
                 return invalid(1, why)
             Ok(ignored):
                 return invalid(1, "unreadable promise")
-    let info = check_checkpoint(unwrap(log), unwrap(entry), operator_key)
+    let info = check_checkpoint(unwrap(log), unwrap(entry), operator_key, unwrap(promised))
     if not is_ok(info):
         match info:
             Err(why):
                 return invalid(2, why)
             Ok(ignored):
                 return invalid(2, "unreadable checkpoint")
-    let t0 = check_anchor(receipt, unwrap(log), unwrap(info).checkpoint, request, pins)
+    let t0 = check_anchor(receipt, unwrap(log), unwrap(info), request, pins)
     if not is_ok(t0):
         match t0:
             Err(why):
@@ -375,14 +392,12 @@ pub fn build_anchored_receipt(request: Request, log_part: Json, promise: Text, d
     if not is_ok(note_read):
         return Err(receipt_error("E_LOTCAST_RECEIPT", "the log part has no checkpoint"))
     let note = unwrap(note_read)
-    let g_result = timestamps_g(log_part, note, pins)
-    if not is_ok(g_result):
-        match g_result:
-            Err(why):
-                return Err(receipt_error("E_LOTCAST_ANCHOR", why))
-            Ok(ignored):
-                return Err(receipt_error("E_LOTCAST_ANCHOR", "unreadable timestamps"))
-    let g = unwrap(g_result)
+    let signed = verify_note_text(note, log_part)
+    if not is_ok(signed):
+        return Err(receipt_error("E_LOTCAST_RECEIPT", "the log part's checkpoint cannot be read"))
+    let cp = parse_checkpoint(unwrap(signed))?
+    let epoch = parse_epoch(cp.extensions)?
+    let g = epoch.deadline
     var t0 = g
     if request.not_before > g:
         set t0 = request.not_before
@@ -420,10 +435,13 @@ pub fn build_anchored_receipt(request: Request, log_part: Json, promise: Text, d
     set receipt = json_set(receipt, "seed", json_text(hex_encode(s)))
     set receipt = json_set(receipt, "outcome", outcome)
     set receipt = json_set(receipt, "attachments", json_array())
-    let verdict = verify_anchored(receipt, operator_key, pins)
+    let reread = json_parse(json_stringify(receipt))
+    if not is_ok(reread):
+        return Err(receipt_error("E_LOTCAST_SELFCHECK", "the receipt does not survive being written out and read back"))
+    let verdict = verify_anchored(unwrap(reread), operator_key, pins)
     if verdict.result == "invalid":
         return Err(receipt_error("E_LOTCAST_SELFCHECK", "the receipt just built fails verification at step " + int_to_text(verdict.failed_step) + ": " + verdict.detail))
-    return Ok(receipt)
+    return Ok(unwrap(reread))
 
 # The `log` object of a receipt from the pieces of an append and an anchoring: `anchored` is what
 # anchor_checkpoint returned ({timestamps, g}).
@@ -440,3 +458,7 @@ pub fn make_log_part(origin: Text, index: Int, entry_hash_bytes: Bytes, checkpoi
     set out = json_set(out, "cosignatures", json_array())
     set out = json_set(out, "timestamps", json_get(anchored, "timestamps"))
     return out
+
+# The checkpoint note's signed text, without checking who signed it (the verifier does that).
+fn verify_note_text(note: Text, log_part: Json) -> Result[Text, StdError]:
+    return note_text(note)

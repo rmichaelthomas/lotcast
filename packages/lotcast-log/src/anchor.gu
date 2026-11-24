@@ -75,8 +75,11 @@ pub fn tsa_check(pin: TsaPin, token: Bytes, digest: Bytes) -> Result[TsaToken, S
 fn ceil_seconds(ms: Int) -> Int:
     return (ms + 999) // 1000
 
-# g = max(genTime + accuracy) + 1 second, in whole seconds, rounding each time up (spec 3.2).
-pub fn anchor_g(tokens: List[TsaToken]) -> Int:
+# The time every token proves the checkpoint existed by: max(genTime + accuracy) + 1 second, in
+# whole seconds, rounding each time up. A checkpoint is anchored when this is not later than the
+# deadline the operator signed into it (`lotcast/epoch`); the receipt's anchor time is that
+# deadline, so re-stamping the same checkpoint later cannot move it.
+pub fn proven_by_seconds(tokens: List[TsaToken]) -> Int:
     assert(len(tokens) > 0)
     var latest = 0
     for t in tokens:
@@ -107,7 +110,7 @@ pub fn choose_tsas(down_seconds: Map[Text, Int]) -> List[Text]:
 pub fn checkpoint_digest(note: Text) -> Result[Bytes, StdError]:
     return Ok(crypto_sha512(text_bytes(note_text(note)?)))
 
-# Stamps the checkpoint note with each named TSA and returns `{"timestamps": [...], "g": N}`.
+# Stamps the checkpoint note with each named TSA and returns `{"timestamps": [...], "proven_by": N}`.
 pub fn anchor_checkpoint(note: Text, tsa_ids: List[Text]) -> Result[Json, StdError]:
     let digest = checkpoint_digest(note)?
     var stamps = json_array()
@@ -125,5 +128,5 @@ pub fn anchor_checkpoint(note: Text, tsa_ids: List[Text]) -> Result[Json, StdErr
         return Err(anchor_error("two TSAs are needed to anchor a checkpoint"))
     var out = json_object()
     set out = json_set(out, "timestamps", stamps)
-    set out = json_set(out, "g", json_int(anchor_g(contents)))
+    set out = json_set(out, "proven_by", json_int(proven_by_seconds(contents)))
     return Ok(out)

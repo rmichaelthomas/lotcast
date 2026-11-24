@@ -219,6 +219,41 @@ pub fn q_classify(t0: Int, w: Int, rows: List[QRow]) -> Text:
         return "gap"
     return "incomplete"
 
+# Whether a run of consecutive CURBy-Q pulses, all not later than t0 + W, and a check made at or
+# after t0 + W prove the source is absent for now: nothing in the run is the randomness pulse of the
+# first round whose request came after t0. Covers an idle chain (a run of one pulse, not later than
+# t0) and a chain that stalled mid-round. "live" or the reason it is not.
+pub fn q_live(t0: Int, w: Int, rows: List[QRow], checked_at: Int) -> Text:
+    let n = len(rows)
+    if n < 1:
+        return "incomplete"
+    let t0_ms = t0 * 1000
+    let deadline = (t0 + w) * 1000
+    if rows[0].ts_ms > t0_ms:
+        return "invalid"
+    var i = 1
+    while i < n:
+        if rows[i].ts_ms <= t0_ms or rows[i].ts_ms < rows[i - 1].ts_ms:
+            return "invalid"
+        set i = i + 1
+    if rows[n - 1].ts_ms > deadline:
+        return "invalid"
+    if checked_at < t0 + w:
+        return "early"
+    var request_at = -1
+    set i = 1
+    while i < n and request_at < 0:
+        if rows[i].stage == "request":
+            set request_at = i
+        set i = i + 1
+    if request_at >= 0:
+        set i = request_at + 1
+        while i < n:
+            if rows[i].stage == "randomness" and rows[i].round == rows[request_at].round:
+                return "present"
+            set i = i + 1
+    return "live"
+
 fn q_row(r: TwineRecord) -> Result[QRow, StdError]:
     let payload = json_member(r.content, "payload")?
     return Ok(QRow(text_member(payload, "stage")?, int_member(payload, "round")?, pulse_ms(r)?))
@@ -240,12 +275,24 @@ pub fn check_curby_q_with(t0: Int, w: Int, evidence: Json) -> Result[SourceResul
     let status = text_member(evidence, "status")?
     let chain = chain_of(evidence, curby_q_chain())?
     if status == "absent-live":
-        let latest = twine_rec(evidence, "latest")?
         let checked_at = int_member(evidence, "checked_at")?
-        if not twine_verify(chain, latest)?:
-            return Err(source_error("the CURBy-Q pulse does not verify"))
-        if not live_ok(t0, w, pulse_ms(latest)?, checked_at):
-            return Err(source_error("the CURBy-Q pulse is later than t0 or the check was made before the window ended"))
+        var run: List[TwineRecord] = []
+        if json_has(evidence, "pulses"):
+            set run = pulses_of(evidence)?
+        else:
+            set run = [twine_rec(evidence, "latest")?]
+        var live_rows: List[QRow] = []
+        var k = 0
+        while k < len(run):
+            if not twine_verify(chain, run[k])?:
+                return Err(source_error("a CURBy-Q pulse does not verify"))
+            if k > 0 and (twine_link_count(run[k]) == 0 or twine_link(run[k], 0) != run[k - 1].cid):
+                return Err(source_error("the CURBy-Q pulses are not consecutive"))
+            set live_rows = list_push(live_rows, q_row(run[k])?)
+            set k = k + 1
+        let live = q_live(t0, w, live_rows, checked_at)
+        if live != "live":
+            return Err(source_error("the CURBy-Q pulses do not prove absent-live (" + live + ")"))
         return finish("curby-q", "absent-live", bytes_from_ints([]), evidence)
     if status != "present" and status != "absent-proven":
         return Err(source_error("a CURBy-Q source is present, absent-proven or absent-live"))

@@ -18,7 +18,7 @@ fn main() -> Int:
         return 1
     match anchor_checkpoint(unwrap(signed), ["digicert", "sectigo"]):
         Ok(anchored):
-            print("live stamp ok: g=" + int_to_text(json_as_int(json_get(anchored, "g"))))
+            print("live stamp ok: proven_by=" + int_to_text(json_as_int(json_get(anchored, "proven_by"))))
             return 0
         Err(problem):
             print("live stamp failed: " + problem.code + ": " + problem.message)

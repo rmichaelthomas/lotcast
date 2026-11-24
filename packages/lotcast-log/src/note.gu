@@ -98,7 +98,7 @@ pub fn checkpoint_text(c: Checkpoint) -> Text:
         set out = out + e + "\n"
     return out
 
-fn all_digits(t: Text) -> Bool:
+pub fn all_digits(t: Text) -> Bool:
     if len(t) == 0:
         return false
     var i = 0
@@ -129,3 +129,31 @@ pub fn parse_checkpoint(text: Text) -> Result[Checkpoint, StdError]:
         set extensions = list_push(extensions, lines[i])
         set i = i + 1
     return Ok(Checkpoint(lines[0], size, unwrap(decoded), extensions))
+
+# The line a checkpoint carries to bind its anchor: `lotcast/epoch <epoch> <deadline>`. The operator
+# signs it before stamping; every timestamp must prove the checkpoint existed by `deadline` (unix
+# seconds), and a receipt's anchor time is `deadline`, not anything the tokens say.
+pub record EpochInfo:
+    epoch: Int
+    deadline: Int
+
+pub fn epoch_extension(epoch: Int, deadline: Int) -> Text:
+    return "lotcast/epoch " + int_to_text(epoch) + " " + int_to_text(deadline)
+
+fn plain_number(t: Text) -> Bool:
+    if not all_digits(t):
+        return false
+    return len(t) == 1 or text_slice(t, 0, 1) != "0"
+
+# The epoch line of a checkpoint's extensions: exactly one, with two plain decimal numbers.
+pub fn parse_epoch(extensions: List[Text]) -> Result[EpochInfo, StdError]:
+    var found: List[Text] = []
+    for line in extensions:
+        if len(line) >= 14 and text_slice(line, 0, 14) == "lotcast/epoch ":
+            set found = list_push(found, line)
+    if len(found) != 1:
+        return Err(note_error("a checkpoint carries exactly one lotcast/epoch line"))
+    let fields = text_split(found[0], " ")
+    if len(fields) != 3 or not plain_number(fields[1]) or not plain_number(fields[2]):
+        return Err(note_error("the lotcast/epoch line is not `lotcast/epoch EPOCH DEADLINE` with plain decimal numbers"))
+    return Ok(EpochInfo(unwrap(text_parse_int(fields[1])), unwrap(text_parse_int(fields[2]))))

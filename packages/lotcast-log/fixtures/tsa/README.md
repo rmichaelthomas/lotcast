@@ -1,6 +1,6 @@
 # TSA fixtures
 
-Real RFC 3161 tokens for the fixed digest in `digest.hex`, fetched 2026-11-24 by `scripts/fetch_tsa_fixtures.sh`. `scripts/gen_tsa_pins.py` turns the chains into `src/tsa_pins.gu` (the pinned issuer of each TSA's signing certificate) and `tokens.json`.
+Real RFC 3161 tokens for the fixed digest in `digest.hex`, fetched 2026-11-24 by `scripts/fetch_tsa_fixtures.sh`. `scripts/gen_tsa_pins.gu` turns the chains into `src/tsa_pins.gu` (the pinned issuer of each TSA's signing certificate) and `tokens.json`.
 
 Pinned issuers (validity end):
 

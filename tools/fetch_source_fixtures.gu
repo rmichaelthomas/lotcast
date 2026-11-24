@@ -1,0 +1,127 @@
+import "std:types"
+import "std:json"
+import "std:text"
+import "common.gu"
+
+# Saves real pulses for the offline source tests: NIST chain 2, CURBy-RNG and CURBy-Q.
+# Needs the network. Run from the repository root; review the diff before committing new fixtures.
+#
+#   guion run --file-root . --allow-http-host beacon.nist.gov --allow-http-host random.colorado.edu \
+#       tools/fetch_source_fixtures.gu
+
+fn out_dir() -> Text:
+    return "packages/lotcast-core/fixtures/sources/"
+
+fn rng_chain() -> Text:
+    return "bafyriqci6f3st2mg7gq733ho4zvvth32zpy2mtiylixwmhoz6d627eo3jfpmbxepe54u2zdvymonq5sp3armtm4rodxsynsirr5g3xsbd3q4s"
+
+fn q_chain() -> Text:
+    return "bafyriqhijw5soalbtppuwwjbskfiriqy6swa5qd5trgbzx4nypnu7mp7iyhx7m2iin2nxnglmngvjgirzb7bvlisxq3uygoik7ozbybxnftiw"
+
+fn save(name: Text, value: Json) -> Result[Bool, Text]:
+    if not is_ok(write_text_atomic(out_dir() + name, json_stringify(value))):
+        return Err("cannot write " + name)
+    return Ok(true)
+
+fn chain_record(cid: Text) -> Result[Json, Text]:
+    let all = fetch_json("https://random.colorado.edu/api/chains")?
+    for i in range(0, json_len(all)):
+        let r = unwrap(json_index_safe(all, i))
+        if walk_text(r, ["cid", "/"])? == cid:
+            return Ok(r)
+    return Err("chain " + cid + " not listed")
+
+fn index_of(p: Json) -> Result[Int, Text]:
+    return walk_int(p, ["data", "content", "index"])
+
+# NIST chain 2: eight consecutive pulses ending a few minutes ago, and the certificate they name.
+fn nist() -> Result[Text, Text]:
+    let last = fetch_json("https://beacon.nist.gov/beacon/2.0/pulse/last")?
+    let top = walk_int(last, ["pulse", "pulseIndex"])? - 2
+    var pulses = json_array()
+    var cert_id = ""
+    for i in range(top - 7, top + 1):
+        let one = fetch_json("https://beacon.nist.gov/beacon/2.0/chain/2/pulse/" + int_to_text(i))?
+        let pulse = walk(one, ["pulse"])?
+        let id = walk_text(pulse, ["certificateId"])?
+        if cert_id == "":
+            set cert_id = id
+        if id != cert_id:
+            return Err("the NIST pulses name more than one certificate")
+        set pulses = json_push(pulses, pulse)
+    let cert = fetch_text("https://beacon.nist.gov/beacon/2.0/certificate/" + ascii_lower(cert_id))?
+    var doc = json_object()
+    set doc = json_set(doc, "certificate_pem", json_text(cert))
+    set doc = json_set(doc, "pulses", pulses)
+    let saved = save("nist.json", doc)?
+    return Ok("nist pulses " + int_to_text(top - 7) + ".." + int_to_text(top))
+
+# CURBy-RNG: eight consecutive pulses, oldest first.
+fn rng() -> Result[Text, Text]:
+    let latest = latest_index(rng_chain())?
+    let page = fetch_json("https://random.colorado.edu/api/chains/" + rng_chain() + "/pulses/" + int_to_text(latest - 2) + "-" + int_to_text(latest - 9))?
+    var doc = json_object()
+    set doc = json_set(doc, "chain", chain_record(rng_chain())?)
+    set doc = json_set(doc, "pulses", by_index(page)?)
+    let saved = save("curby-rng.json", doc)?
+    return Ok("curby-rng " + int_to_text(json_len(page)) + " pulses")
+
+fn stage_of(p: Json) -> Result[Text, Text]:
+    return walk_text(p, ["data", "content", "payload", "stage"])
+
+fn round_of(p: Json) -> Result[Int, Text]:
+    return walk_int(p, ["data", "content", "payload", "round"])
+
+# The pulse of `round` at `stage` among `hist`, or an error.
+fn find_stage(hist: Json, round: Int, stage: Text) -> Result[Json, Text]:
+    for i in range(0, json_len(hist)):
+        let p = unwrap(json_index_safe(hist, i))
+        if round_of(p)? == round and stage_of(p)? == stage:
+            return Ok(p)
+    return Err("no " + stage)
+
+# CURBy-Q: the latest pulse (the chain has been idle since 2025-08-22), and the last complete round
+# with the pulse before it.
+fn curby_q() -> Result[Text, Text]:
+    let top = latest_index(q_chain())?
+    let latest = fetch_json("https://random.colorado.edu/api/chains/" + q_chain() + "/pulses/latest")?
+    let page = fetch_json("https://random.colorado.edu/api/chains/" + q_chain() + "/pulses/" + int_to_text(top) + "-" + int_to_text(top - 99))?
+    let hist = by_index(page)?
+    var best = -1
+    for i in range(0, json_len(hist)):
+        let k = round_of(unwrap(json_index_safe(hist, i)))?
+        if k > best and is_ok(find_stage(hist, k, "request")) and is_ok(find_stage(hist, k, "precommit")) and is_ok(find_stage(hist, k, "randomness")):
+            set best = k
+    if best < 0:
+        return Err("no complete CURBy-Q round in the last 100 pulses")
+    let req = find_stage(hist, best, "request")?
+    let want = index_of(req)? - 1
+    var before = req
+    var found = false
+    for i in range(0, json_len(hist)):
+        let p = unwrap(json_index_safe(hist, i))
+        if index_of(p)? == want:
+            set before = p
+            set found = true
+    if not found:
+        return Err("the pulse before the request is not in the history")
+    var doc = json_object()
+    set doc = json_set(doc, "chain", chain_record(q_chain())?)
+    set doc = json_set(doc, "latest", latest)
+    set doc = json_set(doc, "before", before)
+    set doc = json_set(doc, "request", req)
+    set doc = json_set(doc, "precommit", find_stage(hist, best, "precommit")?)
+    set doc = json_set(doc, "randomness", find_stage(hist, best, "randomness")?)
+    let saved = save("curby-q.json", doc)?
+    return Ok("curby-q round " + int_to_text(best))
+
+fn main() -> Int:
+    var report: List[Text] = []
+    for step in [nist(), rng(), curby_q()]:
+        match step:
+            Ok(line):
+                set report = list_push(report, line)
+            Err(problem):
+                return die(problem)
+    print("saved: " + text_join(report, ", "))
+    return 0

@@ -1,0 +1,104 @@
+import "std:types"
+import "std:json"
+import "std:text"
+import "std:process"
+import "common.gu"
+
+# Measures the CURBy source windows from the chains' own history (spec 4.2) and prints the JSON
+# for packages/lotcast-core/fixtures/sources/windows.json.
+#
+# - CURBy-RNG period: the median spacing of its last 600 pulses.
+# - CURBy-Q round time: the median time from a round's request pulse to its randomness pulse over the
+#   last 1000 pulses before the chain went idle. The window is three times that, rounded up to whole seconds.
+#
+#   guion run --allow-clock --allow-http-host random.colorado.edu tools/measure_windows.gu > windows.json
+
+fn rng_chain() -> Text:
+    return "bafyriqci6f3st2mg7gq733ho4zvvth32zpy2mtiylixwmhoz6d627eo3jfpmbxepe54u2zdvymonq5sp3armtm4rodxsynsirr5g3xsbd3q4s"
+
+fn q_chain() -> Text:
+    return "bafyriqhijw5soalbtppuwwjbskfiriqy6swa5qd5trgbzx4nypnu7mp7iyhx7m2iin2nxnglmngvjgirzb7bvlisxq3uygoik7ozbybxnftiw"
+
+# Median of a non-empty list of milliseconds (the mean of the two middle values when even, floored).
+fn median_ms(values: List[Int]) -> Int:
+    let ordered = sort(values)
+    let n = len(ordered)
+    if n % 2 == 1:
+        return ordered[n // 2]
+    return (ordered[n // 2 - 1] + ordered[n // 2]) // 2
+
+fn payload_ms(p: Json) -> Result[Int, Text]:
+    return iso_to_ms(walk_text(p, ["data", "content", "payload", "timestamp"])?)
+
+fn period_seconds() -> Result[Int, Text]:
+    let top = latest_index(rng_chain())?
+    let pulses = pulse_range(rng_chain(), top, 600)?
+    var times: List[Int] = []
+    for i in range(0, json_len(pulses)):
+        set times = list_push(times, payload_ms(unwrap(json_index_safe(pulses, i)))?)
+    let ordered = sort(times)
+    var gaps: List[Int] = []
+    for i in range(1, len(ordered)):
+        set gaps = list_push(gaps, ordered[i] - ordered[i - 1])
+    # Whole seconds, halves rounded to even like the Python it replaces.
+    let ms = median_ms(gaps)
+    let whole = ms // 1000
+    let rest = ms - whole * 1000
+    if rest > 500 or (rest == 500 and whole % 2 == 1):
+        return Ok(whole + 1)
+    return Ok(whole)
+
+# Round times in milliseconds: request pulse to randomness pulse, for every round that has both.
+fn round_times(pulses: Json) -> Result[List[Int], Text]:
+    var request: Map[Text, Int] = {}
+    var randomness: Map[Text, Int] = {}
+    for i in range(0, json_len(pulses)):
+        let p = unwrap(json_index_safe(pulses, i))
+        let key = int_to_text(walk_int(p, ["data", "content", "payload", "round"])?)
+        let stage = walk_text(p, ["data", "content", "payload", "stage"])?
+        let at = payload_ms(p)?
+        if stage == "request":
+            set request = map_set(request, key, at)
+        if stage == "randomness":
+            set randomness = map_set(randomness, key, at)
+    var out: List[Int] = []
+    for key in request:
+        if map_has(randomness, key):
+            set out = list_push(out, randomness[key] - request[key])
+    return Ok(out)
+
+fn measure() -> Result[Json, Text]:
+    let rng = period_seconds()?
+    let latest_q = latest_index(q_chain())?
+    let pulses = pulse_range(q_chain(), latest_q, 1000)?
+    let times = round_times(pulses)?
+    if len(times) == 0:
+        return Err("no complete CURBy-Q round in the sampled history")
+    let round_ms = median_ms(times)
+    let q_seconds = (round_ms + 999) // 1000
+    var rng_json = json_object()
+    set rng_json = json_set(rng_json, "period_seconds", json_int(rng))
+    set rng_json = json_set(rng_json, "window_seconds", json_int(3 * rng))
+    set rng_json = json_set(rng_json, "pulses_sampled", json_int(600))
+    var q_json = json_object()
+    set q_json = json_set(q_json, "median_round_seconds", json_int(q_seconds))
+    set q_json = json_set(q_json, "window_seconds", json_int(3 * q_seconds))
+    set q_json = json_set(q_json, "rounds_sampled", json_int(len(times)))
+    set q_json = json_set(q_json, "latest_index_when_measured", json_int(latest_q))
+    var nist = json_object()
+    set nist = json_set(nist, "period_seconds", json_int(60))
+    set nist = json_set(nist, "window_seconds", json_int(180))
+    var doc = json_object()
+    set doc = json_set(doc, "curby_rng", rng_json)
+    set doc = json_set(doc, "curby_q", q_json)
+    set doc = json_set(doc, "nist", nist)
+    set doc = json_set(doc, "measured_at", json_text(iso_from_seconds(unix_time_ms() // 1000)))
+    return Ok(doc)
+
+fn main() -> Int:
+    match measure():
+        Ok(doc):
+            print(json_stringify(doc))
+            return 0
+        Err(problem):
+            return die(problem)

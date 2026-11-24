@@ -1,0 +1,24 @@
+import "std:types"
+import "common.gu"
+
+fn test_iso_to_ms_known_instants() -> Unit:
+    assert(unwrap(iso_to_ms("1970-01-01T00:00:00Z")) == 0)
+    assert(unwrap(iso_to_ms("2025-08-22T19:28:40.318Z")) == 1755890920318)
+    assert(unwrap(iso_to_ms("2000-03-01T00:00:00Z")) == 951868800000)
+
+fn test_iso_to_ms_rejects_malformed() -> Unit:
+    assert(not is_ok(iso_to_ms("2025-08-22 19:28:40Z")))
+    assert(not is_ok(iso_to_ms("2025-13-22T19:28:40Z")))
+    assert(not is_ok(iso_to_ms("2025-08-22T19:28:40.3xZ")))
+
+fn test_iso_round_trip() -> Unit:
+    assert(iso_from_seconds(0) == "1970-01-01T00:00:00Z")
+    assert(iso_from_seconds(1755890920) == "2025-08-22T19:28:40Z")
+    assert(iso_from_seconds(951868800) == "2000-03-01T00:00:00Z")
+    assert(iso_from_seconds(1767225599) == "2025-12-31T23:59:59Z")
+
+fn test_ascii_lower() -> Unit:
+    assert(ascii_lower("0A1B2c") == "0a1b2c")
+
+fn main() -> Int:
+    return 0

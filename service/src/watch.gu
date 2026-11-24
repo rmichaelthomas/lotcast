@@ -72,81 +72,85 @@ pub fn watch_once(store: Store, origin: Text, operator_key: Bytes, now: Int, dra
     var completed = 0
     var drand_cache: Map[Text, DrandRound] = {}
     var source_cache: Map[Text, SourceResult] = {}
-    for id in store_draw_ids(store):
-        if not is_finished(store, id) and next_check_of(store, id) <= now:
-            let draw = store_get_draw(store, id)?
-            let epoch = json_as_int(json_get(draw, "epoch"))
-            let deadline = json_as_int(json_get(draw, "deadline"))
-            let anchor_path = "anchors/" + int_to_text(epoch) + ".json"
-            if not store_has(store, anchor_path):
-                let saved = put_status(store, id, "pending", json_push(json_array(), waiting_item("anchor", "the epoch is not stamped yet")), now + 1)?
+    for id in store_active_ids(store):
+        if is_finished(store, id):
+            let cleared = store_clear_active(store, id)
+            continue
+        if next_check_of(store, id) > now:
+            continue
+        let draw = store_get_draw(store, id)?
+        let epoch = json_as_int(json_get(draw, "epoch"))
+        let deadline = json_as_int(json_get(draw, "deadline"))
+        let anchor_path = "anchors/" + int_to_text(epoch) + ".json"
+        if not store_has(store, anchor_path):
+            let saved = put_status(store, id, "pending", json_push(json_array(), waiting_item("anchor", "the epoch is not stamped yet")), now + 1)?
+        else:
+            let anchor = store_get_json(store, anchor_path)?
+            if json_as_bool(json_get(anchor, "void")):
+                let saved = put_status(store, id, "anchor-failed", json_array(), 0)?
             else:
-                let anchor = store_get_json(store, anchor_path)?
-                if json_as_bool(json_get(anchor, "void")):
-                    let saved = put_status(store, id, "anchor-failed", json_array(), 0)?
-                else:
-                    let request = parse_stored(json_get(draw, "request"))?
-                    var t0 = deadline
+                let request = parse_stored(json_get(draw, "request"))?
+                var t0 = deadline
+                if request.not_before > deadline:
+                    set t0 = request.not_before
+                var waiting = json_array()
+                var retry = now + 10
+                let chain = drand_quicknet()
+                let round = drand_round_at(chain, t0) + 1
+                let round_time = drand_round_time(chain, round)
+                var drand = DrandRound(0, bytes_from_ints([]), bytes_from_ints([]))
+                if now < t0:
+                    var why = "the epoch's deadline has not come"
+                    var which = "anchor-time"
                     if request.not_before > deadline:
-                        set t0 = request.not_before
-                    var waiting = json_array()
-                    var retry = now + 10
-                    let chain = drand_quicknet()
-                    let round = drand_round_at(chain, t0) + 1
-                    let round_time = drand_round_time(chain, round)
-                    var drand = DrandRound(0, bytes_from_ints([]), bytes_from_ints([]))
-                    if now < t0:
-                        var why = "the epoch's deadline has not come"
-                        var which = "anchor-time"
-                        if request.not_before > deadline:
-                            set why = "not_before is in the future"
-                            set which = "not-before"
-                        set waiting = json_push(waiting, waiting_item(which, why))
-                        set retry = now + minimum(t0 - now, 30)
+                        set why = "not_before is in the future"
+                        set which = "not-before"
+                    set waiting = json_push(waiting, waiting_item(which, why))
+                    set retry = now + minimum(t0 - now, 30)
+                else:
+                    if now < round_time:
+                        set waiting = json_push(waiting, waiting_item("drand-quicknet", "round " + int_to_text(round) + " is published at unix time " + int_to_text(round_time)))
+                        set retry = now + minimum(round_time - now, 5)
                     else:
-                        if now < round_time:
-                            set waiting = json_push(waiting, waiting_item("drand-quicknet", "round " + int_to_text(round) + " is published at unix time " + int_to_text(round_time)))
-                            set retry = now + minimum(round_time - now, 5)
-                        else:
-                            let key = int_to_text(round)
-                            if not map_has(drand_cache, key):
-                                let got = drand_fn(round)
-                                if is_ok(got):
-                                    set drand_cache = map_set(drand_cache, key, unwrap(got))
-                                else:
-                                    set waiting = json_push(waiting, waiting_item("drand-quicknet", drand_problem(got)))
-                            if map_has(drand_cache, key):
-                                set drand = drand_cache[key]
-                    var others: List[SourceResult] = []
-                    if json_len(waiting) == 0:
-                        for sid in ["nist-beacon-2", "curby-rng", "curby-q"]:
-                            if not wanted(request, sid):
-                                set others = list_push(others, not_requested(sid))
+                        let key = int_to_text(round)
+                        if not map_has(drand_cache, key):
+                            let got = drand_fn(round)
+                            if is_ok(got):
+                                set drand_cache = map_set(drand_cache, key, unwrap(got))
                             else:
-                                let key = sid + "@" + int_to_text(t0)
-                                if not map_has(source_cache, key):
-                                    let got = source_fn(sid, t0)
-                                    if is_ok(got):
-                                        set source_cache = map_set(source_cache, key, unwrap(got))
-                                    else:
-                                        set waiting = json_push(waiting, waiting_item(sid, source_problem(got)))
-                                if map_has(source_cache, key):
-                                    set others = list_push(others, source_cache[key])
-                    if json_len(waiting) > 0:
-                        let saved = put_status(store, id, "pending", waiting, retry)?
-                    else:
-                        let epoch_doc = store_get_json(store, "epochs/" + int_to_text(epoch) + ".json")?
-                        let item = inclusion_of(epoch_doc, id)?
-                        let hash = unwrap(hex_decode(json_as_text(json_get(draw, "entry_hash"))))
-                        let log_part = make_log_part(origin, json_as_int(json_get(draw, "index")), hash, json_as_text(json_get(epoch_doc, "checkpoint")), hex_items(json_get(item, "inclusion")), anchor)
-                        let built = build_fn(request, log_part, json_as_text(json_get(draw, "promise")), drand, others, operator_key)
-                        if is_ok(built):
-                            let saved = store_put_json(store, "receipts/" + id + ".json", unwrap(built))?
-                            let done = put_status(store, id, "complete", json_array(), 0)?
-                            set completed = completed + 1
+                                set waiting = json_push(waiting, waiting_item("drand-quicknet", drand_problem(got)))
+                        if map_has(drand_cache, key):
+                            set drand = drand_cache[key]
+                var others: List[SourceResult] = []
+                if json_len(waiting) == 0:
+                    for sid in ["nist-beacon-2", "curby-rng", "curby-q"]:
+                        if not wanted(request, sid):
+                            set others = list_push(others, not_requested(sid))
                         else:
-                            eprint("ALERT: the receipt for " + id + " failed its own check: " + build_problem(built))
-                            let saved = put_status(store, id, "pending", json_push(json_array(), waiting_item("internal-check", build_problem(built))), now + 60)?
+                            let key = sid + "@" + int_to_text(t0)
+                            if not map_has(source_cache, key):
+                                let got = source_fn(sid, t0)
+                                if is_ok(got):
+                                    set source_cache = map_set(source_cache, key, unwrap(got))
+                                else:
+                                    set waiting = json_push(waiting, waiting_item(sid, source_problem(got)))
+                            if map_has(source_cache, key):
+                                set others = list_push(others, source_cache[key])
+                if json_len(waiting) > 0:
+                    let saved = put_status(store, id, "pending", waiting, retry)?
+                else:
+                    let epoch_doc = store_get_json(store, "epochs/" + int_to_text(epoch) + ".json")?
+                    let item = inclusion_of(epoch_doc, id)?
+                    let hash = unwrap(hex_decode(json_as_text(json_get(draw, "entry_hash"))))
+                    let log_part = make_log_part(origin, json_as_int(json_get(draw, "index")), hash, json_as_text(json_get(epoch_doc, "checkpoint")), hex_items(json_get(item, "inclusion")), anchor)
+                    let built = build_fn(request, log_part, json_as_text(json_get(draw, "promise")), drand, others, operator_key)
+                    if is_ok(built):
+                        let saved = store_put_json(store, "receipts/" + id + ".json", unwrap(built))?
+                        let done = put_status(store, id, "complete", json_array(), 0)?
+                        set completed = completed + 1
+                    else:
+                        eprint("ALERT: the receipt for " + id + " failed its own check: " + build_problem(built))
+                        let saved = put_status(store, id, "pending", json_push(json_array(), waiting_item("internal-check", build_problem(built))), now + 60)?
     return Ok(completed)
 
 fn minimum(a: Int, b: Int) -> Int:

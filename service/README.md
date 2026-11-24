@@ -8,7 +8,7 @@ guion run --allow-bind 127.0.0.1:8080 --allow-clock --file-root DATA \
     --allow-http-host beacon.nist.gov --allow-http-host random.colorado.edu \
     --allow-http-host timestamp.digicert.com --allow-http-host timestamp.sectigo.com \
     --allow-http-host freetsa.org serve.gu --data-dir data --key-file operator.key --new-key \
-    --registry ../registry/lotcast-registry-v1.json
+    --registry registry.json
 ```
 
 Endpoints (JSON, errors `{"error":{"code","message"}}`): `GET /v1/traditions`, `/v1/registry`, `/v1/sources`,
@@ -17,3 +17,5 @@ Endpoints (JSON, errors `{"error":{"code","message"}}`): `GET /v1/traditions`, `
 
 Tests: `guion test` (units), `guion test tests_routes.gu` (HTTP routes; a separate file because the
 `web` package and the draw core must not share a module), and `tests_live.gu` (a real stamp).
+
+`--registry` and `--data-dir` are paths under `--file-root`; copy `registry/lotcast-registry-v1.json` there as `registry.json` (the Dockerfile does).

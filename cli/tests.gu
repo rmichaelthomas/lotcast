@@ -51,6 +51,25 @@ fn request_n(n: Int) -> DrawRequest:
         set raw = list_push(raw, (n + i) % 256)
     return DrawRequest("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 0, bytes_from_ints(raw), bytes_from_ints([]))
 
+fn pair_json(ids: List[Text], proven: Int) -> Json:
+    var stamps = json_array()
+    for id in ids:
+        set stamps = json_push(stamps, json_set(json_set(json_object(), "tsa", json_text(id)), "token", json_text("AA==")))
+    return json_set(json_set(json_object(), "timestamps", stamps), "proven_by", json_int(proven))
+
+fn stamp_ok(note: Text, ids: List[Text]) -> Result[Json, StdError]:
+    return Ok(pair_json(ids, 0))
+
+fn stamp_too_late(note: Text, ids: List[Text]) -> Result[Json, StdError]:
+    return Ok(pair_json(ids, 4000000000))
+
+fn probe_up(id: Text) -> Bool:
+    return true
+
+# The anchors in these tests carry fake tokens, so the proof they offer is the number in them.
+fn fake_proof(anchor: Json, note: Text) -> Result[Int, Text]:
+    return Ok(json_as_int(json_get(anchor, "proven_by")))
+
 # A data directory whose log holds `count` entries (nonces start at `first`), closed in two epochs.
 fn made_log(first: Int, count: Int) -> Text:
     let root = temp_root()
@@ -63,6 +82,7 @@ fn made_log(first: Int, count: Int) -> Text:
             set w = unwrap(writer_tick(w, 1795556000))
     set w = unwrap(writer_tick(w, 1795556010))
     set w = unwrap(writer_tick(w, 1795556020))
+    let stamped = unwrap(stamper_tick(store, {}, 1795556021, stamp_ok, probe_up, 0))
     return root
 
 fn operator_public() -> Bytes:
@@ -137,8 +157,8 @@ fn fake_source(id: Text, t0: Int) -> Result[SourceResult, StdError]:
 fn test_compute_uses_the_epoch_the_entry_was_stamped_under() -> Unit:
     let root = made_log(1, 3)
     let epochs = unwrap(mirror_epochs(fetch_file, root + "/log"))
-    let first = unwrap(compute_index(fetch_file, root + "/log", operator_public(), 0, fake_drand, fake_source))
-    let last = unwrap(compute_index(fetch_file, root + "/log", operator_public(), 2, fake_drand, fake_source))
+    let first = unwrap(compute_index(fetch_file, fake_proof, root + "/log", operator_public(), 0, fake_drand, fake_source))
+    let last = unwrap(compute_index(fetch_file, fake_proof, root + "/log", operator_public(), 2, fake_drand, fake_source))
     assert(json_as_int(json_get(first, "epoch")) == epochs[0])
     assert(json_as_int(json_get(last, "epoch")) == epochs[1])
     assert(json_as_int(json_get(first, "t0")) == json_as_int(json_get(first, "deadline")))
@@ -146,20 +166,20 @@ fn test_compute_uses_the_epoch_the_entry_was_stamped_under() -> Unit:
 
 fn test_compute_is_a_function_of_public_data() -> Unit:
     let root = made_log(1, 2)
-    let a = unwrap(compute_index(fetch_file, root + "/log", operator_public(), 1, fake_drand, fake_source))
-    let b = unwrap(compute_index(fetch_file, root + "/log", operator_public(), 1, fake_drand, fake_source))
+    let a = unwrap(compute_index(fetch_file, fake_proof, root + "/log", operator_public(), 1, fake_drand, fake_source))
+    let b = unwrap(compute_index(fetch_file, fake_proof, root + "/log", operator_public(), 1, fake_drand, fake_source))
     assert(json_stringify(a) == json_stringify(b))
     let entry = json_as_text(json_get(a, "entry_hash"))
     assert(entry == hex_encode(unwrap(entry_hash(request_n(2)))))
 
 fn test_compute_refuses_an_index_no_closed_epoch_holds() -> Unit:
     let root = made_log(1, 2)
-    assert(not is_ok(compute_index(fetch_file, root + "/log", operator_public(), 2, fake_drand, fake_source)))
+    assert(not is_ok(compute_index(fetch_file, fake_proof, root + "/log", operator_public(), 2, fake_drand, fake_source)))
 
 fn test_compute_refuses_the_wrong_operator_key() -> Unit:
     let root = made_log(1, 2)
     let other = unwrap(crypto_ed25519_public_key(bytes_from_ints([5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5])))
-    assert(not is_ok(compute_index(fetch_file, root + "/log", other, 0, fake_drand, fake_source)))
+    assert(not is_ok(compute_index(fetch_file, fake_proof, root + "/log", other, 0, fake_drand, fake_source)))
 
 # ---------------------------------------------------------------- draw plans
 
@@ -176,9 +196,11 @@ fn test_plan_draw_builds_the_body_and_the_hash_the_service_must_answer_with() ->
     assert(plan.entry_hash_hex == hex_encode(unwrap(entry_hash(local))))
     assert(plan.has_question == false and plan.wait_seconds == 180)
 
-fn test_plan_draw_default_is_the_full_four_sources() -> Unit:
+fn test_plan_draw_default_is_the_three_live_sources_and_curby_q_is_opt_in() -> Unit:
     let plan = unwrap(plan_draw(["iching", "yarrow"], nonce_of(1), nonce_of(2)))
-    assert(json_len(json_get(unwrap(json_parse(plan.body)), "sources")) == 4)
+    assert(json_get(unwrap(json_parse(plan.body)), "sources") == unwrap(json_parse("[\"curby-rng\",\"drand-quicknet\",\"nist-beacon-2\"]")))
+    let full = unwrap(plan_draw(["iching", "yarrow", "--sources", "curby-q,curby-rng,nist-beacon-2"], nonce_of(1), nonce_of(2)))
+    assert(json_len(json_get(unwrap(json_parse(full.body)), "sources")) == 4)
 
 fn test_plan_draw_keeps_the_question_out_of_the_body() -> Unit:
     let plan = unwrap(plan_draw(["tarot", "rws", "count=3", "--question", "will it rain", "--sources", "drand-quicknet"], nonce_of(1), nonce_of(2)))
@@ -243,3 +265,123 @@ fn test_audit_command_over_two_directories() -> Unit:
     assert(cmd_audit(["--mirror", a + "/log", "--mirror", b + "/log", "--operator-key", key]) == 0)
     let c = made_log(50, 3)
     assert(cmd_audit(["--mirror", a + "/log", "--mirror", c + "/log", "--operator-key", key]) == 1)
+
+# ---------------------------------------------------------------- binding the receipt to the request
+
+fn fixture_promise() -> Text:
+    return json_as_text(json_get(fixture_receipt(), "promise"))
+
+fn fixture_hash() -> Text:
+    return json_as_text(json_get(json_get(fixture_receipt(), "log"), "entry_hash"))
+
+fn fixture_epoch() -> Int:
+    let note = json_as_text(json_get(json_get(fixture_receipt(), "log"), "checkpoint"))
+    let cp = unwrap(parse_checkpoint(unwrap(note_text(note))))
+    return unwrap(parse_epoch(cp.extensions)).epoch
+
+fn test_check_promise_accepts_the_operators_promise_and_nothing_else() -> Unit:
+    let key = fixture_key()
+    assert(check_promise(fixture_promise(), key, 0, fixture_hash(), fixture_epoch()))
+    assert(not check_promise(fixture_promise(), key, 1, fixture_hash(), fixture_epoch()))
+    assert(not check_promise(fixture_promise(), key, 0, fixture_hash(), fixture_epoch() + 1))
+    assert(not check_promise(fixture_promise(), key, 0, "00" + text_slice(fixture_hash(), 2, len(fixture_hash())), fixture_epoch()))
+    let other = unwrap(crypto_ed25519_public_key(bytes_from_ints([4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4])))
+    assert(not check_promise(fixture_promise(), other, 0, fixture_hash(), fixture_epoch()))
+    assert(not check_promise("not a promise", key, 0, fixture_hash(), fixture_epoch()))
+
+fn test_check_binding_names_what_differs() -> Unit:
+    let r = fixture_receipt()
+    let expected = json_stringify(json_get(r, "request"))
+    assert(check_binding(r, expected, fixture_hash(), fixture_promise(), 0) == "")
+    assert(check_binding(r, expected + " ", fixture_hash(), fixture_promise(), 0) != "")
+    assert(check_binding(r, expected, "00" + text_slice(fixture_hash(), 2, len(fixture_hash())), fixture_promise(), 0) != "")
+    assert(check_binding(r, expected, fixture_hash(), fixture_promise(), 1) != "")
+    assert(check_binding(r, expected, fixture_hash(), fixture_promise() + "x", 0) != "")
+
+fn test_a_receipt_for_another_request_with_the_same_commitment_is_not_accepted() -> Unit:
+    let r = fixture_receipt()
+    var other_request = json_get(r, "request")
+    set other_request = json_set(other_request, "client_nonce", json_text(hex_encode(nonce_of(5))))
+    let swapped = json_set(r, "request", other_request)
+    assert(check_binding(swapped, json_stringify(json_get(r, "request")), fixture_hash(), fixture_promise(), 0) != "")
+
+fn test_check_id_matches_the_start_of_the_entry_hash() -> Unit:
+    let r = fixture_receipt()
+    assert(check_id(r, text_slice(fixture_hash(), 0, 32)) == "")
+    assert(check_id(r, "00000000000000000000000000000000") != "")
+
+fn view_of_fixture() -> Json:
+    let r = fixture_receipt()
+    var v = json_object()
+    set v = json_set(v, "id", json_text(text_slice(fixture_hash(), 0, 32)))
+    set v = json_set(v, "index", json_get(json_get(r, "log"), "index"))
+    set v = json_set(v, "entry_hash", json_text(fixture_hash()))
+    set v = json_set(v, "promise", json_get(r, "promise"))
+    set v = json_set(v, "epoch", json_int(fixture_epoch()))
+    set v = json_set(v, "status", json_text("complete"))
+    return json_set(v, "receipt", r)
+
+fn test_binding_problem_accepts_the_real_view_and_names_each_lie() -> Unit:
+    let key = fixture_key()
+    let id = text_slice(fixture_hash(), 0, 32)
+    let expected = json_stringify(json_get(fixture_receipt(), "request"))
+    assert(binding_problem(view_of_fixture(), key, expected, fixture_hash(), id) == "")
+    assert(binding_problem(view_of_fixture(), key, "", "", id) == "")
+    assert(binding_problem(view_of_fixture(), key, expected, "00" + text_slice(fixture_hash(), 2, len(fixture_hash())), id) != "")
+    assert(binding_problem(json_set(view_of_fixture(), "index", json_int(5)), key, expected, fixture_hash(), id) != "")
+    assert(binding_problem(view_of_fixture(), key, expected + " ", fixture_hash(), id) != "")
+    assert(binding_problem(view_of_fixture(), key, expected, fixture_hash(), "00000000000000000000000000000000") != "")
+    assert(binding_problem(json_object(), key, expected, fixture_hash(), id) != "")
+
+fn test_compute_refuses_an_entry_in_a_void_epoch() -> Unit:
+    let root = temp_root()
+    let store = unwrap(store_open(root))
+    var w = unwrap(writer_open(store, cfg_for(root), seed_bytes()))
+    let r = request_n(80)
+    let queued = unwrap(store_put_inbox(store, draw_id(unwrap(entry_hash(r))), request_to_json(r)))
+    set w = unwrap(writer_tick(w, 1795556000))
+    set w = unwrap(writer_tick(w, 1795556010))
+    let stamped = unwrap(stamper_tick(store, {}, 1795556011, stamp_too_late, probe_up, 0))
+    assert(not is_ok(compute_index(fetch_file, fake_proof, root + "/log", operator_public(), 0, fake_drand, fake_source)))
+
+fn test_compute_says_pending_for_an_index_no_closed_epoch_holds() -> Unit:
+    let root = made_log(1, 2)
+    match compute_index(fetch_file, fake_proof, root + "/log", operator_public(), 2, fake_drand, fake_source):
+        Err(problem):
+            assert(problem.code == "E_LOTCAST_PENDING")
+        Ok(ignored):
+            assert(false)
+
+fn test_compute_refuses_a_mirror_whose_epoch_list_is_out_of_order() -> Unit:
+    let root = made_log(1, 3)
+    let epochs = unwrap(mirror_epochs(fetch_file, root + "/log"))
+    let wrote = write_text_atomic(root + "/log/epoch/index", int_to_text(epochs[1]) + "\n" + int_to_text(epochs[0]) + "\n")
+    assert(not is_ok(compute_index(fetch_file, fake_proof, root + "/log", operator_public(), 0, fake_drand, fake_source)))
+
+fn test_compute_notices_an_epoch_dropped_from_the_list_when_it_picks_the_wrong_checkpoint() -> Unit:
+    let root = made_log(1, 3)
+    let epochs = unwrap(mirror_epochs(fetch_file, root + "/log"))
+    let wrote = write_text_atomic(root + "/log/epoch/index", int_to_text(epochs[1]) + "\n")
+    let r = compute_index(fetch_file, fake_proof, root + "/log", operator_public(), 0, fake_drand, fake_source)
+    # Entry 0 now appears to belong to the later epoch; its deadline differs from the honest one.
+    let honest = unwrap(compute_index(fetch_file, fake_proof, made_log(1, 3) + "/log", operator_public(), 0, fake_drand, fake_source))
+    if is_ok(r):
+        assert(json_as_int(json_get(unwrap(r), "epoch")) != json_as_int(json_get(honest, "epoch")))
+
+fn test_audit_flags_mirrors_that_disagree_about_which_checkpoint_closed_an_epoch() -> Unit:
+    let a = made_log(1, 3)
+    let b = made_log(1, 3)
+    let epochs = unwrap(mirror_epochs(fetch_file, a + "/log"))
+    let wrote = write_text_atomic(b + "/log/epoch/index", int_to_text(epochs[1]) + "\n")
+    let report = audit_views([view_of(a), view_of(b)])
+    assert(report.status == 1)
+    assert(text_find(text_join(report.lines, "\n"), "omits epoch", 0) >= 0)
+
+fn test_audit_flags_a_different_checkpoint_filed_under_the_same_epoch() -> Unit:
+    let a = made_log(1, 3)
+    let b = made_log(1, 3)
+    let epochs = unwrap(mirror_epochs(fetch_file, a + "/log"))
+    let note = unwrap(read_text(b + "/log/epoch/" + int_to_text(epochs[1])))
+    let wrote = write_text_atomic(b + "/log/epoch/" + int_to_text(epochs[0]), note)
+    let report = audit_views([view_of(a), view_of(b)])
+    assert(report.status == 1)

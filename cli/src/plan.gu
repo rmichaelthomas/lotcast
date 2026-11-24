@@ -17,9 +17,16 @@ pub record DrawPlan:
     salt_hex: Text
     wait_seconds: Int
     operator_key_hex: Text
+    request_json: Text
 
 fn all_sources() -> List[Text]:
     return ["curby-q", "curby-rng", "drand-quicknet", "nist-beacon-2"]
+
+# The default for the command line: the three beacons that publish a pulse every minute or so.
+# CURBy-Q has been idle since 2025-08-22, so a draw that includes it waits out its whole window
+# (about 32 minutes); ask for it with --sources.
+fn live_sources() -> List[Text]:
+    return ["curby-rng", "drand-quicknet", "nist-beacon-2"]
 
 fn known_source(id: Text) -> Bool:
     for k in all_sources():
@@ -37,7 +44,7 @@ fn split_option(arg: Text) -> List[Text]:
 # Sources from "a,b": every id known, drand-quicknet always present, sorted and unique.
 fn parse_sources(arg: Text, given: Bool) -> Result[List[Text], Text]:
     if not given:
-        return Ok(all_sources())
+        return Ok(live_sources())
     var ids: List[Text] = ["drand-quicknet"]
     for id in text_split(arg, ","):
         if not known_source(id):
@@ -106,4 +113,4 @@ pub fn plan_draw(all: List[Text], nonce: Bytes, salt: Bytes) -> Result[DrawPlan,
     var salt_hex = ""
     if asked:
         set salt_hex = hex_encode(salt)
-    return Ok(DrawPlan(flag_one(f, "--server", "http://127.0.0.1:8080"), json_stringify(body), hex_encode(unwrap(hash)), asked, flag_one(f, "--question", ""), salt_hex, wait, flag_one(f, "--operator-key", "")))
+    return Ok(DrawPlan(flag_one(f, "--server", "http://127.0.0.1:8080"), json_stringify(body), hex_encode(unwrap(hash)), asked, flag_one(f, "--question", ""), salt_hex, wait, flag_one(f, "--operator-key", ""), json_stringify(request_to_json(request))))

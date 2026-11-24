@@ -71,12 +71,13 @@ fn test_unknown_route_is_404_and_wrong_method_is_405() -> Unit:
     assert(call(app, "GET", "/v1/nothing", "").status == 404)
     assert(call(app, "DELETE", "/v1/traditions", "").status == 405)
 
-fn test_post_draws_queues_then_answers_busy_when_no_writer_runs() -> Unit:
+fn test_post_draws_queues_and_answers_202_with_what_it_waits_on_when_no_writer_runs() -> Unit:
     let root = temp_root()
     let app = make_app(root, 0)
     let r = call(app, "POST", "/v1/draws", nonce_body(1))
-    assert(r.status == 503)
-    assert(error_code(r) == "E_BUSY")
+    assert(r.status == 202)
+    assert(json_as_text(json_get(json_body(r), "status")) == "pending")
+    assert(json_as_text(json_get(unwrap(json_index_safe(json_get(json_body(r), "waiting_on"), 0)), "source")) == "log")
     assert(len(store_inbox_ids(unwrap(store_open(root)))) == 1)
 
 fn test_post_draws_validation_errors_carry_their_codes() -> Unit:
@@ -185,3 +186,26 @@ fn test_epoch_and_anchor_files_are_served_from_the_log() -> Unit:
     assert(call(app, "GET", "/v1/log/epoch/index", "").status == 200)
     assert(call(app, "GET", "/v1/log/anchor/7.json", "").status == 200)
     assert(call(app, "GET", "/v1/log/anchor/../../registry.json", "").status == 404)
+
+fn test_forwarded_for_lines_added_by_separate_proxies_are_read_from_the_right() -> Unit:
+    let app = make_app(temp_root(), 1)
+    for i in range(0, 60):
+        let h = [unwrap(header_new("X-Forwarded-For", "10.0." + int_to_text(i) + ".1")), unwrap(header_new("X-Forwarded-For", "203.0.113.9"))]
+        assert(call_with(app, "POST", "/v1/draws", "{}", h).status == 400)
+    let h = [unwrap(header_new("X-Forwarded-For", "10.9.9.9")), unwrap(header_new("X-Forwarded-For", "203.0.113.9"))]
+    assert(call_with(app, "POST", "/v1/draws", "{}", h).status == 429)
+
+fn test_verify_is_rate_limited_apart_from_draws() -> Unit:
+    let app = make_app(temp_root(), 0)
+    for i in range(0, 60):
+        assert(call(app, "POST", "/v1/verify", "{\"receipt\":{}}").status == 200)
+    assert(call(app, "POST", "/v1/verify", "{\"receipt\":{}}").status == 429)
+    assert(call(app, "POST", "/v1/draws", "{}").status == 400)
+
+fn test_verify_accepts_a_body_larger_than_a_draw_request() -> Unit:
+    let app = make_app(temp_root(), 0)
+    var big = "{\"receipt\":{\"x\":\""
+    for i in range(0, 8000):
+        set big = big + "0123456789"
+    let r = call(app, "POST", "/v1/verify", big + "\"}}")
+    assert(r.status == 200)

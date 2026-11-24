@@ -20,7 +20,7 @@ fn subdir(name: Text) -> Text:
     return name
 
 pub fn store_open(root: Text) -> Result[Store, StdError]:
-    for name in ["inbox", "draws", "epochs", "anchors", "receipts", "status", "state"]:
+    for name in ["inbox", "draws", "epochs", "anchors", "receipts", "status", "state", "active"]:
         let made = make_dirs(root + "/" + name)?
     let store = Store(root)
     let drawn = store_names(store, "draws")?
@@ -107,3 +107,15 @@ pub fn store_inbox_ids(store: Store) -> List[Text]:
 
 pub fn store_remove_inbox(store: Store, id: Text) -> Bool:
     return is_ok(fs_remove(store.root + "/inbox/" + id + ".json"))
+
+# Draws the watcher still has to finish (a marker per draw, removed when its receipt exists or its
+# epoch is void), so a pass does not walk every draw ever made.
+pub fn store_active_ids(store: Store) -> List[Text]:
+    let names = store_names(store, "active")
+    if not is_ok(names):
+        let none: List[Text] = []
+        return none
+    return unwrap(names)
+
+pub fn store_clear_active(store: Store, id: Text) -> Bool:
+    return is_ok(fs_remove(store.root + "/active/" + id + ".json"))

@@ -15,6 +15,7 @@ import "audit.gu"
 import "compute.gu"
 import "client.gu"
 import "plan.gu"
+import "bind.gu"
 
 # The `lotcast` subcommands. Exit codes: 0 done and verified, 1 invalid or failed, 2 bad arguments
 # or unreadable input, 3 verified except for a live check still owed, 4 still pending.
@@ -187,6 +188,16 @@ pub fn cmd_draw(all: List[Text]) -> Int:
             Ok(ignored):
                 return 2
     let plan = unwrap(planned)
+    var kf = Flags([], [], [])
+    if plan.operator_key_hex != "":
+        set kf = Flags([], ["--operator-key"], [plan.operator_key_hex])
+    let key = key_from(kf, plan.server)
+    if not is_ok(key):
+        match key:
+            Err(why):
+                return say_error(why + " (nothing was sent)")
+            Ok(ignored):
+                return 2
     let posted = http_reply("POST", plan.server + "/v1/draws", plan.body)
     if not is_ok(posted):
         match posted:
@@ -198,25 +209,14 @@ pub fn cmd_draw(all: List[Text]) -> Int:
     if reply.status != 200 and reply.status != 202:
         eprint("the service refused the request: " + error_message(reply.body))
         return 1
-    if json_as_text(json_get(reply.body, "entry_hash")) != plan.entry_hash_hex:
-        eprint("the service logged a different entry than the one sent (entry_hash differs): do not trust this draw")
-        return 1
     let id = json_as_text(json_get(reply.body, "id"))
+    let doubt = binding_problem(reply.body, unwrap(key), plan.request_json, plan.entry_hash_hex, id)
+    if doubt != "":
+        eprint(doubt + ": do not trust this draw")
+        return 1
     eprint("logged: index=" + int_to_text(json_as_int(json_get(reply.body, "index"))) + " id=" + id)
     if plan.has_question:
         eprint("salt=" + plan.salt_hex)
-    var f = Flags([], [], [])
-    if plan.operator_key_hex != "":
-        set f = Flags([], ["--operator-key"], [plan.operator_key_hex])
-    let key = key_from(f, plan.server)
-    if not is_ok(key):
-        match key:
-            Err(why):
-                eprint(why)
-            Ok(ignored):
-                eprint("no operator key")
-        eprint("the draw is logged; verify later with: lotcast get " + id + " --operator-key HEX")
-        return 2
     let view = poll_draw(plan.server, id, plan.wait_seconds)
     if not is_ok(view):
         match view:
@@ -227,6 +227,10 @@ pub fn cmd_draw(all: List[Text]) -> Int:
     var saltbytes = bytes_from_ints([])
     if plan.has_question:
         set saltbytes = unwrap(hex_decode(plan.salt_hex))
+    let later = binding_problem(unwrap(view), unwrap(key), plan.request_json, plan.entry_hash_hex, id)
+    if later != "":
+        eprint(later + ": do not trust this draw")
+        return 1
     return finish(unwrap(view), unwrap(key), plan.has_question, plan.question, saltbytes, false)
 
 pub fn cmd_get(all: List[Text]) -> Int:
@@ -261,6 +265,10 @@ pub fn cmd_get(all: List[Text]) -> Int:
                 return say_error(why)
             Ok(ignored):
                 return 2
+    let doubt = binding_problem(unwrap(view), unwrap(key), "", "", f.positional[0])
+    if doubt != "":
+        eprint(doubt + ": do not trust this draw")
+        return 1
     return finish(unwrap(view), unwrap(key), false, "", bytes_from_ints([]), false)
 
 # ---------------------------------------------------------------- lotcast compute / audit
@@ -299,7 +307,7 @@ pub fn cmd_compute(all: List[Text]) -> Int:
                 return say_error(why)
             Ok(ignored):
                 return 2
-    let computed = compute_index(fetch_for(mirror), mirror, unwrap(key), unwrap(index), real_drand, real_source)
+    let computed = compute_index(fetch_for(mirror), real_proof, mirror, unwrap(key), unwrap(index), real_drand, real_source)
     if not is_ok(computed):
         match computed:
             Err(problem):

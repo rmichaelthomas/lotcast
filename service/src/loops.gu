@@ -1,4 +1,6 @@
 import "std:types"
+import "std:crypto"
+import "std:encoding"
 import "std:fs"
 import "std:json"
 import "std:process"
@@ -13,6 +15,7 @@ import "epoch.gu"
 import "stamper.gu"
 import "watch.gu"
 import "pins.gu"
+import "limits.gu"
 
 # The network side of the service: the real stamping, beacon and receipt functions the loops pass to
 # the epoch writer, the stamper and the watcher, and the loops themselves. A loop stops when
@@ -28,6 +31,13 @@ fn stopped(store: Store) -> Bool:
 
 pub fn real_stamp(note: Text, tsa_ids: List[Text]) -> Result[Json, StdError]:
     return anchor_checkpoint(note, tsa_ids)
+
+# One tiny stamp request, to find out whether an authority answers again (not a checkpoint stamp).
+pub fn real_probe(id: Text) -> Bool:
+    let pin = pin_by_id(id)
+    if not is_ok(pin):
+        return false
+    return is_ok(tsa_stamp(unwrap(pin), crypto_sha512(bytes_from_text("lotcast probe"))))
 
 pub fn real_drand(round: Int) -> Result[DrandRound, StdError]:
     return drand_fetch(drand_quicknet(), round)
@@ -83,7 +93,7 @@ pub fn stamper_loop(store: Store, max_ticks: Int) -> Int:
     var failing: Map[Text, Int] = {}
     var ticks = 0
     while not stopped(store) and (max_ticks == 0 or ticks < max_ticks):
-        let next = stamper_tick(store, failing, now_seconds(), real_stamp)
+        let next = stamper_tick(store, failing, now_seconds(), real_stamp, real_probe, 1)
         if is_ok(next):
             set failing = unwrap(next)
         else:
@@ -122,6 +132,7 @@ pub fn watch_loop(store: Store, cfg: Config, operator_key: Bytes, max_ticks: Int
         if now - last_snapshot >= 60:
             let saved = store_put_json(store, "state/sources.json", sources_snapshot(now))
             set last_snapshot = now
+            let swept = rate_sweep(store, now)
         if now // 86400 != last_alert_day:
             alert_pins(now)
             set last_alert_day = now // 86400

@@ -57,7 +57,7 @@ A draw with CURBy-Q waits until its window has closed (about 32 minutes while th
 ```
 cd cli
 guion run --allow-bind 127.0.0.1:8080 --allow-clock --file-root DATA --allow-http-host ... \
-    lotcast.gu serve --data-dir data --key-file operator.key --new-key --registry ../registry/lotcast-registry-v1.json
+    lotcast.gu serve --data-dir data --key-file operator.key --new-key --registry registry.json
 guion run --allow-clock --allow-http-host 127.0.0.1 --allow-http-host ... lotcast.gu draw iching coins --server http://127.0.0.1:8080
 ```
 

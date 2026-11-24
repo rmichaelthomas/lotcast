@@ -9,17 +9,21 @@ import "pkg:lotcast-log/src/lib.gu"
 import "config.gu"
 import "store.gu"
 
-# The writer: the one place that appends to the log. Each tick closes the open epoch when its time
-# is up (storing the final checkpoint and every entry's inclusion proof in `epochs/<e>.json`) and
-# then drains the inbox into the current epoch.
+# The writer: the only place that appends to the log. A request is promised an index the moment it
+# is drained from the inbox (its index is the log size when the epoch opened plus its position in the
+# epoch), and the whole epoch is appended in ONE batch when the epoch ends, so the log carries exactly
+# one signed checkpoint per epoch, the one the stamper stamps.
 #
 # Epoch numbers come from the clock: epoch = unix seconds // epoch_seconds, and an epoch's
 # deadline is (epoch + 1) * epoch_seconds + stamp_budget. Both are fixed before anything is
-# stamped and signed into every checkpoint of the epoch (`lotcast/epoch <e> <deadline>`), so no
-# coordination is needed between the handlers' promises and the checkpoint.
+# stamped and signed into the checkpoint (`lotcast/epoch <e> <deadline>`), so the promises made before
+# the checkpoint exists already name them. A checkpoint signed after its own deadline cannot be
+# stamped in time, so its epoch is void.
 #
-# `state/open.json` is the intent record: {epoch, deadline, ids}. It is written before the append,
-# so after a crash the same ids are drained into the same epoch (a repeated entry keeps its index).
+# `state/open.json` is the intent record {epoch, deadline, base, ids}: written before any promise, so
+# a crash at any point leaves enough to finish the epoch: draw records are rebuilt from the inbox (the
+# index is base + position, and signatures are deterministic), and an append that already happened
+# is recognised and not repeated.
 
 pub record Writer:
     store: Store
@@ -28,6 +32,7 @@ pub record Writer:
     public: Bytes
     epoch_seconds: Int
     stamp_budget: Int
+    last_epoch: Int
     state: LogState
 
 pub fn epoch_of(now: Int, epoch_seconds: Int) -> Int:
@@ -39,10 +44,23 @@ pub fn deadline_of(epoch: Int, epoch_seconds: Int, stamp_budget: Int) -> Int:
 fn log_dir(store: Store) -> Text:
     return store.root + "/log"
 
+# The highest epoch with a closed-epoch file, or -1.
+fn highest_closed(store: Store) -> Int:
+    let listed = fs_list_dir(store.root + "/epochs")
+    var best = -1
+    if is_ok(listed):
+        for name in unwrap(listed):
+            let size = len(name)
+            if size > 5 and text_slice(name, size - 5, size) == ".json":
+                let n = text_parse_int(text_slice(name, 0, size - 5))
+                if is_ok(n) and unwrap(n) > best:
+                    set best = unwrap(n)
+    return best
+
 pub fn writer_open(store: Store, cfg: Config, seed: Bytes) -> Result[Writer, StdError]:
     let public = crypto_ed25519_public_key(seed)?
     let state = log_open(log_dir(store), cfg.origin, cfg.origin, public)?
-    return Ok(Writer(store, cfg.origin, seed, public, cfg.epoch_seconds, cfg.stamp_budget, state))
+    return Ok(Writer(store, cfg.origin, seed, public, cfg.epoch_seconds, cfg.stamp_budget, highest_closed(store), state))
 
 fn open_epoch(store: Store) -> Option[Json]:
     if not store_has(store, "state/open.json"):
@@ -59,26 +77,15 @@ fn ids_of(open: Json) -> List[Text]:
         set out = list_push(out, json_as_text(unwrap(json_index_safe(listed, i))))
     return out
 
-fn open_json(epoch: Int, deadline: Int, ids: List[Text]) -> Json:
+fn open_json(epoch: Int, deadline: Int, base: Int, ids: List[Text]) -> Json:
     var listed = json_array()
     for id in ids:
         set listed = json_push(listed, json_text(id))
-    return json_set(json_set(json_set(json_object(), "epoch", json_int(epoch)), "deadline", json_int(deadline)), "ids", listed)
-
-# The epoch the log's newest checkpoint was written for, or -1 for an empty log.
-fn checkpoint_epoch(state: LogState) -> Int:
-    if state.size == 0:
-        return -1
-    let text = note_text(state.checkpoint)
-    if not is_ok(text):
-        return -1
-    let cp = parse_checkpoint(unwrap(text))
-    if not is_ok(cp):
-        return -1
-    let info = parse_epoch(unwrap(cp).extensions)
-    if not is_ok(info):
-        return -1
-    return unwrap(info).epoch
+    var o = json_object()
+    set o = json_set(o, "epoch", json_int(epoch))
+    set o = json_set(o, "deadline", json_int(deadline))
+    set o = json_set(o, "base", json_int(base))
+    return json_set(o, "ids", listed)
 
 fn hex_list(hashes: List[Bytes]) -> Json:
     var out = json_array()
@@ -86,41 +93,13 @@ fn hex_list(hashes: List[Bytes]) -> Json:
         set out = json_push(out, json_text(hex_encode(h)))
     return out
 
-# Closes the open epoch when its time is up: stores the stamped-to-be checkpoint and proofs.
-fn close_if_due(w: Writer, now: Int) -> Result[Writer, StdError]:
-    match open_epoch(w.store):
-        None:
-            return Ok(w)
-        Some(open):
-            let epoch = json_as_int(json_get(open, "epoch"))
-            if now < (epoch + 1) * w.epoch_seconds:
-                return Ok(w)
-            let deadline = json_as_int(json_get(open, "deadline"))
-            # Nothing was appended for this epoch (a crash between the intent and the append): the
-            # intent is dropped and its requests, still in the inbox, go into a later epoch.
-            if checkpoint_epoch(w.state) != epoch:
-                let dropped = fs_remove(w.store.root + "/state/open.json")
-                return Ok(w)
-            var entries = json_array()
-            for id in ids_of(open):
-                let draw = store_get_draw(w.store, id)?
-                let index = json_as_int(json_get(draw, "index"))
-                let proof = log_inclusion(w.state, index)?
-                var item = json_object()
-                set item = json_set(item, "id", json_text(id))
-                set item = json_set(item, "index", json_int(index))
-                set item = json_set(item, "inclusion", hex_list(proof))
-                set entries = json_push(entries, item)
-            var closed = json_object()
-            set closed = json_set(closed, "epoch", json_int(epoch))
-            set closed = json_set(closed, "deadline", json_int(deadline))
-            set closed = json_set(closed, "size", json_int(w.state.size))
-            set closed = json_set(closed, "checkpoint", json_text(w.state.checkpoint))
-            set closed = json_set(closed, "entries", entries)
-            let saved = store_put_json(w.store, "epochs/" + int_to_text(epoch) + ".json", closed)?
-            let published = publish_epoch(w.store, epoch, w.state.checkpoint)?
-            let removed = fs_remove(w.store.root + "/state/open.json")
-            return Ok(w)
+fn parse_inbox(request: Json) -> Result[DrawRequest, StdError]:
+    let wrapped = json_set(json_object(), "request", request)
+    match parse_request(wrapped):
+        Ok(r):
+            return Ok(r)
+        Err(why):
+            return Err(std_error("E_STORE", "a stored request cannot be read: " + why))
 
 # Puts the epoch's checkpoint and the list of epochs in the public log directory, so anyone with a
 # mirror can find the checkpoint an entry was stamped under (`lotcast compute`, spec 8.3).
@@ -140,87 +119,139 @@ fn publish_epoch(store: Store, epoch: Int, checkpoint: Text) -> Result[Bool, Std
     let saved = put_file(dir, "epoch/index", text_bytes(index + name + "\n"))?
     return Ok(true)
 
-fn parse_inbox(request: Json) -> Result[DrawRequest, StdError]:
-    let wrapped = json_set(json_object(), "request", request)
-    match parse_request(wrapped):
-        Ok(r):
-            return Ok(r)
-        Err(why):
-            return Err(std_error("E_STORE", "an inbox request cannot be read: " + why))
+# The request stored with a draw or waiting in the inbox.
+fn request_of(store: Store, id: Text) -> Result[DrawRequest, StdError]:
+    if store_has(store, "draws/" + id + ".json"):
+        let draw = store_get_draw(store, id)?
+        return parse_inbox(json_get(draw, "request"))
+    let waiting = store_get_json(store, "inbox/" + id + ".json")?
+    return parse_inbox(waiting)
 
-# Moves inbox requests into `epoch`: intent first, then one append, then the draw records, then the
-# inbox files go. With `restrict` set only the listed ids move (the recovery of an epoch that is
-# already over); otherwise every inbox request does.
-fn drain(w: Writer, epoch: Int, deadline: Int, only: List[Text], restrict: Bool) -> Result[Writer, StdError]:
+# Writes the draw records an intent promises that do not exist yet (after a crash between the intent
+# and the records). Each is the same record the first run would have written.
+fn complete_draws(w: Writer, open: Json) -> Result[Bool, StdError]:
+    let epoch = json_as_int(json_get(open, "epoch"))
+    let deadline = json_as_int(json_get(open, "deadline"))
+    let base = json_as_int(json_get(open, "base"))
+    let ids = ids_of(open)
+    for p in range(0, len(ids)):
+        if not store_has(w.store, "draws/" + ids[p] + ".json"):
+            let request = request_of(w.store, ids[p])?
+            let hash = entry_hash(request)?
+            let promise = make_promise(w.origin, base + p, hash, epoch, w.origin, w.seed)?
+            let record = draw_record(ids[p], base + p, hex_encode(hash), promise, epoch, deadline, request_to_json(request))
+            let kept = store_put_draw(w.store, ids[p], record)?
+            let marked = mark_active(w.store, ids[p])?
+    return Ok(true)
+
+# A marker the watcher scans instead of every draw ever made.
+fn mark_active(store: Store, id: Text) -> Result[Bool, StdError]:
+    return store_put_json(store, "active/" + id + ".json", json_object())
+
+# Appends the open epoch as one batch (unless a crash already did) and stores its checkpoint and each
+# entry's inclusion proof in `epochs/<e>.json`.
+fn close_epoch(w: Writer, open: Json) -> Result[Writer, StdError]:
+    let epoch = json_as_int(json_get(open, "epoch"))
+    let deadline = json_as_int(json_get(open, "deadline"))
+    let base = json_as_int(json_get(open, "base"))
+    let ids = ids_of(open)
+    let drawn = complete_draws(w, open)?
+    var entries: List[Bytes] = []
+    for id in ids:
+        let request = request_of(w.store, id)?
+        set entries = list_push(entries, entry_bytes(request)?)
+    var state = w.state
+    if state.size >= base + len(ids):
+        # The append happened before a crash: the entries must be where the promises say.
+        for p in range(0, len(ids)):
+            if state.hashes[base + p] != leaf_hash(entries[p]):
+                return Err(std_error("E_STORE", "the log holds a different entry than the promise at index " + int_to_text(base + p)))
+    else:
+        if state.size != base:
+            return Err(std_error("E_STORE", "the log has " + int_to_text(state.size) + " entries, but the open epoch started at " + int_to_text(base)))
+        let appended = log_append_many(state, entries, w.origin, w.seed, [epoch_extension(epoch, deadline)])?
+        if appended.added != len(ids):
+            return Err(std_error("E_STORE", "the epoch's entries were not all new"))
+        set state = appended.state
+    var items = json_array()
+    for p in range(0, len(ids)):
+        let proof = log_inclusion(state, base + p)?
+        var item = json_object()
+        set item = json_set(item, "id", json_text(ids[p]))
+        set item = json_set(item, "index", json_int(base + p))
+        set item = json_set(item, "inclusion", hex_list(proof))
+        set items = json_push(items, item)
+    var closed = json_object()
+    set closed = json_set(closed, "epoch", json_int(epoch))
+    set closed = json_set(closed, "deadline", json_int(deadline))
+    set closed = json_set(closed, "size", json_int(state.size))
+    set closed = json_set(closed, "checkpoint", json_text(state.checkpoint))
+    set closed = json_set(closed, "entries", items)
+    let saved = store_put_json(w.store, "epochs/" + int_to_text(epoch) + ".json", closed)?
+    let published = publish_epoch(w.store, epoch, state.checkpoint)?
+    let removed = fs_remove(w.store.root + "/state/open.json")
+    return Ok(Writer(w.store, w.origin, w.seed, w.public, w.epoch_seconds, w.stamp_budget, epoch, state))
+
+# Moves the inbox into the current epoch: the intent first, then a draw record (with its promise) for
+# each new request, then the inbox files go. Nothing touches the log.
+fn drain(w: Writer, now: Int) -> Result[Writer, StdError]:
+    let epoch = epoch_of(now, w.epoch_seconds)
+    # A clock that stepped back into an epoch that is already closed must not reopen it.
+    if epoch <= w.last_epoch:
+        return Ok(w)
+    let deadline = deadline_of(epoch, w.epoch_seconds, w.stamp_budget)
     var open_ids: List[Text] = []
+    var base = w.state.size
     match open_epoch(w.store):
         Some(open):
-            if json_as_int(json_get(open, "epoch")) == epoch:
-                set open_ids = ids_of(open)
+            if json_as_int(json_get(open, "epoch")) != epoch:
+                return Ok(w)
+            let repaired = complete_draws(w, open)?
+            set open_ids = ids_of(open)
+            set base = json_as_int(json_get(open, "base"))
         None:
             set open_ids = []
-    var ids: List[Text] = []
-    var entries: List[Bytes] = []
-    var hashes: List[Bytes] = []
+    var fresh: List[Text] = []
     for id in store_inbox_ids(w.store):
-        var wanted = not restrict
-        for o in only:
+        var known = store_has(w.store, "draws/" + id + ".json")
+        for o in open_ids:
             if o == id:
-                set wanted = true
-        if wanted:
-            if store_has(w.store, "draws/" + id + ".json"):
-                let gone = store_remove_inbox(w.store, id)
+                set known = true
+        if known:
+            let gone = store_remove_inbox(w.store, id)
+        else:
+            let read = store_get_json(w.store, "inbox/" + id + ".json")
+            var good = false
+            if is_ok(read):
+                let request = parse_inbox(unwrap(read))
+                if is_ok(request):
+                    let hash = entry_hash(unwrap(request))
+                    if is_ok(hash) and draw_id(unwrap(hash)) == id:
+                        set good = true
+            if good:
+                set fresh = list_push(fresh, id)
             else:
-                let read = store_get_json(w.store, "inbox/" + id + ".json")
-                if not is_ok(read):
-                    let gone = store_remove_inbox(w.store, id)
-                else:
-                    let request = parse_inbox(unwrap(read))
-                    if not is_ok(request):
-                        let gone = store_remove_inbox(w.store, id)
-                    else:
-                        let hash = entry_hash(unwrap(request))?
-                        let bytes = entry_bytes(unwrap(request))?
-                        if draw_id(hash) != id:
-                            let gone = store_remove_inbox(w.store, id)
-                        else:
-                            set ids = list_push(ids, id)
-                            set entries = list_push(entries, bytes)
-                            set hashes = list_push(hashes, hash)
-    if len(ids) == 0:
+                let gone = store_remove_inbox(w.store, id)
+    if len(fresh) == 0:
         return Ok(w)
     var all_ids = open_ids
-    for id in ids:
+    for id in fresh:
         set all_ids = list_push(all_ids, id)
-    let intent = store_put_json(w.store, "state/open.json", open_json(epoch, deadline, all_ids))?
-    let appended = log_append_many(w.state, entries, w.origin, w.seed, [epoch_extension(epoch, deadline)])?
-    for i in range(0, len(ids)):
-        let index = appended.indexes[i]
-        let promise = make_promise(w.origin, index, hashes[i], epoch, w.origin, w.seed)?
-        let read = store_get_json(w.store, "inbox/" + ids[i] + ".json")?
-        let record = draw_record(ids[i], index, hex_encode(hashes[i]), promise, epoch, deadline, read)
-        let kept = store_put_draw(w.store, ids[i], record)?
-        let gone = store_remove_inbox(w.store, ids[i])
-    return Ok(Writer(w.store, w.origin, w.seed, w.public, w.epoch_seconds, w.stamp_budget, appended.state))
+    let intent = open_json(epoch, deadline, base, all_ids)
+    let saved = store_put_json(w.store, "state/open.json", intent)?
+    let made = complete_draws(w, intent)?
+    for id in fresh:
+        let gone = store_remove_inbox(w.store, id)
+    return Ok(w)
 
-# One pass of the writer at time `now` (unix seconds).
+# One pass of the writer at time `now` (unix seconds): finish and close the open epoch when its time
+# is up, then drain the inbox into the current one.
 pub fn writer_tick(w: Writer, now: Int) -> Result[Writer, StdError]:
     var current = w
-    let epoch = epoch_of(now, w.epoch_seconds)
     match open_epoch(w.store):
         Some(open):
-            let old = json_as_int(json_get(open, "epoch"))
-            if old != epoch:
-                # Finish what a crash left half-done in the old epoch before closing it, but only
-                # while the stamps can still make its deadline; later, the intent is dropped and
-                # the requests (still in the inbox) go into the current epoch.
-                let old_deadline = json_as_int(json_get(open, "deadline"))
-                if now < old_deadline - w.stamp_budget // 2:
-                    set current = drain(current, old, old_deadline, ids_of(open), true)?
-                else:
-                    if checkpoint_epoch(current.state) != old:
-                        let dropped = fs_remove(w.store.root + "/state/open.json")
+            if now >= (json_as_int(json_get(open, "epoch")) + 1) * w.epoch_seconds:
+                set current = close_epoch(current, open)?
         None:
             set current = w
-    let closed = close_if_due(current, now)?
-    return drain(closed, epoch, deadline_of(epoch, w.epoch_seconds, w.stamp_budget), [], false)
+    return drain(current, now)

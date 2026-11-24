@@ -47,6 +47,25 @@ files = [
 ]
 network = ["127.0.0.1"]
 
+[capabilities]
+clock = true
+files = [
+    "read",
+    "write",
+]
+network = [
+    "api.drand.sh",
+    "beacon.nist.gov",
+    "drand.cloudflare.com",
+    "random.colorado.edu",
+    "timestamp.digicert.com",
+    "timestamp.sectigo.com",
+    "freetsa.org",
+]
+
+[clock]
+enabled = true
+
 [dependencies.beacons]
 registry = "^0.3.0"
 sha256 = "7dba151b9d59a7d7c79f42f7d262db8d39818907af308caa99d67a3f707e242f"
@@ -71,30 +90,11 @@ sha256 = "3eaf1653f4fd4aeec39a1a752608ae3a61032878826ea375db72209e830476a9"
 url = "https://guion-registry.thomasbuild.workers.dev/objects/3eaf1653f4fd4aeec39a1a752608ae3a61032878826ea375db72209e830476a9.tar"
 version = "0.2.0"
 
+[environment]
+variables = ["LOTCAST_OPERATOR_KEY"]
+
 [package]
 entry = "src/lib.gu"
 exports = ["src/lib.gu"]
 name = "lotcast-cli"
 version = "0.1.0"
-
-[capabilities]
-clock = true
-files = [
-    "read",
-    "write",
-]
-network = [
-    "api.drand.sh",
-    "beacon.nist.gov",
-    "drand.cloudflare.com",
-    "random.colorado.edu",
-    "timestamp.digicert.com",
-    "timestamp.sectigo.com",
-    "freetsa.org",
-]
-
-[clock]
-enabled = true
-
-[environment]
-variables = ["LOTCAST_OPERATOR_KEY"]

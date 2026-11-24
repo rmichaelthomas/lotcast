@@ -61,24 +61,41 @@ fn h_registry(request: Request) -> Result[Response, HttpFailure]:
 fn h_sources(request: Request) -> Result[Response, HttpFailure]:
     return Ok(json_response(200, api_sources(store_of(request))))
 
+# Every X-Forwarded-For line, in order, as one comma-separated list: a proxy may add its own line
+# instead of appending to the client's, and only the right-hand entries are trusted.
+fn forwarded_for(request: Request) -> Text:
+    var lines: List[Text] = []
+    for h in request.headers:
+        if text_casefold(h.name) == "x-forwarded-for":
+            set lines = list_push(lines, h.value)
+    return text_join(lines, ",")
+
+fn too_many() -> Response:
+    let limited = error_response(ApiError(429, "E_RATE", "at most 60 requests per minute"))
+    match response_set_header(limited, "Retry-After", "60"):
+        Ok(with_header):
+            return with_header
+        Err(ignored):
+            return limited
+
 fn h_post_draw(request: Request) -> Result[Response, HttpFailure]:
     let store = store_of(request)
     let now = now_seconds()
-    let key = client_key(header_of(request, "x-forwarded-for"), int_of(header_of(request, "x-lotcast-trust"), 0))
+    let key = client_key(forwarded_for(request), int_of(header_of(request, "x-lotcast-trust"), 0))
     if not rate_hit(store, key, now, 60):
-        let limited = error_response(ApiError(429, "E_RATE", "at most 60 draws per minute"))
-        match response_set_header(limited, "Retry-After", "60"):
-            Ok(with_header):
-                return Ok(with_header)
-            Err(ignored):
-                return Ok(limited)
+        return Ok(too_many())
     match api_submit_start(store, request.body, now):
         Err(e):
             return Ok(error_response(e))
         Ok(id):
-            match api_wait_draw(store, id, int_of(header_of(request, "x-lotcast-wait"), 6000)):
+            match api_wait_draw(store, id, int_of(header_of(request, "x-lotcast-wait"), 2000)):
                 Err(e):
-                    return Ok(error_response(e))
+                    # The writer has not promised an index yet: the request is queued, poll for it.
+                    match api_draw(store, id):
+                        Ok(queued):
+                            return Ok(json_response(202, queued))
+                        Err(ignored):
+                            return Ok(error_response(e))
                 Ok(view):
                     if json_as_text(json_get(view, "status")) == "complete":
                         return Ok(json_response(200, view))
@@ -116,6 +133,9 @@ fn operator_key_of(request: Request) -> Bytes:
     return unwrap(decoded)
 
 fn h_verify(request: Request) -> Result[Response, HttpFailure]:
+    let key = client_key(forwarded_for(request), int_of(header_of(request, "x-lotcast-trust"), 0))
+    if not rate_hit(store_of(request), "verify|" + key, now_seconds(), 60):
+        return Ok(too_many())
     match api_verify(request.body, operator_key_of(request)):
         Ok(out):
             return Ok(json_response(200, out))

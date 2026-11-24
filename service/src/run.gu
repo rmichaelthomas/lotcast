@@ -24,7 +24,7 @@ record Job:
 fn run_job(job: Job) -> Int:
     let store = unwrap(store_open(job.cfg.data_dir))
     if job.kind == 0:
-        let built = app_build(job.cfg, 6000)
+        let built = app_build(job.cfg, 2000)
         if not is_ok(built):
             eprint("cannot build the application")
             return 1

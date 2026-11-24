@@ -43,8 +43,22 @@ pub fn client_key(forwarded: Text, trust_proxy: Int) -> Text:
         return "unknown"
     return parts[len(parts) - trust_proxy]
 
-fn bucket_path(key: Text) -> Text:
-    let digest = crypto_sha256(bytes_from_text(key))
+# The per-installation secret that keys the bucket names, so a bucket file cannot be reversed to an
+# IP address by hashing every address. Made on first use.
+fn rate_salt(store: Store) -> Text:
+    if store_has(store, "state/rate_salt"):
+        let read = read_text(store.root + "/state/rate_salt")
+        if is_ok(read) and len(unwrap(read)) >= 32:
+            return unwrap(read)
+    let fresh = crypto_random_bytes(32)
+    if not is_ok(fresh):
+        return "no-salt"
+    let hex = hex_encode(unwrap(fresh))
+    let saved = write_text_atomic(store.root + "/state/rate_salt", hex)
+    return hex
+
+fn bucket_path(store: Store, key: Text) -> Text:
+    let digest = crypto_sha256(bytes_from_text(rate_salt(store) + "|" + key))
     return "state/rate/" + text_slice(hex_encode(digest), 0, 32) + ".json"
 
 # Records one request from `key` at `now`; false when it is over the limit. The window lives in a
@@ -53,8 +67,8 @@ fn bucket_path(key: Text) -> Text:
 pub fn rate_hit(store: Store, key: Text, now: Int, limit: Int) -> Bool:
     let made = fs_make_dir(store.root + "/state/rate")
     var stamps: List[Int] = []
-    if store_has(store, bucket_path(key)):
-        let read = store_get_json(store, bucket_path(key))
+    if store_has(store, bucket_path(store, key)):
+        let read = store_get_json(store, bucket_path(store, key))
         if is_ok(read):
             for i in range(0, json_len(unwrap(read))):
                 let n = json_int_safe(unwrap(json_index_safe(unwrap(read), i)))
@@ -64,5 +78,28 @@ pub fn rate_hit(store: Store, key: Text, now: Int, limit: Int) -> Bool:
     var out = json_array()
     for s in result.kept:
         set out = json_push(out, json_int(s))
-    let saved = store_put_json(store, bucket_path(key), out)
+    let saved = store_put_json(store, bucket_path(store, key), out)
     return result.allowed
+
+# Deletes bucket files whose newest request is older than the window: a client's file lives for at
+# most a minute after its last request, so no address-derived name is kept.
+pub fn rate_sweep(store: Store, now: Int) -> Int:
+    let listed = fs_list_dir(store.root + "/state/rate")
+    var removed = 0
+    if not is_ok(listed):
+        return 0
+    for name in unwrap(listed):
+        let path = store.root + "/state/rate/" + name
+        let read = read_text(path)
+        var newest = 0
+        if is_ok(read):
+            let parsed = json_parse(unwrap(read))
+            if is_ok(parsed):
+                for i in range(0, json_len(unwrap(parsed))):
+                    let n = json_int_safe(unwrap(json_index_safe(unwrap(parsed), i)))
+                    if is_ok(n) and unwrap(n) > newest:
+                        set newest = unwrap(n)
+        if newest <= now - rate_window_seconds():
+            if is_ok(fs_remove(path)):
+                set removed = removed + 1
+    return removed

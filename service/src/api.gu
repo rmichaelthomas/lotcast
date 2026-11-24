@@ -11,6 +11,10 @@ import "store.gu"
 # The service's operations as functions on the store: HTTP-free, so routes.gu only has to translate.
 # Nothing here names the web package, so core's `Request` (a draw request) never meets the HTTP one.
 
+# A whole receipt (with its timestamp tokens and pulse evidence) can be larger than a draw request.
+pub fn max_verify_bytes() -> Int:
+    return 262144
+
 fn not_found(message: Text) -> ApiError:
     return ApiError(404, "E_NOT_FOUND", message)
 
@@ -110,8 +114,8 @@ pub fn api_receipt(store: Store, id: Text) -> Result[Json, ApiError]:
 # Server-side verification of a posted receipt: {receipt, operator_key?, question?, salt?}. A
 # convenience only; the answer says the service did the checking.
 pub fn api_verify(body: Bytes, service_key: Bytes) -> Result[Json, ApiError]:
-    if len(body) > max_body_bytes():
-        return Err(ApiError(413, "E_TOO_LARGE", "the request body is limited to 65536 bytes"))
+    if len(body) > max_verify_bytes():
+        return Err(ApiError(413, "E_TOO_LARGE", "a verify request is limited to 262144 bytes"))
     let text = encoding_utf8_decode(body)
     if not is_ok(text):
         return Err(ApiError(400, "E_REQUEST", "the body is not UTF-8"))

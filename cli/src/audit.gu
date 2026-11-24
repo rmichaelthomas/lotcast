@@ -24,6 +24,36 @@ fn prefix_of(hashes: List[Bytes], n: Int) -> List[Bytes]:
         set out = list_push(out, hashes[i])
     return out
 
+fn epoch_position(v: MirrorView, epoch: Int) -> Int:
+    for i in range(0, len(v.epochs)):
+        if v.epochs[i] == epoch:
+            return i
+    return -1
+
+fn size_of_note(note: Text) -> Int:
+    let text = note_text(note)
+    if not is_ok(text):
+        return -1
+    let cp = parse_checkpoint(unwrap(text))
+    if not is_ok(cp):
+        return -1
+    return unwrap(cp).size
+
+# The first disagreement between two mirrors' epoch checkpoints ("" when none): the same epoch with
+# different checkpoint notes, an epoch only one lists, or an epoch the longer log has closed within
+# the shorter one's size that the shorter one omits.
+fn epoch_disagreement(ref: MirrorView, v: MirrorView) -> Text:
+    for i in range(0, len(v.epochs)):
+        let at = epoch_position(ref, v.epochs[i])
+        if at < 0:
+            return "it lists epoch " + int_to_text(v.epochs[i]) + ", which the reference does not"
+        if ref.epoch_notes[at] != v.epoch_notes[i]:
+            return "its checkpoint for epoch " + int_to_text(v.epochs[i]) + " differs from the reference's"
+    for i in range(0, len(ref.epochs)):
+        if epoch_position(v, ref.epochs[i]) < 0 and size_of_note(ref.epoch_notes[i]) <= v.size and size_of_note(ref.epoch_notes[i]) >= 0:
+            return "it omits epoch " + int_to_text(ref.epochs[i]) + ", which closed within its own size"
+    return ""
+
 # status: 0 every mirror holds the same log, 3 some are behind, 1 some disagree.
 pub fn audit_views(views: List[MirrorView]) -> AuditReport:
     var lines: List[Text] = []
@@ -40,15 +70,21 @@ pub fn audit_views(views: List[MirrorView]) -> AuditReport:
         if i != best:
             let v = views[i]
             let n = v.size
-            if root_of_hashes(prefix_of(ref.hashes, n)) == v.root:
-                if n == ref.size:
-                    set lines = list_push(lines, "ok      " + v.base + ": the same log")
-                else:
-                    set lines = list_push(lines, "behind  " + v.base + ": " + int_to_text(n) + " entries, " + int_to_text(ref.size - n) + " fewer than the reference (consistent with it)")
-                    if status == 0:
-                        set status = 3
-            else:
+            let prefix = root_of_hashes(prefix_of(ref.hashes, n)) == v.root
+            let epoch_problem = epoch_disagreement(ref, v)
+            if not prefix:
                 let at = first_difference(v.hashes, ref.hashes, n)
                 set lines = list_push(lines, "FORKED  " + v.base + ": it disagrees with the reference at index " + int_to_text(at))
                 set status = 1
+            else:
+                if epoch_problem != "":
+                    set lines = list_push(lines, "FORKED  " + v.base + ": the entries agree but " + epoch_problem)
+                    set status = 1
+                else:
+                    if n == ref.size:
+                        set lines = list_push(lines, "ok      " + v.base + ": the same log")
+                    else:
+                        set lines = list_push(lines, "behind  " + v.base + ": " + int_to_text(n) + " entries, " + int_to_text(ref.size - n) + " fewer than the reference (consistent with it)")
+                        if status == 0:
+                            set status = 3
     return AuditReport(lines, status)

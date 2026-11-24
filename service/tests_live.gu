@@ -16,6 +16,9 @@ import "src/lib.gu"
 fn stamp_live(note: Text, ids: List[Text]) -> Result[Json, StdError]:
     return anchor_checkpoint(note, ids)
 
+fn probe_live(id: Text) -> Bool:
+    return true
+
 fn main() -> Int:
     let root = "live-store"
     let store = unwrap(store_open(root))
@@ -34,7 +37,7 @@ fn main() -> Int:
         set w = unwrap(writer_tick(w, unix_time_ms() // 1000))
     let epoch = json_as_int(json_get(unwrap(store_get_draw(store, id)), "epoch"))
     var failing: Map[Text, Int] = {}
-    set failing = unwrap(stamper_tick(store, failing, unix_time_ms() // 1000, stamp_live))
+    set failing = unwrap(stamper_tick(store, failing, unix_time_ms() // 1000, stamp_live, probe_live, 0))
     let anchor = unwrap(store_get_json(store, "anchors/" + int_to_text(epoch) + ".json"))
     print(json_stringify(anchor))
     if json_as_bool(json_get(anchor, "void")):

@@ -1,0 +1,79 @@
+import "std:types"
+import "std:encoding"
+import "std:json"
+import "std:text"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+
+# What a client checks so the receipt it is handed is the one for the request it sent: the
+# promise the service signed when it accepted the request, and that the receipt shows that same
+# request, entry, promise and index. Without this a dishonest operator could log several variants
+# and hand back whichever outcome it liked, and `verify_any` alone would still say "verified".
+
+# Whether `promise` is the operator's signed promise of exactly this index, entry and epoch.
+pub fn check_promise(promise: Text, operator_key: Bytes, index: Int, entry_hash_hex: Text, epoch: Int) -> Bool:
+    let first = text_split(promise, " promise v1")
+    if len(first) < 2:
+        return false
+    let origin = first[0]
+    let hash = hex_decode(entry_hash_hex)
+    if not is_ok(hash):
+        return false
+    let signed = verify_note(promise, origin, operator_key)
+    if not is_ok(signed):
+        return false
+    match unwrap(signed):
+        Some(text):
+            return text == promise_text(origin, index, unwrap(hash), epoch)
+        None:
+            return false
+
+# "" when the receipt is the one asked for, otherwise what differs.
+pub fn check_binding(receipt: Json, expected_request: Text, entry_hash_hex: Text, promise: Text, index: Int) -> Text:
+    if expected_request != "":
+        let request = json_get_safe(receipt, "request")
+        if not is_ok(request) or json_stringify(unwrap(request)) != expected_request:
+            return "the receipt shows a different request than the one sent"
+    let log = json_get_safe(receipt, "log")
+    if not is_ok(log):
+        return "the receipt has no log part"
+    let hash = json_get_text_safe(unwrap(log), "entry_hash")
+    if not is_ok(hash) or unwrap(hash) != entry_hash_hex:
+        return "the receipt's log entry is a different entry than the one sent"
+    let at = json_get_int_safe(unwrap(log), "index")
+    if not is_ok(at) or unwrap(at) != index:
+        return "the receipt's log index is not the index that was promised"
+    let seen = json_get_text_safe(receipt, "promise")
+    if not is_ok(seen) or unwrap(seen) != promise:
+        return "the receipt carries a different promise than the one the service signed"
+    return ""
+
+# For `lotcast get`, which holds only the draw id (the first 32 hex characters of the entry hash).
+pub fn check_id(receipt: Json, id: Text) -> Text:
+    let log = json_get_safe(receipt, "log")
+    if not is_ok(log):
+        return "the receipt has no log part"
+    let hash = json_get_text_safe(unwrap(log), "entry_hash")
+    if not is_ok(hash) or len(unwrap(hash)) < len(id) or text_slice(unwrap(hash), 0, len(id)) != id:
+        return "the receipt is for a different entry than draw " + id
+    return ""
+
+# Everything a client can check about a draw view the service returned, against what it knows:
+# the entry hash it expects (or the id it asked for) and, for `draw`, the request it sent. "" is fine.
+pub fn binding_problem(view: Json, operator_key: Bytes, expected_request: Text, expected_hash: Text, id: Text) -> Text:
+    let hash = json_get_safe(view, "entry_hash")
+    let index = json_get_int_safe(view, "index")
+    let epoch = json_get_int_safe(view, "epoch")
+    let promise = json_get_text_safe(view, "promise")
+    if not is_ok(hash) or not is_ok(index) or not is_ok(epoch) or not is_ok(promise):
+        return "the service's answer has no promise"
+    let seen = json_as_text(unwrap(hash))
+    if expected_hash != "" and seen != expected_hash:
+        return "the service logged a different entry than the one sent"
+    if len(seen) < len(id) or text_slice(seen, 0, len(id)) != id:
+        return "the service answered with a draw for a different entry than " + id
+    if not check_promise(unwrap(promise), operator_key, unwrap(index), seen, unwrap(epoch)):
+        return "the promise is not the operator's signature over this index, entry and epoch"
+    if json_as_text(json_get(view, "status")) == "complete":
+        return check_binding(json_get(view, "receipt"), expected_request, seen, unwrap(promise), unwrap(index))
+    return ""

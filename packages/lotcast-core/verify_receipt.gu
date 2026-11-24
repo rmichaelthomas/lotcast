@@ -9,7 +9,8 @@ import "src/lib.gu"
 #
 #   guion run verify_receipt.gu RECEIPT.json [--question TEXT --salt HEX]
 #
-# Prints the result on the first line: verified-unanchored, verified-pending-live or invalid. For
+# Prints the result on the first line: verified-unanchored or invalid (receipts with a log can also
+# give verified or verified-pending-live once the log exists). For
 # invalid it names the failing step (1 entry, 4 sources, 5 outcome, 6 question) and why; otherwise
 # it lists the steps this receipt does not cover. Exit 0 when verified, 1 when invalid, 2 when the
 # file cannot be read.

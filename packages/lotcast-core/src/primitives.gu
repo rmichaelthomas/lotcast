@@ -23,6 +23,7 @@ fn power_of_two(bits: Int) -> Int:
 # 2^w - (2^w mod n) are discarded, the rest are reduced mod n.
 pub fn uniform(s: Stream, n: Int) -> DrawInt:
     assert(n >= 1 and n <= 4294967296)
+    assert(n <= power_of_two(s.word_bits))
     if s.mode == 1:
         var choice = 0
         if s.tape_pos < len(s.tape):

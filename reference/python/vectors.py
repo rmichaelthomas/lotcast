@@ -132,3 +132,5 @@ if __name__ == "__main__":
     print("tarot rws count 3 reversals, zero seed:", tarot_rws(Stream(zero), 3, False, True))
     print("tarot rws count 5 majors only, zero seed:", tarot_rws(Stream(zero), 5, True, False))
     print("tarot rws count 3 reversals, seed B unanchored:", tarot_rws(Stream(seed(hb, b"", drand_only)), 3, False, True))
+    ts0 = sha512(b"lotcast/test/v1" + u64(0))
+    print("tarot rws count 4 reversals, test seed k=0 (mixed flags):", tarot_rws(Stream(ts0), 4, False, True))

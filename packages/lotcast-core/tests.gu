@@ -555,3 +555,77 @@ fn test_question_check_on_a_receipt_with_no_question_is_invalid_at_step_6() -> U
 fn test_not_requested_drand_is_refused_at_build() -> Unit:
     let r = Request("iching", "coins", no_options(), 0, bytes_from_ints([]), ["nist-beacon-2"], 0, repeated(7, 32), bytes_from_ints([]))
     assert(not is_ok(build_receipt(r, fixture_t0(), fixture_round())))
+
+# ---- Review fixes ----
+
+fn set_in(r: Json, path: List[Text], value: Json) -> Json:
+    if len(path) == 1:
+        return json_set(r, path[0], value)
+    let inner = json_get(r, path[0])
+    var rest: List[Text] = []
+    var i = 1
+    while i < len(path):
+        set rest = list_push(rest, path[i])
+        set i = i + 1
+    return json_set(r, path[0], set_in(inner, rest, value))
+
+fn step_of(r: Json) -> Int:
+    return verify_receipt(r).failed_step
+
+# F5: reversal flags are paired with the cards in order (mixed flags)
+fn test_reversal_flags_pair_with_cards_in_order() -> Unit:
+    let k0 = stream_new(crypto_sha512(cat([text_bytes("lotcast/test/v1"), u64_bytes(0)])), 64)
+    let draw = unwrap(tarot_rws(k0, 4, false, true))
+    assert(card_ids(draw) == ["tarot:rws:major:18", "tarot:rws:wands:12", "tarot:rws:cups:10", "tarot:rws:major:3"])
+    assert(flags(draw) == [false, true, false, true])
+
+# F1: an unsigned subject key is refused by the builder and the verifier
+fn test_subject_key_is_refused_until_signatures_are_carried() -> Unit:
+    let r = Request("iching", "coins", no_options(), 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(7, 32), repeated(3, 32))
+    assert(not is_ok(build_receipt(r, fixture_t0(), fixture_round())))
+    let receipt = built(iching_request())
+    assert(step_of(set_in(receipt, ["request", "subject"], json_text(hex_encode(repeated(3, 32))))) == 1)
+
+# F2: the result says what it does not prove
+fn test_unanchored_detail_says_it_does_not_prove_the_order() -> Unit:
+    let v = verify_receipt(built(iching_request()))
+    assert(len(text_split(v.detail, "before")) > 1)
+    assert(len(text_split(v.detail, "not prove")) > 1)
+
+# F3: the verifier applies the builder's own checks, and nothing unchecked rides along
+fn test_verifier_refuses_what_the_builder_refuses() -> Unit:
+    let r = built(iching_request())
+    assert(step_of(set_in(r, ["request", "client_nonce"], json_text(""))) == 1)
+    assert(step_of(set_in(r, ["request", "not_before"], json_int(99))) == 1)
+    assert(step_of(set_in(r, ["request", "question", "mode"], json_text("tlock"))) == 1)
+
+fn test_a_question_commit_with_mode_none_is_refused() -> Unit:
+    let r = built(iching_request())
+    assert(step_of(set_in(r, ["request", "question", "commit"], json_text(hex_encode(repeated(1, 64))))) == 1)
+
+fn test_a_hash_question_needs_a_64_byte_commit() -> Unit:
+    let r = built(iching_request())
+    let one = set_in(r, ["request", "question", "mode"], json_text("hash"))
+    assert(step_of(set_in(one, ["request", "question", "commit"], json_text(hex_encode(repeated(1, 1))))) == 1)
+
+fn test_log_promise_anchor_g_and_attachments_must_be_empty() -> Unit:
+    let r = built(iching_request())
+    assert(step_of(set_in(r, ["log"], json_set(json_object(), "origin", json_text("x")))) == 1)
+    assert(step_of(set_in(r, ["promise"], json_text("note"))) == 1)
+    assert(step_of(set_in(r, ["anchor", "g"], json_int(12345))) == 1)
+    assert(step_of(set_in(r, ["attachments"], json_push(json_array(), json_text("x")))) == 1)
+
+# F4: a t0 before the chain's genesis has no first round to name
+fn test_t0_before_genesis_is_refused() -> Unit:
+    assert(not is_ok(build_receipt(iching_request(), 1692803366, fixture_round())))
+    let r = built(iching_request())
+    let v = verify_receipt(set_in(r, ["anchor", "t0"], json_int(1692803366)))
+    assert(v.failed_step == 4)
+    assert(len(text_split(v.detail, "genesis")) > 1)
+
+# F7: option names and values are exact; case is not folded
+fn test_option_names_and_values_are_case_sensitive() -> Unit:
+    let upper_name: Map[Text, Text] = {"Count": "3"}
+    let upper_value: Map[Text, Text] = {"reversals": "True"}
+    assert(error_code(run("tarot", "rws", upper_name)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("tarot", "rws", upper_value)) == "E_LOTCAST_OPTION")

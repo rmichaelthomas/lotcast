@@ -61,6 +61,8 @@ fn main() -> Int:
         if all[i] == "--question":
             if i + 1 >= len(all):
                 return fail("--question needs the question text")
+            if asked:
+                return fail("--question given twice")
             set question = all[i + 1]
             set asked = true
             set i = i + 2
@@ -68,8 +70,18 @@ fn main() -> Int:
             let pair = split_option(all[i])
             if len(pair) != 2:
                 return fail("unrecognised argument: " + all[i])
+            if map_has(options, pair[0]):
+                return fail("option given twice: " + pair[0])
             set options = map_set(options, pair[0], pair[1])
             set i = i + 1
+    # Check the method and its options before waiting on the network, so a typo is reported at once.
+    let trial = run_method(stream_new(bytes_from_ints([0]), 64), tradition, method, options)
+    if not is_ok(trial):
+        match trial:
+            Err(problem):
+                return fail(problem.code + ": " + problem.message)
+            Ok(ignored):
+                return fail("unreadable request")
     let nonce = crypto_random_bytes(32)
     let salt = crypto_random_bytes(32)
     if not is_ok(nonce) or not is_ok(salt):

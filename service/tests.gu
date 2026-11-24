@@ -1,0 +1,41 @@
+import "std:types"
+import "std:text"
+import "src/lib.gu"
+
+fn main() -> Int:
+    return 0
+
+fn test_config_defaults() -> Unit:
+    let c = unwrap(config_from_args(["--data-dir", "/data", "--key-file", "/k"], false))
+    assert(c.host == "127.0.0.1")
+    assert(c.port == 8080)
+    assert(c.data_dir == "/data")
+    assert(c.key_file == "/k")
+    assert(c.epoch_seconds == 5)
+    assert(c.stamp_budget == 20)
+    assert(c.workers == 8)
+    assert(c.trust_proxy == 0)
+    assert(c.origin == "lotcast.local/log")
+
+fn test_config_needs_data_dir() -> Unit:
+    assert(not is_ok(config_from_args(["--key-file", "/k"], false)))
+
+fn test_config_needs_a_key_source() -> Unit:
+    assert(not is_ok(config_from_args(["--data-dir", "/d"], false)))
+    assert(is_ok(config_from_args(["--data-dir", "/d"], true)))
+
+fn test_config_refuses_both_key_sources() -> Unit:
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k"], true)))
+
+fn test_config_bad_values() -> Unit:
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--port", "70000"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--port", "x"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--epoch-seconds", "0"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--trust-proxy", "6"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--workers", "0"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--nope", "1"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file"], false)))
+
+fn test_config_bounds_are_accepted() -> Unit:
+    let c = unwrap(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--port", "1", "--epoch-seconds", "1", "--trust-proxy", "5", "--workers", "64"], false))
+    assert(c.port == 1 and c.epoch_seconds == 1 and c.trust_proxy == 5 and c.workers == 64)

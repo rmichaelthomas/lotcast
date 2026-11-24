@@ -1,0 +1,5 @@
+# lotcast-service: the HTTP draw service (spec 8.1) and its loops.
+pub import "config.gu"
+
+pub fn lotcast_service_version() -> Text:
+    return "0.1.0"

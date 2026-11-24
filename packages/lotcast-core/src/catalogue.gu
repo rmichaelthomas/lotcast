@@ -115,3 +115,10 @@ pub fn run_method(s: Stream, tradition: Text, method: Text, options: Map[Text, T
         let draw = tarot_rws(s, count, majors_only, reversals)?
         return Ok(tarot_json(draw))
     return Err(std_error("E_LOTCAST_METHOD", "unknown method: " + tradition + "/" + method))
+
+# The option names a method accepts (empty for an unknown method).
+pub fn option_names(tradition: Text, method: Text) -> List[Text]:
+    var names: List[Text] = []
+    if tradition == "tarot" and method == "rws":
+        set names = ["count", "majors_only", "reversals"]
+    return names

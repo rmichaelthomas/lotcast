@@ -4,6 +4,7 @@ import "std:encoding"
 import "std:text"
 import "std:json"
 import "src/lib.gu"
+import "pkg:beacons/src/lib.gu"
 
 fn main() -> Int:
     return 0
@@ -424,3 +425,133 @@ fn test_catalogue_lists_methods_with_status() -> Unit:
             set pending = pending + 1
     assert(ready == 3)
     assert(pending == 2)
+
+# ---- Receipts (one real drand quicknet round, fixtures/drand-round-34231267.json) ----
+
+fn fixture_round() -> DrandRound:
+    let body = unwrap(read_text("fixtures/drand-round-34231267.json"))
+    return unwrap(drand_parse_round(body, 34231267))
+
+# the first moment whose next quicknet round is 34231267
+fn fixture_t0() -> Int:
+    return 1795497162
+
+fn tarot_request() -> Request:
+    let options: Map[Text, Text] = {"count": "3", "reversals": "true"}
+    return Request("tarot", "rws", options, 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(9, 32), bytes_from_ints([]))
+
+fn iching_request() -> Request:
+    return Request("iching", "coins", no_options(), 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
+
+fn built(r: Request) -> Json:
+    return unwrap(build_receipt(r, fixture_t0(), fixture_round()))
+
+fn nothing_checked_for(v: Verdict, steps: List[Int]) -> Bool:
+    return v.not_checked == steps
+
+fn test_build_then_verify_iching_is_verified_unanchored() -> Unit:
+    let v = verify_receipt(built(iching_request()))
+    assert(v.result == "verified-unanchored")
+    assert(v.failed_step == 0)
+    assert(nothing_checked_for(v, [2, 3]))
+
+fn test_build_then_verify_tarot_is_verified_unanchored() -> Unit:
+    let v = verify_receipt(built(tarot_request()))
+    assert(v.result == "verified-unanchored")
+    assert(len(json_stringify(json_get(built(tarot_request()), "outcome"))) > 10)
+
+fn test_receipt_round_trips_through_json_text() -> Unit:
+    let text = json_stringify(built(tarot_request()))
+    let again = unwrap(json_parse(text))
+    assert(verify_receipt(again).result == "verified-unanchored")
+
+fn test_receipt_shape() -> Unit:
+    let r = built(iching_request())
+    assert(json_get(r, "receipt") == json_text("lotcast/receipt/v1"))
+    assert(json_get(r, "sampler") == json_text("lotcast/sampler/v1"))
+    assert(json_get(r, "registry") == json_text("lotcast/registry/v1"))
+    assert(json_is_null(json_get(r, "log")))
+    assert(json_is_null(json_get(r, "promise")))
+    assert(json_get(json_get(r, "anchor"), "t0") == json_int(fixture_t0()))
+
+fn test_edited_outcome_is_invalid_at_step_5() -> Unit:
+    let r = built(iching_request())
+    let outcome = json_set(json_get(r, "outcome"), "hexagram", json_int(1))
+    let v = verify_receipt(json_set(r, "outcome", outcome))
+    assert(v.result == "invalid")
+    assert(v.failed_step == 5)
+
+fn source_with(r: Json, key: Text, value: Json) -> Json:
+    let entry = json_set(json_index(json_get(r, "sources"), 0), key, value)
+    return json_set(r, "sources", json_push(json_array(), entry))
+
+fn test_edited_randomness_is_invalid_at_step_4() -> Unit:
+    let r = source_with(built(iching_request()), "randomness", json_text(hex_encode(repeated(1, 32))))
+    let v = verify_receipt(r)
+    assert(v.result == "invalid")
+    assert(v.failed_step == 4)
+
+fn test_edited_signature_is_invalid_at_step_4() -> Unit:
+    let r = source_with(built(iching_request()), "signature", json_text(hex_encode(repeated(2, 48))))
+    let v = verify_receipt(r)
+    assert(v.result == "invalid")
+    assert(v.failed_step == 4)
+
+fn test_wrong_round_for_t0_is_invalid_at_step_4() -> Unit:
+    let r = built(iching_request())
+    let anchor = json_set(json_get(r, "anchor"), "t0", json_int(fixture_t0() + 3000))
+    let v = verify_receipt(json_set(r, "anchor", anchor))
+    assert(v.result == "invalid")
+    assert(v.failed_step == 4)
+
+fn test_build_refuses_a_round_that_does_not_follow_t0() -> Unit:
+    assert(not is_ok(build_receipt(iching_request(), fixture_t0() + 3000, fixture_round())))
+
+fn test_edited_request_option_fails_step_5() -> Unit:
+    let r = built(tarot_request())
+    let request = json_get(r, "request")
+    let options = json_set(json_get(request, "options"), "count", json_text("4"))
+    let edited = json_set(r, "request", json_set(request, "options", options))
+    let v = verify_receipt(edited)
+    assert(v.result == "invalid")
+    assert(v.failed_step == 5)
+
+fn test_unknown_option_in_receipt_is_invalid_at_step_1() -> Unit:
+    let r = built(tarot_request())
+    let request = json_get(r, "request")
+    let options = json_set(json_get(request, "options"), "colour", json_text("red"))
+    let v = verify_receipt(json_set(r, "request", json_set(request, "options", options)))
+    assert(v.result == "invalid")
+    assert(v.failed_step == 1)
+
+fn test_unknown_receipt_sampler_or_registry_id_is_invalid_at_step_1() -> Unit:
+    let r = built(iching_request())
+    assert(verify_receipt(json_set(r, "receipt", json_text("lotcast/receipt/v9"))).failed_step == 1)
+    assert(verify_receipt(json_set(r, "sampler", json_text("lotcast/sampler/v9"))).failed_step == 1)
+    assert(verify_receipt(json_set(r, "registry", json_text("lotcast/registry/v9"))).failed_step == 1)
+
+fn test_garbage_receipt_is_invalid_not_a_crash() -> Unit:
+    let v = verify_receipt(json_object())
+    assert(v.result == "invalid")
+    assert(v.failed_step == 1)
+    assert(verify_receipt(json_int(5)).result == "invalid")
+
+fn test_question_commit_is_checked_when_supplied() -> Unit:
+    let commit = question_commit("Should I go?", salt_01_to_20())
+    let r = Request("iching", "coins", no_options(), 1, commit, ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
+    let receipt = built(r)
+    let good = verify_receipt_with_question(receipt, "Should I go?", salt_01_to_20())
+    assert(good.result == "verified-unanchored")
+    let wrong_salt = verify_receipt_with_question(receipt, "Should I go?", repeated(5, 32))
+    assert(wrong_salt.result == "invalid")
+    assert(wrong_salt.failed_step == 6)
+    let wrong_question = verify_receipt_with_question(receipt, "Should I stay?", salt_01_to_20())
+    assert(wrong_question.failed_step == 6)
+
+fn test_question_check_on_a_receipt_with_no_question_is_invalid_at_step_6() -> Unit:
+    let v = verify_receipt_with_question(built(iching_request()), "anything", salt_01_to_20())
+    assert(v.failed_step == 6)
+
+fn test_not_requested_drand_is_refused_at_build() -> Unit:
+    let r = Request("iching", "coins", no_options(), 0, bytes_from_ints([]), ["nist-beacon-2"], 0, repeated(7, 32), bytes_from_ints([]))
+    assert(not is_ok(build_receipt(r, fixture_t0(), fixture_round())))

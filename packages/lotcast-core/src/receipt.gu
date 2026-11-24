@@ -1,0 +1,306 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:json"
+import "std:text"
+import "pkg:beacons/src/lib.gu"
+import "encode.gu"
+import "stream.gu"
+import "entry.gu"
+import "seed.gu"
+import "catalogue.gu"
+
+# Receipts (spec §5.2). This slice has no log or timestamps yet: a receipt carries "log": null, the
+# seed is built with an empty checkpoint hash, and verification reports steps 2 and 3 as not checked,
+# so the best result is `verified-unanchored`. Such a receipt proves the outcome follows from a real
+# drand round and the request; it does NOT prove the request was fixed before that round existed.
+
+pub record Verdict:
+    result: Text
+    failed_step: Int
+    detail: Text
+    not_checked: List[Int]
+
+fn receipt_id() -> Text:
+    return "lotcast/receipt/v1"
+
+fn sampler_id() -> Text:
+    return "lotcast/sampler/v1"
+
+fn registry_id() -> Text:
+    return "lotcast/registry/v1"
+
+fn receipt_error(code: Text, message: Text) -> StdError:
+    return std_error(code, message)
+
+fn invalid(step: Int, detail: Text) -> Verdict:
+    let none: List[Int] = []
+    return Verdict("invalid", step, detail, none)
+
+fn unanchored() -> Verdict:
+    return Verdict("verified-unanchored", 0, "steps 2 and 3 (the log and the timestamps) are not part of this receipt", [2, 3])
+
+fn four_sources(drand_randomness: Bytes) -> List[SourceValue]:
+    let nothing = bytes_from_ints([])
+    return [SourceValue("drand-quicknet", 1, drand_randomness), SourceValue("nist-beacon-2", 2, nothing), SourceValue("curby-rng", 2, nothing), SourceValue("curby-q", 2, nothing)]
+
+fn mode_name(mode: Int) -> Text:
+    if mode == 0:
+        return "none"
+    if mode == 1:
+        return "hash"
+    return "tlock"
+
+# ---------------------------------------------------------------- build
+
+pub fn build_receipt(request: Request, t0: Int, drand: DrandRound) -> Result[Json, StdError]:
+    if len(request.sources) != 1 or request.sources[0] != "drand-quicknet":
+        return Err(receipt_error("E_LOTCAST_SOURCE", "this version draws from drand-quicknet only"))
+    if len(request.client_nonce) != 32:
+        return Err(receipt_error("E_LOTCAST_NONCE", "client_nonce must be 32 bytes"))
+    if len(request.subject_key) != 0 and len(request.subject_key) != 32:
+        return Err(receipt_error("E_LOTCAST_SUBJECT", "subject_key must be empty or 32 bytes"))
+    if request.question_mode == 0 and len(request.question_commit) != 0:
+        return Err(receipt_error("E_LOTCAST_QUESTION", "a draw with no question carries no commitment"))
+    if request.question_mode == 1 and len(request.question_commit) != 64:
+        return Err(receipt_error("E_LOTCAST_QUESTION", "a hashed question commitment is 64 bytes"))
+    if request.question_mode != 0 and request.question_mode != 1:
+        return Err(receipt_error("E_LOTCAST_QUESTION", "timelocked questions need the log, which this version does not have"))
+    if request.not_before != 0:
+        return Err(receipt_error("E_LOTCAST_NOT_BEFORE", "scheduled draws need the log, which this version does not have"))
+    let chain = drand_quicknet()
+    if drand.round != drand_round_at(chain, t0) + 1:
+        return Err(receipt_error("E_LOTCAST_ROUND", "the round is not the first quicknet round after t0"))
+    let checked = drand_verify(chain, drand)?
+    if not checked:
+        return Err(receipt_error("E_LOTCAST_ROUND", "the drand round does not verify"))
+    let hash = entry_hash(request)?
+    let s = seed(hash, bytes_from_ints([]), four_sources(drand.randomness))?
+    let outcome = run_method(stream_new(s, 64), request.tradition, request.method, request.options)?
+    var options = json_object()
+    for key in request.options:
+        set options = json_set(options, key, json_text(request.options[key]))
+    var commit = json_null()
+    if request.question_mode != 0:
+        set commit = json_text(hex_encode(request.question_commit))
+    var subject = json_null()
+    if len(request.subject_key) != 0:
+        set subject = json_text(hex_encode(request.subject_key))
+    var requested = json_array()
+    for id in request.sources:
+        set requested = json_push(requested, json_text(id))
+    var request_json = json_object()
+    set request_json = json_set(request_json, "tradition", json_text(request.tradition))
+    set request_json = json_set(request_json, "method", json_text(request.method))
+    set request_json = json_set(request_json, "options", options)
+    set request_json = json_set(request_json, "question", json_set(json_set(json_object(), "mode", json_text(mode_name(request.question_mode))), "commit", commit))
+    set request_json = json_set(request_json, "sources", requested)
+    set request_json = json_set(request_json, "not_before", json_int(request.not_before))
+    set request_json = json_set(request_json, "client_nonce", json_text(hex_encode(request.client_nonce)))
+    set request_json = json_set(request_json, "subject", subject)
+    var source = json_object()
+    set source = json_set(source, "id", json_text("drand-quicknet"))
+    set source = json_set(source, "status", json_text("present"))
+    set source = json_set(source, "round", json_int(drand.round))
+    set source = json_set(source, "signature", json_text(hex_encode(drand.signature)))
+    set source = json_set(source, "randomness", json_text(hex_encode(drand.randomness)))
+    var anchor = json_object()
+    set anchor = json_set(anchor, "g", json_null())
+    set anchor = json_set(anchor, "not_before", json_int(request.not_before))
+    set anchor = json_set(anchor, "t0", json_int(t0))
+    var receipt = json_object()
+    set receipt = json_set(receipt, "receipt", json_text(receipt_id()))
+    set receipt = json_set(receipt, "sampler", json_text(sampler_id()))
+    set receipt = json_set(receipt, "registry", json_text(registry_id()))
+    set receipt = json_set(receipt, "request", request_json)
+    set receipt = json_set(receipt, "promise", json_null())
+    set receipt = json_set(receipt, "log", json_null())
+    set receipt = json_set(receipt, "anchor", anchor)
+    set receipt = json_set(receipt, "sources", json_push(json_array(), source))
+    set receipt = json_set(receipt, "seed", json_text(hex_encode(s)))
+    set receipt = json_set(receipt, "outcome", outcome)
+    set receipt = json_set(receipt, "attachments", json_array())
+    return Ok(receipt)
+
+# ---------------------------------------------------------------- verify
+
+# Readers that never stop the program on input we do not control. Each error is the reason text.
+
+fn field_text(j: Json, key: Text) -> Result[Text, Text]:
+    let r = json_get_text_safe(j, key)
+    if not is_ok(r):
+        return Err(key + " is missing or not text")
+    return Ok(unwrap(r))
+
+fn field_int(j: Json, key: Text) -> Result[Int, Text]:
+    let r = json_get_int_safe(j, key)
+    if not is_ok(r):
+        return Err(key + " is missing or not a whole number")
+    return Ok(unwrap(r))
+
+fn field_json(j: Json, key: Text) -> Result[Json, Text]:
+    let r = json_get_safe(j, key)
+    if not is_ok(r):
+        return Err(key + " is missing")
+    return Ok(unwrap(r))
+
+fn field_hex(j: Json, key: Text) -> Result[Bytes, Text]:
+    let t = field_text(j, key)?
+    let decoded = hex_decode(t)
+    if not is_ok(decoded):
+        return Err(key + " is not hex")
+    return Ok(unwrap(decoded))
+
+# JSON null or hex text -> empty or the bytes.
+fn optional_hex(j: Json, key: Text) -> Result[Bytes, Text]:
+    let v = field_json(j, key)?
+    if json_is_null(v):
+        return Ok(bytes_from_ints([]))
+    return field_hex(j, key)
+
+fn is_object(j: Json) -> Bool:
+    let t = json_stringify(j)
+    return len(t) > 0 and text_slice(t, 0, 1) == "{"
+
+fn is_array(j: Json) -> Bool:
+    let t = json_stringify(j)
+    return len(t) > 0 and text_slice(t, 0, 1) == "["
+
+fn text_items(j: Json) -> Result[List[Text], Text]:
+    if not is_array(j):
+        return Err("expected a list")
+    var out: List[Text] = []
+    var i = 0
+    while i < json_len(j):
+        let item = json_index_safe(j, i)
+        if not is_ok(item):
+            return Err("unreadable list item")
+        let t = json_text_safe(unwrap(item))
+        if not is_ok(t):
+            return Err("list item is not text")
+        set out = list_push(out, unwrap(t))
+        set i = i + 1
+    return Ok(out)
+
+fn parse_options(tradition: Text, method: Text, options: Json) -> Result[Map[Text, Text], Text]:
+    if not is_object(options):
+        return Err("options is not an object")
+    var out: Map[Text, Text] = {}
+    var found = 0
+    for name in option_names(tradition, method):
+        if json_has(options, name):
+            set out = map_set(out, name, field_text(options, name)?)
+            set found = found + 1
+    if json_len(options) != found:
+        return Err("the request carries an option this method does not take")
+    return Ok(out)
+
+fn parse_request(receipt: Json) -> Result[Request, Text]:
+    let request = field_json(receipt, "request")?
+    let tradition = field_text(request, "tradition")?
+    let method = field_text(request, "method")?
+    let options = parse_options(tradition, method, field_json(request, "options")?)?
+    let question = field_json(request, "question")?
+    let mode_text = field_text(question, "mode")?
+    var mode = 0
+    var commit = bytes_from_ints([])
+    if mode_text == "hash":
+        set mode = 1
+        set commit = field_hex(question, "commit")?
+    else:
+        if mode_text == "tlock":
+            set mode = 2
+            set commit = field_hex(question, "commit")?
+        else:
+            if mode_text != "none":
+                return Err("question.mode is not none, hash or tlock")
+    let sources = text_items(field_json(request, "sources")?)?
+    let not_before = field_int(request, "not_before")?
+    let nonce = field_hex(request, "client_nonce")?
+    let subject = optional_hex(request, "subject")?
+    return Ok(Request(tradition, method, options, mode, commit, sources, not_before, nonce, subject))
+
+# Step 4 for the one source this version has. Returns the drand randomness on success.
+fn check_drand(receipt: Json, request: Request) -> Result[Bytes, Text]:
+    if len(request.sources) != 1 or request.sources[0] != "drand-quicknet":
+        return Err("this verifier checks drand-quicknet receipts only")
+    let anchor = field_json(receipt, "anchor")?
+    let t0 = field_int(anchor, "t0")?
+    let listed = field_json(receipt, "sources")?
+    if not is_array(listed):
+        return Err("sources is not a list")
+    let first = json_index_safe(listed, 0)
+    if not is_ok(first) or json_len(listed) != 1:
+        return Err("expected exactly the drand-quicknet source")
+    let source = unwrap(first)
+    if field_text(source, "id")? != "drand-quicknet" or field_text(source, "status")? != "present":
+        return Err("the drand-quicknet source is not present")
+    let round = field_int(source, "round")?
+    let signature = field_hex(source, "signature")?
+    let randomness = field_hex(source, "randomness")?
+    let chain = drand_quicknet()
+    if round != drand_round_at(chain, t0) + 1:
+        return Err("the round is not the first quicknet round after t0")
+    let checked = drand_verify(chain, DrandRound(round, randomness, signature))
+    if not is_ok(checked) or not unwrap(checked):
+        return Err("the drand round's signature or randomness does not verify")
+    return Ok(randomness)
+
+fn verify_inner(receipt: Json, check_question: Bool, question: Text, salt: Bytes) -> Verdict:
+    if not is_object(receipt):
+        return invalid(1, "the receipt is not a JSON object")
+    let rid = field_text(receipt, "receipt")
+    let sid = field_text(receipt, "sampler")
+    let gid = field_text(receipt, "registry")
+    if not is_ok(rid) or unwrap(rid) != receipt_id():
+        return invalid(1, "unknown receipt id")
+    if not is_ok(sid) or unwrap(sid) != sampler_id():
+        return invalid(1, "unknown sampler id")
+    if not is_ok(gid) or unwrap(gid) != registry_id():
+        return invalid(1, "unknown registry id")
+    let parsed = parse_request(receipt)
+    if not is_ok(parsed):
+        match parsed:
+            Err(reason):
+                return invalid(1, reason)
+            Ok(ignored):
+                return invalid(1, "unreadable request")
+    let request = unwrap(parsed)
+    let hash = entry_hash(request)
+    if not is_ok(hash):
+        return invalid(1, "the request cannot be encoded")
+    let drand = check_drand(receipt, request)
+    if not is_ok(drand):
+        match drand:
+            Err(reason):
+                return invalid(4, reason)
+            Ok(ignored):
+                return invalid(4, "unreadable source")
+    let s = seed(unwrap(hash), bytes_from_ints([]), four_sources(unwrap(drand)))
+    if not is_ok(s):
+        return invalid(5, "the seed cannot be built")
+    let claimed = json_get_safe(receipt, "outcome")
+    if not is_ok(claimed):
+        return invalid(5, "the receipt has no outcome")
+    let outcome = run_method(stream_new(unwrap(s), 64), request.tradition, request.method, request.options)
+    if not is_ok(outcome):
+        return invalid(5, "the sampler refuses this request")
+    if json_stringify(unwrap(outcome)) != json_stringify(unwrap(claimed)):
+        return invalid(5, "the outcome does not follow from the seed")
+    let recorded_seed = field_hex(receipt, "seed")
+    if not is_ok(recorded_seed) or unwrap(recorded_seed) != unwrap(s):
+        return invalid(5, "the recorded seed does not match the recomputed seed")
+    if check_question:
+        if request.question_mode != 1:
+            return invalid(6, "this receipt carries no hashed question to check")
+        if len(salt) != 32:
+            return invalid(6, "the salt must be 32 bytes")
+        if question_commit(question, salt) != request.question_commit:
+            return invalid(6, "the question and salt do not match the commitment")
+    return unanchored()
+
+pub fn verify_receipt(receipt: Json) -> Verdict:
+    return verify_inner(receipt, false, "", bytes_from_ints([]))
+
+pub fn verify_receipt_with_question(receipt: Json, question: Text, salt: Bytes) -> Verdict:
+    return verify_inner(receipt, true, question, salt)

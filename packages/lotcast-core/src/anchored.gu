@@ -380,6 +380,23 @@ pub fn verify_any(receipt: Json, operator_key: Bytes, pins: List[TsaPin], check_
         return verify_receipt(receipt)
     return verify_anchored_inner(receipt, operator_key, pins, check_question, question, salt)
 
+pub record Computed:
+    seed: Bytes
+    outcome: Json
+
+# The seed and the outcome a request, a checkpoint and the beacons' values fix (spec 4.3, 5): what
+# anyone can recompute from public data. `others` are the non-drand sources in seed order,
+# not-requested ones included.
+pub fn compute_outcome(request: DrawRequest, checkpoint_note: Text, drand: DrandRound, others: List[SourceResult]) -> Result[Computed, StdError]:
+    let hash = entry_hash(request)?
+    let checkpoint_text_value = note_text(checkpoint_note)?
+    var values: List[SourceValue] = [SourceValue("drand-quicknet", 1, drand.randomness)]
+    for r in others:
+        set values = list_push(values, source_value(r))
+    let s = seed(hash, crypto_sha512(text_bytes(checkpoint_text_value)), values)?
+    let outcome = run_method(stream_new(s, 64), request.tradition, request.method, request.options)?
+    return Ok(Computed(s, outcome))
+
 # Builds an anchored receipt from the pieces the draw flow produced and returns it only if the
 # verifier accepts it. `log_part` is {origin, index, entry_hash, checkpoint, inclusion, cosignatures,
 # timestamps}; `others` are the non-drand sources in seed order (not-requested ones included).
@@ -401,13 +418,9 @@ pub fn build_anchored_receipt(request: DrawRequest, log_part: Json, promise: Tex
     var t0 = g
     if request.not_before > g:
         set t0 = request.not_before
-    let hash = entry_hash(request)?
-    let checkpoint_text_value = note_text(note)?
-    var values: List[SourceValue] = [SourceValue("drand-quicknet", 1, drand.randomness)]
-    for r in others:
-        set values = list_push(values, source_value(r))
-    let s = seed(hash, crypto_sha512(text_bytes(checkpoint_text_value)), values)?
-    let outcome = run_method(stream_new(s, 64), request.tradition, request.method, request.options)?
+    let computed = compute_outcome(request, note, drand, others)?
+    let s = computed.seed
+    let outcome = computed.outcome
     var drand_source = json_object()
     set drand_source = json_set(drand_source, "id", json_text("drand-quicknet"))
     set drand_source = json_set(drand_source, "status", json_text("present"))

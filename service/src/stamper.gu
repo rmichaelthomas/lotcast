@@ -2,8 +2,8 @@ import "std:types"
 import "std:fs"
 import "std:json"
 import "std:text"
-import "pkg:lotcast-core/src/lib.gu"
 import "pkg:lotcast-log/src/lib.gu"
+import "pkg:lotcast-core/src/lib.gu"
 import "store.gu"
 
 # The stamper: for every closed epoch that has no anchor yet, gets two RFC 3161 timestamps over the
@@ -26,6 +26,13 @@ fn anchor_json(epoch: Int, deadline: Int, void: Bool, timestamps: Json, proven_b
     set a = json_set(a, "timestamps", timestamps)
     set a = json_set(a, "proven_by", json_int(proven_by))
     return a
+
+# Writes the anchor under anchors/ and, publicly, under log/anchor/ (void epochs are public too, so
+# a pattern of them can be audited).
+fn save_anchor(store: Store, epoch: Int, anchor: Json) -> Result[Bool, StdError]:
+    let saved = store_put_json(store, anchor_file(epoch), anchor)?
+    let made = make_dirs(store.root + "/log/anchor")?
+    return store_put_json(store, "log/anchor/" + int_to_text(epoch) + ".json", anchor)
 
 fn down_seconds(failing_since: Map[Text, Int], now: Int) -> Map[Text, Int]:
     var out: Map[Text, Int] = {}
@@ -109,10 +116,10 @@ pub fn stamper_tick(store: Store, failing_in: Map[Text, Int], now: Int, stamp: f
             Some(anchored):
                 let proven = json_as_int(json_get(anchored, "proven_by"))
                 if stamped_in_time(proven, deadline):
-                    let saved = store_put_json(store, anchor_file(epoch), anchor_json(epoch, deadline, false, json_get(anchored, "timestamps"), proven))?
+                    let saved = save_anchor(store, epoch, anchor_json(epoch, deadline, false, json_get(anchored, "timestamps"), proven))?
                 else:
-                    let saved = store_put_json(store, anchor_file(epoch), anchor_json(epoch, deadline, true, json_array(), proven))?
+                    let saved = save_anchor(store, epoch, anchor_json(epoch, deadline, true, json_array(), proven))?
             None:
                 if now >= deadline:
-                    let saved = store_put_json(store, anchor_file(epoch), anchor_json(epoch, deadline, true, json_array(), 0))?
+                    let saved = save_anchor(store, epoch, anchor_json(epoch, deadline, true, json_array(), 0))?
     return Ok(failing)

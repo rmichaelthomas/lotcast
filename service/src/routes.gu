@@ -122,11 +122,25 @@ fn h_verify(request: Request) -> Result[Response, HttpFailure]:
         Err(e):
             return Ok(error_response(e))
 
+# The operator's public key, for clients that pin it (first contact is trust on first use: pin it
+# out of band for anything that matters).
+fn h_operator(request: Request) -> Result[Response, HttpFailure]:
+    let key = text_trim(operator_key_hex(request))
+    if key == "":
+        return Ok(error_response(ApiError(404, "E_NOT_FOUND", "the service has no operator key yet")))
+    return Ok(json_response(200, json_set(json_set(json_object(), "origin", json_text(header_of(request, "x-lotcast-origin"))), "public_key", json_text(key))))
+
+fn operator_key_hex(request: Request) -> Text:
+    let body = read_text(header_of(request, "x-lotcast-data") + "/state/operator_key.hex")
+    if not is_ok(body):
+        return ""
+    return unwrap(body)
+
 # ---------------------------------------------------------------- the log, as static files
 
 fn log_path_ok(rest: Text) -> Bool:
     let segments = text_split(rest, "/")
-    if len(segments) == 0 or (segments[0] != "checkpoint" and segments[0] != "tile"):
+    if len(segments) == 0 or (segments[0] != "checkpoint" and segments[0] != "tile" and segments[0] != "epoch" and segments[0] != "anchor"):
         return false
     for s in segments:
         if s == "" or text_find(s, "..", 0) >= 0 or text_find(s, "\\", 0) >= 0 or text_find(s, "%", 0) >= 0:
@@ -180,10 +194,11 @@ fn after(config: Map[Text, Text], request: Request, response: Response) -> Resul
 # The whole application for a configuration. `wait_ms` is how long POST /v1/draws waits for the
 # writer to log the request before answering 503.
 pub fn app_build(cfg: Config, wait_ms: Int) -> Result[App, HttpFailure]:
-    let made = router([route("GET", "/v1/traditions", h_traditions), route("GET", "/v1/registry", h_registry), route("GET", "/v1/sources", h_sources), route("POST", "/v1/draws", h_post_draw), route("GET", "/v1/draws/{id}", h_get_draw), route("GET", "/v1/draws/{id}/receipt", h_get_receipt), route("POST", "/v1/verify", h_verify)])?
+    let made = router([route("GET", "/v1/traditions", h_traditions), route("GET", "/v1/registry", h_registry), route("GET", "/v1/sources", h_sources), route("POST", "/v1/draws", h_post_draw), route("GET", "/v1/draws/{id}", h_get_draw), route("GET", "/v1/draws/{id}/receipt", h_get_receipt), route("POST", "/v1/verify", h_verify), route("GET", "/v1/operator", h_operator)])?
     var settings: Map[Text, Text] = {}
     set settings = map_set(settings, "x-lotcast-data", cfg.data_dir)
     set settings = map_set(settings, "x-lotcast-registry", cfg.registry_file)
+    set settings = map_set(settings, "x-lotcast-origin", cfg.origin)
     set settings = map_set(settings, "x-lotcast-trust", int_to_text(cfg.trust_proxy))
     set settings = map_set(settings, "x-lotcast-wait", int_to_text(wait_ms))
     return Ok(app_with(made, [middleware_configured(before, after, settings)]))

@@ -1171,3 +1171,61 @@ fn test_anchor_g_is_the_signed_deadline() -> Unit:
     let log = json_get(r, "log")
     let cp = unwrap(parse_checkpoint(unwrap(note_text(json_as_text(json_get(log, "checkpoint"))))))
     assert(json_as_int(json_get(json_get(r, "anchor"), "g")) == unwrap(parse_epoch(cp.extensions)).deadline)
+
+# ---------------------------------------------------------------- entry_parse (the inverse of entry_bytes)
+
+fn parse_sample(r: DrawRequest) -> DrawRequest:
+    return unwrap(entry_parse(unwrap(entry_bytes(r))))
+
+fn nonce32(n: Int) -> Bytes:
+    var raw: List[Int] = []
+    for i in range(0, 32):
+        set raw = list_push(raw, (n + i) % 256)
+    return bytes_from_ints(raw)
+
+fn test_entry_parse_round_trips_a_plain_request() -> Unit:
+    let r = DrawRequest("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 0, nonce32(1), bytes_from_ints([]))
+    let back = parse_sample(r)
+    assert(back.tradition == "iching" and back.method == "coins")
+    assert(len(back.options) == 0)
+    assert(back.sources == ["drand-quicknet"])
+    assert(back.client_nonce == nonce32(1))
+    assert(entry_bytes(back) == entry_bytes(r))
+
+fn test_entry_parse_round_trips_options_question_schedule_and_sources() -> Unit:
+    var opts: Map[Text, Text] = {}
+    set opts = map_set(opts, "count", "3")
+    set opts = map_set(opts, "reversals", "true")
+    var commit: List[Int] = []
+    for i in range(0, 64):
+        set commit = list_push(commit, i)
+    let r = DrawRequest("tarot", "rws", opts, 1, bytes_from_ints(commit), ["curby-rng", "drand-quicknet", "nist-beacon-2"], 4102444800, nonce32(9), bytes_from_ints([]))
+    let back = parse_sample(r)
+    assert(back.options["count"] == "3" and back.options["reversals"] == "true")
+    assert(back.question_mode == 1 and len(back.question_commit) == 64)
+    assert(back.sources == ["curby-rng", "drand-quicknet", "nist-beacon-2"])
+    assert(back.not_before == 4102444800)
+    assert(entry_bytes(back) == entry_bytes(r))
+
+fn test_entry_parse_refuses_malformed_entries() -> Unit:
+    let r = DrawRequest("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 0, nonce32(2), bytes_from_ints([]))
+    let good = unwrap(entry_bytes(r))
+    assert(not is_ok(entry_parse(bytes_from_ints([]))))
+    assert(not is_ok(entry_parse(bytes_slice(good, 0, len(good) - 1))))
+    assert(not is_ok(entry_parse(bytes_join([good, bytes_from_ints([0])]))))
+    let wrong_tag = bytes_join([bytes_from_text("lotcast/entry/v2"), bytes_slice(good, 16, len(good))])
+    assert(not is_ok(entry_parse(wrong_tag)))
+
+fn test_compute_outcome_matches_the_outcome_in_a_stored_receipt() -> Unit:
+    let receipt = unwrap(json_parse(unwrap(read_text("fixtures/anchored-receipt-drand-only.json"))))
+    let request = unwrap(parse_request(receipt))
+    let note = json_as_text(json_get(json_get(receipt, "log"), "checkpoint"))
+    let source = json_index_safe(json_get(receipt, "sources"), 0)
+    let d = unwrap(source)
+    let drand = DrandRound(json_as_int(json_get(d, "round")), unwrap(hex_decode(json_as_text(json_get(d, "randomness")))), unwrap(hex_decode(json_as_text(json_get(d, "signature")))))
+    var others: List[SourceResult] = []
+    for id in ["nist-beacon-2", "curby-rng", "curby-q"]:
+        set others = list_push(others, not_requested(id))
+    let computed = unwrap(compute_outcome(request, note, drand, others))
+    assert(hex_encode(computed.seed) == json_as_text(json_get(receipt, "seed")))
+    assert(json_stringify(computed.outcome) == json_stringify(json_get(receipt, "outcome")))

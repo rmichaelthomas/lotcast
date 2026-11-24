@@ -1,0 +1,54 @@
+import "std:types"
+import "std:text"
+import "pkg:lotcast-log/src/lib.gu"
+import "mirror.gu"
+
+# `lotcast audit`: compares what several mirrors hold. The longest log is the reference; every other
+# mirror must be a prefix of it (its root equals the root of the reference's first `size` leaves).
+# A mirror that is shorter is behind (not a fault); one that differs has been forked or rewritten,
+# and the report names the first index where the two disagree.
+
+pub record AuditReport:
+    lines: List[Text]
+    status: Int
+
+fn first_difference(a: List[Bytes], b: List[Bytes], limit: Int) -> Int:
+    for i in range(0, limit):
+        if a[i] != b[i]:
+            return i
+    return -1
+
+fn prefix_of(hashes: List[Bytes], n: Int) -> List[Bytes]:
+    var out: List[Bytes] = []
+    for i in range(0, n):
+        set out = list_push(out, hashes[i])
+    return out
+
+# status: 0 every mirror holds the same log, 3 some are behind, 1 some disagree.
+pub fn audit_views(views: List[MirrorView]) -> AuditReport:
+    var lines: List[Text] = []
+    if len(views) == 0:
+        return AuditReport(["no mirrors to audit"], 1)
+    var best = 0
+    for i in range(0, len(views)):
+        if views[i].size > views[best].size:
+            set best = i
+    let ref = views[best]
+    set lines = list_push(lines, "reference " + ref.base + ": " + int_to_text(ref.size) + " entries")
+    var status = 0
+    for i in range(0, len(views)):
+        if i != best:
+            let v = views[i]
+            let n = v.size
+            if root_of_hashes(prefix_of(ref.hashes, n)) == v.root:
+                if n == ref.size:
+                    set lines = list_push(lines, "ok      " + v.base + ": the same log")
+                else:
+                    set lines = list_push(lines, "behind  " + v.base + ": " + int_to_text(n) + " entries, " + int_to_text(ref.size - n) + " fewer than the reference (consistent with it)")
+                    if status == 0:
+                        set status = 3
+            else:
+                let at = first_difference(v.hashes, ref.hashes, n)
+                set lines = list_push(lines, "FORKED  " + v.base + ": it disagrees with the reference at index " + int_to_text(at))
+                set status = 1
+    return AuditReport(lines, status)

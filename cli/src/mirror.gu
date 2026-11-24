@@ -1,0 +1,112 @@
+import "std:types"
+import "std:encoding"
+import "std:http"
+import "std:text"
+import "pkg:lotcast-log/src/lib.gu"
+
+# Reading a tlog-tiles log from a mirror: a directory (tests, a synced bucket) or an HTTP base URL.
+# `fetch(base, relative)` returns a file's bytes; fetch_file and fetch_http are the two real ones.
+# Every file is checked against the operator-signed checkpoint, so a mirror cannot lie by shape.
+
+pub record MirrorView:
+    base: Text
+    origin: Text
+    size: Int
+    root: Bytes
+    hashes: List[Bytes]
+    note: Text
+
+fn mirror_error(message: Text) -> StdError:
+    return std_error("E_MIRROR", message)
+
+pub fn fetch_file(base: Text, relative: Text) -> Result[Bytes, StdError]:
+    return get_file(base, relative)
+
+pub fn fetch_http(base: Text, relative: Text) -> Result[Bytes, StdError]:
+    let url = base + "/" + relative
+    let answered = http_request_bytes("GET", url, {}, bytes_from_ints([]), 20000)
+    if not is_ok(answered):
+        return Err(mirror_error(url + ": the request failed"))
+    if unwrap(answered).status != 200:
+        return Err(mirror_error(url + ": answered " + int_to_text(unwrap(answered).status)))
+    return Ok(unwrap(answered).body)
+
+fn utf8(b: Bytes) -> Result[Text, StdError]:
+    let t = encoding_utf8_decode(b)
+    if not is_ok(t):
+        return Err(mirror_error("a mirror file is not UTF-8"))
+    return Ok(unwrap(t))
+
+# The width of tile `t` of a level holding `count` items, and its partial marker (0 when full).
+fn tile_width(count: Int, t: Int) -> Int:
+    let left = count - t * 256
+    if left > 256:
+        return 256
+    return left
+
+fn partial_marker(width: Int) -> Int:
+    if width == 256:
+        return 0
+    return width
+
+# Opens a mirror: the signed checkpoint, then every leaf hash from the level-0 tiles, which must
+# hash to the checkpoint's root.
+pub fn mirror_view(fetch: fn(Text, Text) -> Result[Bytes, StdError], base: Text, operator_key: Bytes) -> Result[MirrorView, StdError]:
+    let note = utf8(fetch(base, "checkpoint")?)?
+    let lines = text_split(note, "\n")
+    if len(lines) < 3:
+        return Err(mirror_error("the checkpoint is not a signed note"))
+    let origin = lines[0]
+    let signed = verify_note(note, origin, operator_key)?
+    var text = ""
+    match signed:
+        Some(t):
+            set text = t
+        None:
+            return Err(mirror_error(base + ": the checkpoint is not signed by the operator key"))
+    let cp = parse_checkpoint(text)?
+    var hashes: List[Bytes] = []
+    var t = 0
+    while t * 256 < cp.size:
+        let width = tile_width(cp.size, t)
+        let blob = fetch(base, tile_path(0, t, partial_marker(width)))?
+        let got = split_hashes(blob)?
+        if len(got) != width:
+            return Err(mirror_error(base + ": a tile holds the wrong number of hashes"))
+        for h in got:
+            set hashes = list_push(hashes, h)
+        set t = t + 1
+    if root_of_hashes(hashes) != cp.root:
+        return Err(mirror_error(base + ": the tiles do not hash to the checkpoint's root"))
+    return Ok(MirrorView(base, origin, cp.size, cp.root, hashes, note))
+
+# Entry `index` of a log of `size` entries, checked against the leaf hash the tiles gave.
+pub fn mirror_entry(fetch: fn(Text, Text) -> Result[Bytes, StdError], view: MirrorView, index: Int) -> Result[Bytes, StdError]:
+    if index < 0 or index >= view.size:
+        return Err(mirror_error("the log has " + int_to_text(view.size) + " entries; there is no index " + int_to_text(index)))
+    let t = index // 256
+    let width = tile_width(view.size, t)
+    let blob = fetch(view.base, entry_bundle_path(t, partial_marker(width)))?
+    let entries = parse_bundle(blob)?
+    if len(entries) != width:
+        return Err(mirror_error("an entry bundle holds the wrong number of entries"))
+    let entry = entries[index - t * 256]
+    if leaf_hash(entry) != view.hashes[index]:
+        return Err(mirror_error("the entry does not match its leaf hash"))
+    return Ok(entry)
+
+# The epochs the operator closed, oldest first (log/epoch/index).
+pub fn mirror_epochs(fetch: fn(Text, Text) -> Result[Bytes, StdError], base: Text) -> Result[List[Int], StdError]:
+    let text = utf8(fetch(base, "epoch/index")?)?
+    var out: List[Int] = []
+    for line in text_split(text, "\n"):
+        if line != "":
+            let n = text_parse_int(line)
+            if not is_ok(n):
+                return Err(mirror_error("the epoch index has a line that is not a number"))
+            set out = list_push(out, unwrap(n))
+    return Ok(out)
+
+# The signed checkpoint note an epoch was stamped under.
+pub fn mirror_epoch_note(fetch: fn(Text, Text) -> Result[Bytes, StdError], base: Text, epoch: Int) -> Result[Text, StdError]:
+    return utf8(fetch(base, "epoch/" + int_to_text(epoch))?)

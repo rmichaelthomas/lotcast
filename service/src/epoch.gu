@@ -118,8 +118,27 @@ fn close_if_due(w: Writer, now: Int) -> Result[Writer, StdError]:
             set closed = json_set(closed, "checkpoint", json_text(w.state.checkpoint))
             set closed = json_set(closed, "entries", entries)
             let saved = store_put_json(w.store, "epochs/" + int_to_text(epoch) + ".json", closed)?
+            let published = publish_epoch(w.store, epoch, w.state.checkpoint)?
             let removed = fs_remove(w.store.root + "/state/open.json")
             return Ok(w)
+
+# Puts the epoch's checkpoint and the list of epochs in the public log directory, so anyone with a
+# mirror can find the checkpoint an entry was stamped under (`lotcast compute`, spec 8.3).
+fn publish_epoch(store: Store, epoch: Int, checkpoint: Text) -> Result[Bool, StdError]:
+    let dir = store.root + "/log"
+    let name = int_to_text(epoch)
+    let wrote = put_file(dir, "epoch/" + name, text_bytes(checkpoint))?
+    var index = ""
+    if has_file(dir, "epoch/index"):
+        let existing = get_file(dir, "epoch/index")?
+        let text = encoding_utf8_decode(existing)
+        if is_ok(text):
+            set index = unwrap(text)
+    for line in text_split(index, "\n"):
+        if line == name:
+            return Ok(true)
+    let saved = put_file(dir, "epoch/index", text_bytes(index + name + "\n"))?
+    return Ok(true)
 
 fn parse_inbox(request: Json) -> Result[DrawRequest, StdError]:
     let wrapped = json_set(json_object(), "request", request)

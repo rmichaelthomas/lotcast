@@ -161,3 +161,27 @@ fn test_log_files_are_served_byte_for_byte_and_nothing_else() -> Unit:
     assert(call(app, "GET", "/v1/log/../state/open.json", "").status == 404)
     assert(call(app, "GET", "/v1/log/", "").status == 404)
     assert(call(app, "POST", "/v1/log/checkpoint", "x").status == 405)
+
+fn test_the_operator_key_is_published_once_the_service_has_one() -> Unit:
+    let root = temp_root()
+    let app = make_app(root, 0)
+    assert(call(app, "GET", "/v1/operator", "").status == 404)
+    let wrote = write_text_atomic(root + "/state/operator_key.hex", "ab12\n")
+    let r = call(app, "GET", "/v1/operator", "")
+    assert(r.status == 200)
+    assert(json_as_text(json_get(json_body(r), "public_key")) == "ab12")
+    assert(json_as_text(json_get(json_body(r), "origin")) == "lotcast.test/log")
+
+fn test_epoch_and_anchor_files_are_served_from_the_log() -> Unit:
+    let root = temp_root()
+    let app = make_app(root, 0)
+    let a = fs_make_dir(root + "/log")
+    let b = fs_make_dir(root + "/log/epoch")
+    let c = fs_make_dir(root + "/log/anchor")
+    let w1 = write_text_atomic(root + "/log/epoch/7", "note")
+    let w2 = write_text_atomic(root + "/log/epoch/index", "7\n")
+    let w3 = write_text_atomic(root + "/log/anchor/7.json", "{\"void\":false}")
+    assert(call(app, "GET", "/v1/log/epoch/7", "").status == 200)
+    assert(call(app, "GET", "/v1/log/epoch/index", "").status == 200)
+    assert(call(app, "GET", "/v1/log/anchor/7.json", "").status == 200)
+    assert(call(app, "GET", "/v1/log/anchor/../../registry.json", "").status == 404)

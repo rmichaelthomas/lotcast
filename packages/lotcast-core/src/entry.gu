@@ -54,3 +54,82 @@ pub fn entry_hash(r: DrawRequest) -> Result[Bytes, StdError]:
 pub fn question_commit(question: Text, salt: Bytes) -> Bytes:
     assert(len(salt) == 32)
     return crypto_sha512(cat([text_bytes("lotcast/question/v1"), lp(text_bytes(question)), lp(salt)]))
+
+# ---------------------------------------------------------------- parsing an entry back
+
+# A cursor over an entry's bytes: the position after what has been read.
+record EntryReader:
+    data: Bytes
+    at: Int
+
+fn read_lp(r: EntryReader) -> Result[Bytes, StdError]:
+    if r.at + 4 > len(r.data):
+        return Err(entry_error("the entry ends inside a length prefix"))
+    let size = bytes_to_int(bytes_slice(r.data, r.at, r.at + 4))
+    if r.at + 4 + size > len(r.data):
+        return Err(entry_error("the entry ends inside a field"))
+    return Ok(bytes_slice(r.data, r.at + 4, r.at + 4 + size))
+
+fn utf8_text(b: Bytes) -> Result[Text, StdError]:
+    let decoded = encoding_utf8_decode(b)
+    if not is_ok(decoded):
+        return Err(entry_error("an entry field is not UTF-8"))
+    return Ok(unwrap(decoded))
+
+# The request an entry holds (the inverse of entry_bytes). The entry must be exactly what
+# entry_bytes writes for that request, so an entry with another spelling is refused.
+pub fn entry_parse(entry: Bytes) -> Result[DrawRequest, StdError]:
+    let tag = "lotcast/entry/v1"
+    if len(entry) < len(tag) or entry_prefix(entry, tag) != tag:
+        return Err(entry_error("not a lotcast/entry/v1 entry"))
+    var at = len(tag)
+    var fields: List[Bytes] = []
+    for step in range(0, 3):
+        let field = read_lp(EntryReader(entry, at))?
+        set fields = list_push(fields, field)
+        set at = at + 4 + len(field)
+    if at + 1 > len(entry):
+        return Err(entry_error("the entry ends before the question mode"))
+    let mode = bytes_to_int(bytes_slice(entry, at, at + 1))
+    set at = at + 1
+    var later: List[Bytes] = []
+    for step in range(0, 2):
+        let field = read_lp(EntryReader(entry, at))?
+        set later = list_push(later, field)
+        set at = at + 4 + len(field)
+    if at + 8 > len(entry):
+        return Err(entry_error("the entry ends before not_before"))
+    let not_before = bytes_to_int(bytes_slice(entry, at, at + 8))
+    set at = at + 8
+    var last: List[Bytes] = []
+    for step in range(0, 2):
+        let field = read_lp(EntryReader(entry, at))?
+        set last = list_push(last, field)
+        set at = at + 4 + len(field)
+    if at != len(entry):
+        return Err(entry_error("the entry has bytes after its last field"))
+    let tradition = utf8_text(fields[0])?
+    let method = utf8_text(fields[1])?
+    let option_text = utf8_text(fields[2])?
+    var options: Map[Text, Text] = {}
+    if option_text != "":
+        for line in text_split(option_text, "\n"):
+            let at_eq = text_find(line, "=", 0)
+            if at_eq < 0:
+                return Err(entry_error("an option line has no ="))
+            set options = map_set(options, text_slice(line, 0, at_eq), text_slice(line, at_eq + 1, len(line)))
+    let source_text = utf8_text(later[1])?
+    var sources: List[Text] = []
+    if source_text != "":
+        set sources = text_split(source_text, ",")
+    let parsed = DrawRequest(tradition, method, options, mode, later[0], sources, not_before, last[0], last[1])
+    let again = entry_bytes(parsed)?
+    if again != entry:
+        return Err(entry_error("the entry is not in the canonical form entry_bytes writes"))
+    return Ok(parsed)
+
+fn entry_prefix(entry: Bytes, tag: Text) -> Text:
+    let head = encoding_utf8_decode(bytes_slice(entry, 0, len(tag)))
+    if not is_ok(head):
+        return ""
+    return unwrap(head)

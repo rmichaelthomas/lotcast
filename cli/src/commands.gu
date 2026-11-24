@@ -1,0 +1,352 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:fs"
+import "std:json"
+import "std:process"
+import "std:text"
+import "pkg:beacons/src/lib.gu"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+import "pkg:lotcast-service/src/lib.gu"
+import "flags.gu"
+import "mirror.gu"
+import "audit.gu"
+import "compute.gu"
+import "client.gu"
+import "plan.gu"
+
+# The `lotcast` subcommands. Exit codes: 0 done and verified, 1 invalid or failed, 2 bad arguments
+# or unreadable input, 3 verified except for a live check still owed, 4 still pending.
+
+fn say_error(message: Text) -> Int:
+    eprint(message)
+    return 2
+
+fn sleep_seconds(n: Int) -> Unit:
+    let slept = sleep_ms(n * 1000)
+
+# ---------------------------------------------------------------- checking a receipt
+
+# Checks a receipt and prints the verdict (the verify_receipt.gu output); returns the exit code.
+pub fn check_receipt(receipt: Json, operator_key: Bytes, asked: Bool, question: Text, salt: Bytes, live: Bool) -> Int:
+    let verdict = verify_any(receipt, operator_key, tsa_pins(), asked, question, salt)
+    if verdict.result == "verified-pending-live":
+        if not live:
+            print(verdict.result)
+            print(verdict.detail)
+            print("NOT fully checked: rerun with --live to ask the live chains, or treat this receipt as unconfirmed.")
+            return 3
+        let confirmed = live_recheck(receipt)
+        if not is_ok(confirmed):
+            match confirmed:
+                Err(problem):
+                    if problem.code == "E_LOTCAST_PENDING":
+                        print(verdict.result)
+                        print(problem.message)
+                        return 3
+                    print("invalid")
+                    print("failed step 4: " + problem.message)
+                    return 1
+                Ok(ignored):
+                    return 2
+        print("verified")
+        print("Every step passed offline, and the live chains confirm that these sources still have no pulse for this draw: " + text_join(unwrap(confirmed), ", ") + ".")
+        return 0
+    print(verdict.result)
+    if verdict.result == "invalid":
+        print("failed step " + int_to_text(verdict.failed_step) + ": " + verdict.detail)
+        return 1
+    print(verdict.detail)
+    return 0
+
+fn key_from(f: Flags, server: Text) -> Result[Bytes, Text]:
+    let given = flag_one(f, "--operator-key", "")
+    if given != "":
+        let decoded = hex_decode(given)
+        if not is_ok(decoded) or len(unwrap(decoded)) != 32:
+            return Err("the operator key must be 32 bytes of hex")
+        return Ok(unwrap(decoded))
+    if server == "":
+        return Err("pass the operator's public key with --operator-key HEX (or --server URL to ask the service)")
+    let asked = operator_key_of(server)
+    if not is_ok(asked):
+        match asked:
+            Err(problem):
+                return Err(problem.message)
+            Ok(ignored):
+                return Err("no operator key")
+    eprint("note: operator key taken from the service (" + hex_encode(unwrap(asked)) + "); pin it out of band for anything that matters")
+    return Ok(unwrap(asked))
+
+# ---------------------------------------------------------------- lotcast verify
+
+pub fn cmd_verify(all: List[Text]) -> Int:
+    let parsed = parse_flags(all, ["--operator-key", "--question", "--salt", "--server"], ["--live"])
+    if not is_ok(parsed):
+        match parsed:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    let f = unwrap(parsed)
+    if len(f.positional) != 1:
+        return say_error("usage: lotcast verify RECEIPT.json [--live] [--operator-key HEX | --server URL] [--question TEXT --salt HEX]")
+    let body = read_text(f.positional[0])
+    if not is_ok(body):
+        return say_error("cannot read " + f.positional[0])
+    let receipt = json_parse(unwrap(body))
+    if not is_ok(receipt):
+        return say_error(f.positional[0] + " is not JSON")
+    let asked = flag_set(f, "--question")
+    if asked != flag_set(f, "--salt"):
+        return say_error("--question and --salt go together")
+    var salt = bytes_from_ints([])
+    if asked:
+        let decoded = hex_decode(flag_one(f, "--salt", ""))
+        if not is_ok(decoded):
+            return say_error("the salt is not hex")
+        set salt = unwrap(decoded)
+    var key = bytes_from_ints([])
+    let log = json_get_safe(unwrap(receipt), "log")
+    if is_ok(log) and not json_is_null(unwrap(log)):
+        let got = key_from(f, flag_one(f, "--server", ""))
+        if not is_ok(got):
+            match got:
+                Err(why):
+                    return say_error(why)
+                Ok(ignored):
+                    return 2
+        set key = unwrap(got)
+    return check_receipt(unwrap(receipt), key, asked, flag_one(f, "--question", ""), salt, flag_set(f, "--live"))
+
+# ---------------------------------------------------------------- lotcast draw / get
+
+fn show_waiting(view: Json) -> Unit:
+    let waiting = json_get(view, "waiting_on")
+    for i in range(0, json_len(waiting)):
+        let w = unwrap(json_index_safe(waiting, i))
+        eprint("  waiting on " + json_as_text(json_get(w, "source")) + ": " + json_as_text(json_get(w, "detail")))
+
+# Polls a draw until it is complete, anchor-failed, or `wait` seconds have passed.
+fn poll_draw(server: Text, id: Text, wait: Int) -> Result[Json, Text]:
+    var waited = 0
+    var last = json_null()
+    while true:
+        let reply = http_reply("GET", server + "/v1/draws/" + id, "")
+        if is_ok(reply) and unwrap(reply).status == 200:
+            set last = unwrap(reply).body
+            let status = json_as_text(json_get(last, "status"))
+            if status == "complete" or status == "anchor-failed":
+                return Ok(last)
+        if waited >= wait:
+            if json_is_null(last):
+                return Err("the service did not answer")
+            return Ok(last)
+        sleep_seconds(3)
+        set waited = waited + 3
+    return Ok(last)
+
+# Prints the finished receipt and the verdict; returns the exit code.
+fn finish(view: Json, key: Bytes, asked: Bool, question: Text, salt: Bytes, live: Bool) -> Int:
+    let status = json_as_text(json_get(view, "status"))
+    if status == "anchor-failed":
+        eprint("the epoch's timestamps did not arrive in time, so this request has no receipt; send it again (a new nonce is made for you)")
+        return 1
+    if status != "complete":
+        eprint("still pending; ask again with: lotcast get " + json_as_text(json_get(view, "id")))
+        show_waiting(view)
+        return 4
+    let receipt = json_get(view, "receipt")
+    print(json_stringify(receipt))
+    return check_receipt_to_stderr(receipt, key, asked, question, salt, live)
+
+# The verdict goes to stderr so stdout stays the receipt alone.
+fn check_receipt_to_stderr(receipt: Json, key: Bytes, asked: Bool, question: Text, salt: Bytes, live: Bool) -> Int:
+    let verdict = verify_any(receipt, key, tsa_pins(), asked, question, salt)
+    eprint("verdict: " + verdict.result)
+    if verdict.result == "invalid":
+        eprint("failed step " + int_to_text(verdict.failed_step) + ": " + verdict.detail)
+        return 1
+    if verdict.result == "verified-pending-live":
+        eprint(verdict.detail)
+        eprint("not fully checked: lotcast verify RECEIPT.json --live")
+        return 3
+    return 0
+
+pub fn cmd_draw(all: List[Text]) -> Int:
+    let nonce = crypto_random_bytes(32)
+    let salt = crypto_random_bytes(32)
+    if not is_ok(nonce) or not is_ok(salt):
+        return say_error("no secure randomness available")
+    let planned = plan_draw(all, unwrap(nonce), unwrap(salt))
+    if not is_ok(planned):
+        match planned:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    let plan = unwrap(planned)
+    let posted = http_reply("POST", plan.server + "/v1/draws", plan.body)
+    if not is_ok(posted):
+        match posted:
+            Err(problem):
+                return say_error(problem.message)
+            Ok(ignored):
+                return 2
+    let reply = unwrap(posted)
+    if reply.status != 200 and reply.status != 202:
+        eprint("the service refused the request: " + error_message(reply.body))
+        return 1
+    if json_as_text(json_get(reply.body, "entry_hash")) != plan.entry_hash_hex:
+        eprint("the service logged a different entry than the one sent (entry_hash differs): do not trust this draw")
+        return 1
+    let id = json_as_text(json_get(reply.body, "id"))
+    eprint("logged: index=" + int_to_text(json_as_int(json_get(reply.body, "index"))) + " id=" + id)
+    if plan.has_question:
+        eprint("salt=" + plan.salt_hex)
+    var f = Flags([], [], [])
+    if plan.operator_key_hex != "":
+        set f = Flags([], ["--operator-key"], [plan.operator_key_hex])
+    let key = key_from(f, plan.server)
+    if not is_ok(key):
+        match key:
+            Err(why):
+                eprint(why)
+            Ok(ignored):
+                eprint("no operator key")
+        eprint("the draw is logged; verify later with: lotcast get " + id + " --operator-key HEX")
+        return 2
+    let view = poll_draw(plan.server, id, plan.wait_seconds)
+    if not is_ok(view):
+        match view:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    var saltbytes = bytes_from_ints([])
+    if plan.has_question:
+        set saltbytes = unwrap(hex_decode(plan.salt_hex))
+    return finish(unwrap(view), unwrap(key), plan.has_question, plan.question, saltbytes, false)
+
+pub fn cmd_get(all: List[Text]) -> Int:
+    let parsed = parse_flags(all, ["--server", "--operator-key", "--wait"], [])
+    if not is_ok(parsed):
+        match parsed:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    let f = unwrap(parsed)
+    if len(f.positional) != 1:
+        return say_error("usage: lotcast get ID [--server URL] [--operator-key HEX] [--wait SECONDS]")
+    let server = flag_one(f, "--server", "http://127.0.0.1:8080")
+    let key = key_from(f, server)
+    if not is_ok(key):
+        match key:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    var wait = 0
+    if flag_set(f, "--wait"):
+        let n = text_parse_int(flag_one(f, "--wait", "0"))
+        if not is_ok(n) or unwrap(n) < 0:
+            return say_error("--wait takes seconds")
+        set wait = unwrap(n)
+    let view = poll_draw(server, f.positional[0], wait)
+    if not is_ok(view):
+        match view:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    return finish(unwrap(view), unwrap(key), false, "", bytes_from_ints([]), false)
+
+# ---------------------------------------------------------------- lotcast compute / audit
+
+fn fetch_for(base: Text) -> fn(Text, Text) -> Result[Bytes, StdError]:
+    if len(base) >= 4 and text_slice(base, 0, 4) == "http":
+        return fetch_http
+    return fetch_file
+
+fn trim_slash(base: Text) -> Text:
+    if len(base) > 1 and text_slice(base, len(base) - 1, len(base)) == "/":
+        return text_slice(base, 0, len(base) - 1)
+    return base
+
+pub fn cmd_compute(all: List[Text]) -> Int:
+    let parsed = parse_flags(all, ["--mirror", "--operator-key", "--server"], [])
+    if not is_ok(parsed):
+        match parsed:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    let f = unwrap(parsed)
+    if len(f.positional) != 1:
+        return say_error("usage: lotcast compute LOG-INDEX --mirror URL-or-DIRECTORY [--operator-key HEX | --server URL]")
+    let index = text_parse_int(f.positional[0])
+    if not is_ok(index) or unwrap(index) < 0:
+        return say_error("the log index is a whole number")
+    let mirror = trim_slash(flag_one(f, "--mirror", ""))
+    if mirror == "":
+        return say_error("--mirror says where to read the log: an HTTP base URL ending in /v1/log, or a directory")
+    let key = key_from(f, flag_one(f, "--server", ""))
+    if not is_ok(key):
+        match key:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    let computed = compute_index(fetch_for(mirror), mirror, unwrap(key), unwrap(index), real_drand, real_source)
+    if not is_ok(computed):
+        match computed:
+            Err(problem):
+                eprint(problem.code + ": " + problem.message)
+                if problem.code == "E_LOTCAST_PENDING":
+                    return 4
+                return 1
+            Ok(ignored):
+                return 1
+    print(json_stringify(unwrap(computed)))
+    return 0
+
+pub fn cmd_audit(all: List[Text]) -> Int:
+    let parsed = parse_flags(all, ["--mirror", "--operator-key", "--server"], [])
+    if not is_ok(parsed):
+        match parsed:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    let f = unwrap(parsed)
+    let mirrors = flag_all(f, "--mirror")
+    if len(mirrors) < 2:
+        return say_error("usage: lotcast audit --mirror A --mirror B [...] [--operator-key HEX | --server URL]  (at least two mirrors)")
+    let key = key_from(f, flag_one(f, "--server", ""))
+    if not is_ok(key):
+        match key:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    var views: List[MirrorView] = []
+    for m in mirrors:
+        let base = trim_slash(m)
+        let v = mirror_view(fetch_for(base), base, unwrap(key))
+        if not is_ok(v):
+            match v:
+                Err(problem):
+                    eprint("UNREADABLE " + base + ": " + problem.message)
+                    return 1
+                Ok(ignored):
+                    return 1
+        set views = list_push(views, unwrap(v))
+    let report = audit_views(views)
+    for line in report.lines:
+        print(line)
+    return report.status
+
+pub fn cmd_serve(all: List[Text]) -> Int:
+    return serve_main(all)

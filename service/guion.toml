@@ -69,11 +69,11 @@ sha256 = "3eaf1653f4fd4aeec39a1a752608ae3a61032878826ea375db72209e830476a9"
 url = "https://guion-registry.thomasbuild.workers.dev/objects/3eaf1653f4fd4aeec39a1a752608ae3a61032878826ea375db72209e830476a9.tar"
 version = "0.2.0"
 
+[environment]
+variables = ["LOTCAST_OPERATOR_KEY"]
+
 [package]
 entry = "src/lib.gu"
 exports = ["src/lib.gu"]
 name = "lotcast-service"
 version = "0.1.0"
-
-[environment]
-variables = ["LOTCAST_OPERATOR_KEY"]

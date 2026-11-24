@@ -1,129 +1,20 @@
 import "std:types"
-import "std:crypto"
-import "std:encoding"
-import "std:fs"
 import "std:process"
-import "std:text"
-import "pkg:web/src/lib.gu"
-import "src/config.gu"
-import "src/store.gu"
-import "src/routes.gu"
-import "src/loops.gu"
+import "src/run.gu"
 
-# lotcast serve: the draw service. One process runs four jobs side by side: the HTTP workers, the
-# writer (the only appender to the log), the stamper (two RFC 3161 timestamps per epoch) and the
-# watcher (completes receipts). They share nothing but the files under --data-dir.
+# lotcast serve: the draw service.
 #
-#   guion run --allow-bind 127.0.0.1:8080 --allow-clock --allow-env LOTCAST_OPERATOR_KEY \
-#       --file-root DATA --allow-http-host ... serve.gu --data-dir DATA --key-file KEYFILE [flags]
+#   guion run --allow-bind 127.0.0.1:8080 --allow-clock --file-root DATA \
+#       --allow-http-host api.drand.sh --allow-http-host drand.cloudflare.com \
+#       --allow-http-host beacon.nist.gov --allow-http-host random.colorado.edu \
+#       --allow-http-host timestamp.digicert.com --allow-http-host timestamp.sectigo.com \
+#       --allow-http-host freetsa.org serve.gu --data-dir DATA --key-file KEYFILE [flags]
 #
 # Flags: --host --port --data-dir --key-file --epoch-seconds --stamp-budget --origin --workers
 #        --trust-proxy --registry, and --new-key (create the key file when it is missing).
-# The operator's key is read from --key-file (64 hex characters) or from LOTCAST_OPERATOR_KEY, and
-# is never printed; the public key is written to DATA/state/operator_key.hex and to stderr.
-
-record Job:
-    kind: Int
-    cfg: Config
-    seed: Bytes
-    key: Bytes
-
-fn run_job(job: Job) -> Int:
-    let store = unwrap(store_open(job.cfg.data_dir))
-    if job.kind == 0:
-        let built = app_build(job.cfg, 6000)
-        if not is_ok(built):
-            eprint("cannot build the application")
-            return 1
-        match serve(job.cfg.host, job.cfg.port, unwrap(built), job.cfg.workers):
-            Ok(ignored):
-                return 0
-            Err(failure):
-                eprint("http: " + failure.code + ": " + failure.message)
-                return 1
-    if job.kind == 1:
-        return writer_loop(store, job.cfg, job.seed, 0)
-    if job.kind == 2:
-        return stamper_loop(store, 0)
-    return watch_loop(store, job.cfg, job.key, 0)
-
-fn read_seed(path: Text, create: Bool) -> Result[Bytes, Text]:
-    let body = read_text(path)
-    if is_ok(body):
-        let decoded = hex_decode(text_trim(unwrap(body)))
-        if not is_ok(decoded) or len(unwrap(decoded)) != 32:
-            return Err(path + " must hold the 32-byte operator seed as 64 hex characters")
-        return Ok(unwrap(decoded))
-    if not create:
-        return Err("cannot read " + path + " (use --new-key to create it)")
-    let fresh = crypto_random_bytes(32)
-    if not is_ok(fresh) or not is_ok(write_text_atomic(path, hex_encode(unwrap(fresh)) + "\n")):
-        return Err("cannot create " + path)
-    return Ok(unwrap(fresh))
-
-fn seed_from(cfg: Config, create: Bool) -> Result[Bytes, Text]:
-    if cfg.key_file != "":
-        return read_seed(cfg.key_file, create)
-    match env("LOTCAST_OPERATOR_KEY"):
-        Some(value):
-            let decoded = hex_decode(text_trim(value))
-            if not is_ok(decoded) or len(unwrap(decoded)) != 32:
-                return Err("LOTCAST_OPERATOR_KEY must be the 32-byte operator seed as 64 hex characters")
-            return Ok(unwrap(decoded))
-        None:
-            return Err("no operator key")
+# The operator's key is read from --key-file (64 hex characters) or from the LOTCAST_OPERATOR_KEY
+# environment variable, and is never printed; the public key goes to DATA/state/operator_key.hex
+# and to stderr.
 
 fn main() -> Int:
-    var rest: List[Text] = []
-    var create = false
-    for a in args():
-        if a == "--new-key":
-            set create = true
-        else:
-            set rest = list_push(rest, a)
-    var has_env = false
-    match env("LOTCAST_OPERATOR_KEY"):
-        Some(ignored):
-            set has_env = true
-        None:
-            set has_env = false
-    let cfg = config_from_args(rest, has_env)
-    if not is_ok(cfg):
-        match cfg:
-            Err(problem):
-                eprint(problem.message)
-            Ok(ignored):
-                eprint("bad configuration")
-        return 2
-    let seed = seed_from(unwrap(cfg), create)
-    if not is_ok(seed):
-        match seed:
-            Err(why):
-                eprint(why)
-            Ok(ignored):
-                eprint("no operator key")
-        return 2
-    let public = crypto_ed25519_public_key(unwrap(seed))
-    if not is_ok(public):
-        eprint("the operator seed is not usable")
-        return 2
-    let store = store_open(unwrap(cfg).data_dir)
-    if not is_ok(store):
-        match store:
-            Err(problem):
-                eprint(problem.message)
-            Ok(ignored):
-                eprint("cannot open the data directory")
-        return 2
-    let saved = write_text_atomic(unwrap(cfg).data_dir + "/state/operator_key.hex", hex_encode(unwrap(public)) + "\n")
-    let cleared = fs_remove(unwrap(cfg).data_dir + "/state/stop")
-    eprint("operator_key=" + hex_encode(unwrap(public)))
-    var jobs: List[Job] = []
-    for kind in [0, 1, 2, 3]:
-        set jobs = list_push(jobs, Job(kind, unwrap(cfg), unwrap(seed), unwrap(public)))
-    match parallel_map(jobs, run_job, 4):
-        Ok(codes):
-            return 0
-        Err(problem):
-            eprint("a service job stopped: " + task_code(problem))
-            return 1
+    return serve_main(args())

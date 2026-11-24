@@ -1,0 +1,48 @@
+import "std:types"
+import "std:process"
+import "std:text"
+import "src/lib.gu"
+
+# lotcast: draw, get, verify, compute, audit and serve, in one command.
+#
+#   guion run [grants] lotcast.gu COMMAND [ARGS...]
+#
+#   lotcast draw TRADITION METHOD [KEY=VALUE ...] [--question TEXT] [--sources a,b] [--not-before UNIX]
+#                [--wait SECONDS] [--server URL] [--operator-key HEX]
+#   lotcast get ID [--server URL] [--operator-key HEX] [--wait SECONDS]
+#   lotcast verify RECEIPT.json [--live] [--operator-key HEX | --server URL] [--question TEXT --salt HEX]
+#   lotcast compute LOG-INDEX --mirror URL-or-DIRECTORY [--operator-key HEX | --server URL]
+#   lotcast audit --mirror A --mirror B [...] [--operator-key HEX | --server URL]
+#   lotcast serve --data-dir DIR --key-file FILE [...]
+#
+# Exit codes: 0 done and verified, 1 invalid or failed, 2 bad arguments or unreadable input,
+# 3 verified except for a live check still owed, 4 still pending.
+
+fn usage() -> Int:
+    eprint("usage: lotcast draw|get|verify|compute|audit|serve ARGS...  (see the header of lotcast.gu)")
+    return 2
+
+fn rest_of(all: List[Text]) -> List[Text]:
+    var out: List[Text] = []
+    for i in range(1, len(all)):
+        set out = list_push(out, all[i])
+    return out
+
+fn main() -> Int:
+    let all = args()
+    if len(all) == 0:
+        return usage()
+    let rest = rest_of(all)
+    if all[0] == "draw":
+        return cmd_draw(rest)
+    if all[0] == "get":
+        return cmd_get(rest)
+    if all[0] == "verify":
+        return cmd_verify(rest)
+    if all[0] == "compute":
+        return cmd_compute(rest)
+    if all[0] == "audit":
+        return cmd_audit(rest)
+    if all[0] == "serve":
+        return cmd_serve(rest)
+    return usage()

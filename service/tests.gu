@@ -768,3 +768,27 @@ fn test_the_receipt_the_running_service_made_verifies_offline() -> Unit:
     let key = unwrap(hex_decode(text_trim(unwrap(read_text("fixtures/service-operator-key.hex")))))
     let verdict = verify_any(receipt, key, tsa_pins(), false, "", bytes_from_ints([]))
     assert(verdict.result == "verified")
+
+# ---------------------------------------------------------------- public epoch files
+
+fn test_closing_an_epoch_publishes_its_checkpoint_and_the_epoch_index_in_the_log() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 61)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let closed = unwrap(store_get_json(w.store, "epochs/359111200.json"))
+    let published = unwrap(read_text(root + "/log/epoch/359111200"))
+    assert(published == json_as_text(json_get(closed, "checkpoint")))
+    assert(unwrap(read_text(root + "/log/epoch/index")) == "359111200\n")
+    let b = queue(w.store, 62)
+    set w = unwrap(writer_tick(w, 1795556010))
+    set w = unwrap(writer_tick(w, 1795556016))
+    assert(unwrap(read_text(root + "/log/epoch/index")) == "359111200\n359111202\n")
+
+fn test_the_anchor_is_published_beside_the_checkpoint() -> Unit:
+    let store = closed_store()
+    let after = unwrap(stamper_tick(store, {}, 1795556006, stamp_in_time))
+    let public = unwrap(json_parse(unwrap(read_text(store.root + "/log/anchor/359111200.json"))))
+    assert(json_as_bool(json_get(public, "void")) == false)
+    assert(json_len(json_get(public, "timestamps")) == 2)

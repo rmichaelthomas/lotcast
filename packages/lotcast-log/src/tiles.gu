@@ -1,0 +1,166 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "std:fs"
+import "encode.gu"
+import "merkle.gu"
+
+# C2SP tlog-tiles layout: tile height 8 (256 hashes per tile), RFC 6962 hashing, entry bundles of
+# uint16 length-prefixed entries.
+
+fn tile_error(message: Text) -> StdError:
+    return std_error("E_LOG_TILES", message)
+
+fn pad3(n: Int) -> Text:
+    let t = int_to_text(n)
+    if len(t) == 1:
+        return "00" + t
+    if len(t) == 2:
+        return "0" + t
+    return t
+
+# An index as zero-padded 3-digit path elements, all but the last prefixed with `x`.
+pub fn x_path(n: Int) -> Text:
+    assert(n >= 0)
+    var parts: List[Int] = []
+    var rest = n
+    var more = true
+    while more:
+        set parts = list_push(parts, rest % 1000)
+        set rest = rest // 1000
+        set more = rest > 0
+    var out = ""
+    var i = len(parts) - 1
+    while i >= 0:
+        var piece = pad3(parts[i])
+        if i > 0:
+            set piece = "x" + piece
+        if out == "":
+            set out = piece
+        else:
+            set out = out + "/" + piece
+        set i = i - 1
+    return out
+
+fn partial_suffix(partial: Int) -> Text:
+    if partial == 0:
+        return ""
+    return ".p/" + int_to_text(partial)
+
+# `partial` is 0 for a full tile, else its width (1 to 255).
+pub fn tile_path(level: Int, index: Int, partial: Int) -> Text:
+    return "tile/" + int_to_text(level) + "/" + x_path(index) + partial_suffix(partial)
+
+pub fn entry_bundle_path(index: Int, partial: Int) -> Text:
+    return "tile/entries/" + x_path(index) + partial_suffix(partial)
+
+# The hashes at `level`: level 0 is the leaf hashes; level l+1 holds the tree hash of each full
+# group of 256 hashes at level l.
+pub fn level_hashes(leaf_hashes_in: List[Bytes], level: Int) -> List[Bytes]:
+    var current = leaf_hashes_in
+    var l = 0
+    while l < level:
+        var next: List[Bytes] = []
+        var j = 0
+        while (j + 1) * 256 <= len(current):
+            set next = list_push(next, subtree(current, j * 256, j * 256 + 256))
+            set j = j + 1
+        set current = next
+        set l = l + 1
+    return current
+
+pub fn join_hashes(hashes: List[Bytes], from: Int, to: Int) -> Bytes:
+    var parts: List[Bytes] = []
+    var i = from
+    while i < to:
+        set parts = list_push(parts, hashes[i])
+        set i = i + 1
+    return cat(parts)
+
+# Entries as uint16 length-prefixed records.
+pub fn bundle_bytes(entries: List[Bytes], from: Int, to: Int) -> Result[Bytes, StdError]:
+    var parts: List[Bytes] = []
+    var i = from
+    while i < to:
+        if len(entries[i]) > 65535:
+            return Err(tile_error("an entry is longer than 65535 bytes"))
+        set parts = list_push(parts, cat([slice_bytes(u32_bytes(len(entries[i])), 2, 4), entries[i]]))
+        set i = i + 1
+    return Ok(cat(parts))
+
+pub fn parse_bundle(blob: Bytes) -> Result[List[Bytes], StdError]:
+    var entries: List[Bytes] = []
+    var at = 0
+    let octets = bytes_to_ints(blob)
+    while at < len(blob):
+        if at + 2 > len(blob):
+            return Err(tile_error("an entry bundle ends inside a length prefix"))
+        let size = octets[at] * 256 + octets[at + 1]
+        if at + 2 + size > len(blob):
+            return Err(tile_error("an entry bundle ends inside an entry"))
+        set entries = list_push(entries, slice_bytes(blob, at + 2, at + 2 + size))
+        set at = at + 2 + size
+    return Ok(entries)
+
+pub fn split_hashes(blob: Bytes) -> Result[List[Bytes], StdError]:
+    if len(blob) % 32 != 0:
+        return Err(tile_error("a tile is not a whole number of 32-byte hashes"))
+    var out: List[Bytes] = []
+    var at = 0
+    while at < len(blob):
+        set out = list_push(out, slice_bytes(blob, at, at + 32))
+        set at = at + 32
+    return Ok(out)
+
+# File helpers: every write goes to a temporary name and is renamed into place.
+
+fn file_exists(path: Text) -> Bool:
+    let r = fs_exists(path)
+    if not is_ok(r):
+        return false
+    return unwrap(r)
+
+pub fn make_dirs(path: Text) -> Result[Bool, StdError]:
+    let parts = text_split(path, "/")
+    var built = ""
+    var first = true
+    for part in parts:
+        if first:
+            set built = part
+            set first = false
+        else:
+            set built = built + "/" + part
+        if part != "" and not file_exists(built):
+            if not is_ok(fs_make_dir(built)):
+                return Err(tile_error("cannot create " + built))
+    return Ok(true)
+
+pub fn put_file(root: Text, relative: Text, data: Bytes) -> Result[Bool, StdError]:
+    let target = root + "/" + relative
+    let pieces = text_split(target, "/")
+    var dir = ""
+    var i = 0
+    while i < len(pieces) - 1:
+        if i == 0:
+            set dir = pieces[0]
+        else:
+            set dir = dir + "/" + pieces[i]
+        set i = i + 1
+    let made = make_dirs(dir)?
+    let temp = target + ".tmp"
+    if not is_ok(write_bytes(temp, data)):
+        return Err(tile_error("cannot write " + temp))
+    if not is_ok(fs_rename(temp, target)):
+        return Err(tile_error("cannot rename " + temp))
+    return Ok(true)
+
+pub fn get_file(root: Text, relative: Text) -> Result[Bytes, StdError]:
+    let path = root + "/" + relative
+    let r = read_bytes(path)
+    if not is_ok(r):
+        return Err(tile_error("cannot read " + path))
+    return Ok(unwrap(r))
+
+pub fn has_file(root: Text, relative: Text) -> Bool:
+    return file_exists(root + "/" + relative)

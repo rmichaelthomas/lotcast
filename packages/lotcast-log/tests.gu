@@ -3,6 +3,7 @@ import "std:crypto"
 import "std:encoding"
 import "std:text"
 import "std:json"
+import "std:fs"
 import "src/lib.gu"
 
 fn main() -> Int:
@@ -217,3 +218,151 @@ fn test_checkpoint_rejects_bad_size_and_bad_root_length() -> Unit:
     assert(not is_ok(parse_checkpoint("o\n1\n" + base64_encode(bytes_from_ints([1, 2, 3])) + "\n")))
     assert(not is_ok(parse_checkpoint("o\n1\n" + root)))
     assert(not is_ok(parse_checkpoint("\n1\n" + root + "\n")))
+
+fn tile_vectors() -> Json:
+    return unwrap(json_parse(unwrap(read_text("fixtures/tiles-vectors.json"))))
+
+fn test_tile_paths_match_c2sp_examples() -> Unit:
+    let v = tile_vectors()
+    let cases = json_get(v, "paths")
+    var i = 0
+    while i < json_len(cases):
+        let c = unwrap(json_index_safe(cases, i))
+        let level = json_as_int(json_get(c, "level"))
+        let index = json_as_int(json_get(c, "index"))
+        let width = json_as_int(json_get(c, "width"))
+        var got = ""
+        if level < 0:
+            set got = entry_bundle_path(index, width)
+        else:
+            set got = tile_path(level, index, width)
+        assert(got == json_as_text(json_get(c, "path")))
+        set i = i + 1
+    assert(tile_path(0, 1234067, 0) == "tile/0/x001/x234/067")
+    assert(x_path(0) == "000")
+    assert(x_path(999) == "999")
+    assert(x_path(1000) == "x001/000")
+
+fn test_bundle_round_trip_and_truncation() -> Unit:
+    let entries = [bytes_from_ints([1, 2, 3]), bytes_from_ints([]), bytes_from_ints([9])]
+    let blob = unwrap(bundle_bytes(entries, 0, 3))
+    assert(blob == bytes_from_ints([0, 3, 1, 2, 3, 0, 0, 0, 1, 9]))
+    assert(unwrap(parse_bundle(blob)) == entries)
+    assert(not is_ok(parse_bundle(bytes_from_ints([0, 3, 1, 2]))))
+    assert(not is_ok(parse_bundle(bytes_from_ints([0]))))
+    assert(not is_ok(split_hashes(bytes_from_ints([1, 2, 3]))))
+
+fn test_level_hashes_fold_full_groups_only() -> Unit:
+    var hashes: List[Bytes] = []
+    var i = 0
+    while i < 513:
+        set hashes = list_push(hashes, crypto_sha256(u32_bytes(i)))
+        set i = i + 1
+    assert(len(level_hashes(hashes, 0)) == 513)
+    assert(len(level_hashes(hashes, 1)) == 2)
+    assert(len(level_hashes(hashes, 2)) == 0)
+    var first256: List[Bytes] = []
+    var k = 0
+    while k < 256:
+        set first256 = list_push(first256, hashes[k])
+        set k = k + 1
+    assert(level_hashes(hashes, 1)[0] == root_of_hashes(first256))
+
+fn op_key_seed() -> Bytes:
+    return hexb("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
+
+fn op_key_public() -> Bytes:
+    return unwrap(crypto_ed25519_public_key(op_key_seed()))
+
+fn log_origin() -> Text:
+    return "lotcast.example/log"
+
+fn fresh_dir() -> Text:
+    return unwrap(fs_temp_dir("lotcast-log-test"))
+
+fn make_entries(n: Int) -> List[Bytes]:
+    var out: List[Bytes] = []
+    var i = 0
+    while i < n:
+        set out = list_push(out, text_bytes("entry-" + int_to_text(i)))
+        set i = i + 1
+    return out
+
+fn open_fresh(dir: Text) -> LogState:
+    return unwrap(log_open(dir, log_origin(), log_origin(), op_key_public()))
+
+fn built(n: Int) -> LogState:
+    let dir = fresh_dir()
+    let appended = unwrap(log_append_many(open_fresh(dir), make_entries(n), log_origin(), op_key_seed()))
+    return appended.state
+
+fn file_hash_hex(dir: Text, relative: Text) -> Text:
+    return hex_encode(crypto_sha256(unwrap(get_file(dir, relative))))
+
+fn test_log_root_and_files_match_python_at_each_size() -> Unit:
+    let v = tile_vectors()
+    let logs = json_get(v, "logs")
+    var i = 0
+    while i < json_len(logs):
+        let c = unwrap(json_index_safe(logs, i))
+        let size = json_as_int(json_get(c, "size"))
+        let state = built(size)
+        assert(state.size == size)
+        assert(log_root(state) == hexb(json_as_text(json_get(c, "root"))))
+        let files = json_get(c, "files")
+        var f = 0
+        while f < json_len(files):
+            let file = unwrap(json_index_safe(files, f))
+            assert(file_hash_hex(state.dir, json_as_text(json_get(file, "path"))) == json_as_text(json_get(file, "sha256")))
+            set f = f + 1
+        set i = i + 1
+
+fn test_inclusion_from_log_verifies() -> Unit:
+    let state = built(300)
+    let root = log_root(state)
+    for index in [0, 1, 255, 256, 299]:
+        let proof = unwrap(log_inclusion(state, index))
+        assert(verify_inclusion(state.entries[index], index, 300, proof, root))
+    assert(not is_ok(log_inclusion(state, 300)))
+
+fn test_reopen_after_append_gives_same_checkpoint() -> Unit:
+    let state = built(10)
+    let reopened = open_fresh(state.dir)
+    assert(reopened.size == 10)
+    assert(log_checkpoint(reopened) == log_checkpoint(state))
+    let more = unwrap(log_append_many(reopened, make_entries(30), log_origin(), op_key_seed()))
+    assert(more.state.size == 30)
+    assert(more.indexes[5] == 5)
+    assert(more.indexes[29] == 29)
+    let again = open_fresh(state.dir)
+    assert(again.size == 30)
+    assert(log_root(again) == log_root(more.state))
+    let consistency = unwrap(log_consistency(again, 10))
+    assert(verify_consistency(10, log_root(reopened), 30, log_root(again), consistency))
+
+fn test_duplicate_entry_returns_existing_index() -> Unit:
+    let state = built(5)
+    let again = unwrap(log_append(state, text_bytes("entry-3"), log_origin(), op_key_seed()))
+    assert(again.indexes == [3])
+    assert(again.state.size == 5)
+    assert(log_checkpoint(again.state) == log_checkpoint(state))
+    let mixed = unwrap(log_append_many(state, [text_bytes("entry-1"), text_bytes("brand-new"), text_bytes("brand-new")], log_origin(), op_key_seed()))
+    assert(mixed.indexes == [1, 5, 5])
+    assert(mixed.state.size == 6)
+
+fn test_corrupt_tile_fails_open() -> Unit:
+    let state = built(20)
+    let victim = state.dir + "/" + tile_path(0, 0, 20)
+    assert(is_ok(write_bytes(victim, crypto_sha256(bytes_from_ints([7])))))
+    assert(not is_ok(log_open(state.dir, log_origin(), log_origin(), op_key_public())))
+
+fn test_truncated_log_fails_open() -> Unit:
+    let state = built(20)
+    assert(is_ok(fs_remove(state.dir + "/" + entry_bundle_path(0, 20))))
+    assert(not is_ok(log_open(state.dir, log_origin(), log_origin(), op_key_public())))
+
+fn test_checkpoint_from_other_key_or_origin_fails_open() -> Unit:
+    let state = built(3)
+    assert(not is_ok(log_open(state.dir, "other.example/log", log_origin(), op_key_public())))
+    let wrong_public = unwrap(crypto_ed25519_public_key(hexb("ff02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")))
+    assert(not is_ok(log_open(state.dir, log_origin(), log_origin(), wrong_public)))

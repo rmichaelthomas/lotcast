@@ -77,20 +77,21 @@ EMPTY_ROOT = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 assert mth(CT_LEAVES).hex() == CT_ROOT_8, "the independent tree disagrees with the CT reference root"
 assert mth([]).hex() == EMPTY_ROOT
 
-MAX = 20
-leaves = [b"leaf-%d" % i for i in range(MAX)]
-out = {
-    "leaves": [l.hex() for l in leaves],
-    "ct_leaves": [l.hex() for l in CT_LEAVES],
-    "ct_root_8": CT_ROOT_8,
-    "roots": [mth(leaves[:n]).hex() for n in range(MAX + 1)],
-    "inclusion": [],
-    "consistency": [],
-}
-for size in range(1, MAX + 1):
-    for index in range(size):
-        out["inclusion"].append({"size": size, "index": index, "proof": [h.hex() for h in path(index, leaves[:size])]})
-for new in range(1, MAX + 1):
-    for old in range(1, new + 1):
-        out["consistency"].append({"old": old, "new": new, "proof": [h.hex() for h in proof(old, leaves[:new])]})
-print(json.dumps(out))
+if __name__ == "__main__":
+    MAX = 20
+    leaves = [b"leaf-%d" % i for i in range(MAX)]
+    out = {
+        "leaves": [l.hex() for l in leaves],
+        "ct_leaves": [l.hex() for l in CT_LEAVES],
+        "ct_root_8": CT_ROOT_8,
+        "roots": [mth(leaves[:n]).hex() for n in range(MAX + 1)],
+        "inclusion": [],
+        "consistency": [],
+    }
+    for size in range(1, MAX + 1):
+        for index in range(size):
+            out["inclusion"].append({"size": size, "index": index, "proof": [h.hex() for h in path(index, leaves[:size])]})
+    for new in range(1, MAX + 1):
+        for old in range(1, new + 1):
+            out["consistency"].append({"old": old, "new": new, "proof": [h.hex() for h in proof(old, leaves[:new])]})
+    print(json.dumps(out))

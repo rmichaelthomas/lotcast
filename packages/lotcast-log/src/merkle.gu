@@ -23,7 +23,7 @@ fn split(n: Int) -> Int:
         set k = k * 2
     return k
 
-fn leaf_hashes(leaves: List[Bytes]) -> List[Bytes]:
+pub fn leaf_hashes(leaves: List[Bytes]) -> List[Bytes]:
     var out: List[Bytes] = []
     for leaf in leaves:
         set out = list_push(out, leaf_hash(leaf))
@@ -36,7 +36,7 @@ fn append_all(into: List[Bytes], more: List[Bytes]) -> List[Bytes]:
     return out
 
 # The tree hash of the leaf hashes in [lo, hi).
-fn subtree(hashes: List[Bytes], lo: Int, hi: Int) -> Bytes:
+pub fn subtree(hashes: List[Bytes], lo: Int, hi: Int) -> Bytes:
     let n = hi - lo
     if n == 0:
         return empty_root()
@@ -45,9 +45,12 @@ fn subtree(hashes: List[Bytes], lo: Int, hi: Int) -> Bytes:
     let mid = lo + split(n)
     return node_hash(subtree(hashes, lo, mid), subtree(hashes, mid, hi))
 
-pub fn tree_root(leaves: List[Bytes]) -> Bytes:
-    let hashes = leaf_hashes(leaves)
+# The root over leaf hashes that are already computed.
+pub fn root_of_hashes(hashes: List[Bytes]) -> Bytes:
     return subtree(hashes, 0, len(hashes))
+
+pub fn tree_root(leaves: List[Bytes]) -> Bytes:
+    return root_of_hashes(leaf_hashes(leaves))
 
 fn path_in(hashes: List[Bytes], m: Int, lo: Int, hi: Int) -> List[Bytes]:
     if hi - lo == 1:
@@ -57,11 +60,13 @@ fn path_in(hashes: List[Bytes], m: Int, lo: Int, hi: Int) -> List[Bytes]:
         return append_all(path_in(hashes, m, lo, mid), [subtree(hashes, mid, hi)])
     return append_all(path_in(hashes, m, mid, hi), [subtree(hashes, lo, mid)])
 
-pub fn inclusion_proof(leaves: List[Bytes], index: Int) -> Result[List[Bytes], StdError]:
-    if index < 0 or index >= len(leaves):
+pub fn inclusion_proof_of_hashes(hashes: List[Bytes], index: Int) -> Result[List[Bytes], StdError]:
+    if index < 0 or index >= len(hashes):
         return Err(std_error("E_LOG_INDEX", "leaf index is outside the tree"))
-    let hashes = leaf_hashes(leaves)
     return Ok(path_in(hashes, index, 0, len(hashes)))
+
+pub fn inclusion_proof(leaves: List[Bytes], index: Int) -> Result[List[Bytes], StdError]:
+    return inclusion_proof_of_hashes(leaf_hashes(leaves), index)
 
 # The proof that the first m leaves of [lo, hi) are a prefix. `whole` is true while the old tree
 # is still the complete subtree being walked.
@@ -76,13 +81,15 @@ fn subproof(hashes: List[Bytes], m: Int, lo: Int, hi: Int, whole: Bool) -> List[
         return append_all(subproof(hashes, m, lo, lo + k, whole), [subtree(hashes, lo + k, hi)])
     return append_all(subproof(hashes, m - k, lo + k, hi, false), [subtree(hashes, lo, lo + k)])
 
-pub fn consistency_proof(leaves: List[Bytes], old_size: Int) -> Result[List[Bytes], StdError]:
-    if old_size < 0 or old_size > len(leaves):
+pub fn consistency_proof_of_hashes(hashes: List[Bytes], old_size: Int) -> Result[List[Bytes], StdError]:
+    if old_size < 0 or old_size > len(hashes):
         return Err(std_error("E_LOG_INDEX", "old size is outside the tree"))
-    if old_size == 0 or old_size == len(leaves):
+    if old_size == 0 or old_size == len(hashes):
         return Ok([])
-    let hashes = leaf_hashes(leaves)
     return Ok(subproof(hashes, old_size, 0, len(hashes), true))
+
+pub fn consistency_proof(leaves: List[Bytes], old_size: Int) -> Result[List[Bytes], StdError]:
+    return consistency_proof_of_hashes(leaf_hashes(leaves), old_size)
 
 # RFC 9162 section 2.1.3.2.
 pub fn verify_inclusion(leaf: Bytes, index: Int, size: Int, proof: List[Bytes], root: Bytes) -> Bool:

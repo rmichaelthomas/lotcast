@@ -5,6 +5,8 @@ exports = [
     "src/encode.gu",
     "src/merkle.gu",
     "src/note.gu",
+    "src/tiles.gu",
+    "src/log.gu",
 ]
 name = "lotcast-log"
 version = "0.1.0"

@@ -1,0 +1,178 @@
+import "std:types"
+import "std:json"
+import "std:http"
+import "std:text"
+
+# Shared helpers for the maintenance tools (fetching JSON, walking it, ordering pulses).
+
+pub fn die(message: Text) -> Int:
+    eprint(message)
+    return 1
+
+pub fn fetch_text(url: Text) -> Result[Text, Text]:
+    match http_get(url):
+        Err(failure):
+            return Err(url + ": " + http_error_message(failure))
+        Ok(body):
+            return Ok(body)
+
+pub fn fetch_json(url: Text) -> Result[Json, Text]:
+    let body = fetch_text(url)?
+    match json_parse(body):
+        Ok(value):
+            return Ok(value)
+        Err(problem):
+            return Err(url + " did not answer with JSON")
+
+# j[k1][k2]... for text keys.
+pub fn walk(j: Json, keys: List[Text]) -> Result[Json, Text]:
+    var at = j
+    for key in keys:
+        let next = json_get_safe(at, key)
+        if not is_ok(next):
+            return Err("missing key " + key)
+        set at = unwrap(next)
+    return Ok(at)
+
+pub fn walk_int(j: Json, keys: List[Text]) -> Result[Int, Text]:
+    let found = walk(j, keys)?
+    match json_int_safe(found):
+        Ok(n):
+            return Ok(n)
+        Err(problem):
+            return Err("not an integer at " + text_join(keys, "."))
+
+pub fn walk_text(j: Json, keys: List[Text]) -> Result[Text, Text]:
+    let found = walk(j, keys)?
+    match json_text_safe(found):
+        Ok(t):
+            return Ok(t)
+        Err(problem):
+            return Err("not text at " + text_join(keys, "."))
+
+# A list of pulses ordered by their chain index, oldest first.
+pub fn by_index(pulses: Json) -> Result[Json, Text]:
+    var indexes: List[Int] = []
+    for i in range(0, json_len(pulses)):
+        let p = unwrap(json_index_safe(pulses, i))
+        set indexes = list_push(indexes, walk_int(p, ["data", "content", "index"])?)
+    var out = json_array()
+    for want in sort(indexes):
+        for i in range(0, json_len(pulses)):
+            let p = unwrap(json_index_safe(pulses, i))
+            if walk_int(p, ["data", "content", "index"])? == want:
+                set out = json_push(out, p)
+    return Ok(out)
+
+# The newest `count` pulses of a CURBy chain at or below `top`, as the API serves them (newest first).
+pub fn pulse_range(chain: Text, top: Int, count: Int) -> Result[Json, Text]:
+    var out = json_array()
+    var at = top
+    while json_len(out) < count:
+        var lo = at - 99
+        if lo < 0:
+            set lo = 0
+        let page = fetch_json("https://random.colorado.edu/api/chains/" + chain + "/pulses/" + int_to_text(at) + "-" + int_to_text(lo))?
+        for i in range(0, json_len(page)):
+            set out = json_push(out, unwrap(json_index_safe(page, i)))
+        set at = lo - 1
+        if at < 0:
+            return Ok(out)
+    return Ok(out)
+
+pub fn latest_index(chain: Text) -> Result[Int, Text]:
+    let latest = fetch_json("https://random.colorado.edu/api/chains/" + chain + "/pulses/latest")?
+    return walk_int(latest, ["data", "content", "index"])
+
+# ASCII lower case (Guion has no text lower-casing function).
+pub fn ascii_lower(text: Text) -> Text:
+    let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    let lower = "abcdefghijklmnopqrstuvwxyz"
+    var out = ""
+    for i in range(0, len(text)):
+        let c = text_slice(text, i, i + 1)
+        let at = text_find(upper, c, 0)
+        if at >= 0:
+            set out = out + text_slice(lower, at, at + 1)
+        else:
+            set out = out + c
+    return out
+
+# Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's algorithm).
+fn days_from_civil(year: Int, month: Int, day: Int) -> Int:
+    var y = year
+    if month <= 2:
+        set y = y - 1
+    let era = y // 400
+    let yoe = y - era * 400
+    var shifted = month - 3
+    if month <= 2:
+        set shifted = month + 9
+    let doy = (153 * shifted + 2) // 5 + day - 1
+    let doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+# The non-negative integer written by the `count` digits of `text` from `start`, or -1 when any
+# of them is not a digit.
+fn digits_at(text: Text, start: Int, count: Int) -> Int:
+    var value = 0
+    for i in range(0, count):
+        let at = text_find("0123456789", text_slice(text, start + i, start + i + 1), 0)
+        if at < 0:
+            return -1
+        set value = value * 10 + at
+    return value
+
+# "2025-08-22T19:28:40.318Z" -> unix milliseconds. The fraction is optional.
+pub fn iso_to_ms(stamp: Text) -> Result[Int, Text]:
+    let size = len(stamp)
+    let bad = "not an ISO 8601 UTC time: " + stamp
+    if size < 20 or text_slice(stamp, size - 1, size) != "Z":
+        return Err(bad)
+    if text_slice(stamp, 4, 5) != "-" or text_slice(stamp, 7, 8) != "-" or text_slice(stamp, 10, 11) != "T":
+        return Err(bad)
+    if text_slice(stamp, 13, 14) != ":" or text_slice(stamp, 16, 17) != ":":
+        return Err(bad)
+    let year = digits_at(stamp, 0, 4)
+    let month = digits_at(stamp, 5, 2)
+    let day = digits_at(stamp, 8, 2)
+    let hour = digits_at(stamp, 11, 2)
+    let minute = digits_at(stamp, 14, 2)
+    let second = digits_at(stamp, 17, 2)
+    if year < 0 or month < 1 or month > 12 or day < 1 or day > 31 or hour < 0 or hour > 23 or minute < 0 or minute > 59 or second < 0 or second > 60:
+        return Err(bad)
+    var millis = 0
+    if size > 20:
+        if text_slice(stamp, 19, 20) != "." or size < 22:
+            return Err(bad)
+        let digits = text_slice(stamp, 20, size - 1)
+        let fraction = digits_at(text_slice(digits + "00", 0, 3), 0, 3)
+        if fraction < 0 or digits_at(digits, 0, len(digits)) < 0:
+            return Err(bad)
+        set millis = fraction
+    let days = days_from_civil(year, month, day)
+    return Ok(((days * 24 + hour) * 60 + minute) * 60000 + second * 1000 + millis)
+
+fn two(n: Int) -> Text:
+    if n < 10:
+        return "0" + int_to_text(n)
+    return int_to_text(n)
+
+# unix seconds -> "2026-11-24T07:04:11Z"
+pub fn iso_from_seconds(seconds: Int) -> Text:
+    let days = seconds // 86400
+    let rest = seconds - days * 86400
+    let z = days + 719468
+    let era = z // 146097
+    let doe = z - era * 146097
+    let yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    let doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    let mp = (5 * doy + 2) // 153
+    let day = doy - (153 * mp + 2) // 5 + 1
+    var month = mp + 3
+    if mp >= 10:
+        set month = mp - 9
+    var year = yoe + era * 400
+    if month <= 2:
+        set year = year + 1
+    return int_to_text(year) + "-" + two(month) + "-" + two(day) + "T" + two(rest // 3600) + ":" + two((rest % 3600) // 60) + ":" + two(rest % 60) + "Z"

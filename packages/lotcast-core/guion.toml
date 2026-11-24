@@ -32,6 +32,7 @@ exports = [
     "src/seed.gu",
     "src/registry_data.gu",
     "src/iching.gu",
+    "src/tarot.gu",
 ]
 name = "lotcast-core"
 version = "0.1.0"

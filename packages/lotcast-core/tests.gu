@@ -277,3 +277,71 @@ fn test_yarrow_match_python_vector() -> Unit:
     assert(seeded.result.lines == [8, 7, 7, 7, 6, 8])
     assert(seeded.result.changing == [5])
     assert(relating_is(seeded.result.relating, 28))
+
+# ---- Tarot (Rider-Waite-Smith) ----
+
+fn card_ids(draw: TarotDraw) -> List[Text]:
+    var ids: List[Text] = []
+    for card in draw.cards:
+        set ids = list_push(ids, card.id)
+    return ids
+
+fn flags(draw: TarotDraw) -> List[Bool]:
+    var out: List[Bool] = []
+    for card in draw.cards:
+        set out = list_push(out, card.reversed)
+    return out
+
+fn test_rws_deck_has_78_unique_ids_in_order() -> Unit:
+    let deck = rws_deck()
+    assert(len(deck) == 78)
+    assert(deck[0] == "tarot:rws:major:0")
+    assert(deck[21] == "tarot:rws:major:21")
+    assert(deck[22] == "tarot:rws:wands:1")
+    assert(deck[35] == "tarot:rws:wands:14")
+    assert(deck[36] == "tarot:rws:cups:1")
+    assert(deck[77] == "tarot:rws:pentacles:14")
+    var seen: Map[Text, Bool] = {}
+    for id in deck:
+        assert(not map_has(seen, id))
+        set seen = map_set(seen, id, true)
+
+fn test_count_zero_one_78_79() -> Unit:
+    let s = stream_new(zero_seed(), 64)
+    assert(not is_ok(tarot_rws(s, 0, false, false)))
+    assert(len(unwrap(tarot_rws(s, 1, false, false)).cards) == 1)
+    assert(len(unwrap(tarot_rws(s, 78, false, false)).cards) == 78)
+    assert(not is_ok(tarot_rws(s, 79, false, false)))
+
+fn test_majors_only_count_22_ok_and_23_is_an_error() -> Unit:
+    let s = stream_new(zero_seed(), 64)
+    assert(len(unwrap(tarot_rws(s, 22, true, false)).cards) == 22)
+    assert(not is_ok(tarot_rws(s, 23, true, false)))
+
+fn test_no_card_repeats_and_full_deck_is_a_permutation() -> Unit:
+    let draw = unwrap(tarot_rws(stream_new(zero_seed(), 64), 78, false, true))
+    var seen: Map[Text, Bool] = {}
+    for id in card_ids(draw):
+        assert(not map_has(seen, id))
+        set seen = map_set(seen, id, true)
+    assert(len(seen) == 78)
+
+fn test_tarot_matches_python_vector() -> Unit:
+    let zero = unwrap(tarot_rws(stream_new(zero_seed(), 64), 3, false, true))
+    assert(card_ids(zero) == ["tarot:rws:cups:2", "tarot:rws:cups:7", "tarot:rws:swords:11"])
+    assert(flags(zero) == [false, false, false])
+    let majors = unwrap(tarot_rws(stream_new(zero_seed(), 64), 5, true, false))
+    assert(card_ids(majors) == ["tarot:rws:major:3", "tarot:rws:major:14", "tarot:rws:major:2", "tarot:rws:major:1", "tarot:rws:major:13"])
+    let options: Map[Text, Text] = {"reversals": "true", "count": "3"}
+    let h = unwrap(entry_hash(request_b(options)))
+    let seeded = unwrap(tarot_rws(stream_new(unwrap(seed(h, bytes_from_ints([]), drand_only())), 64), 3, false, true))
+    assert(card_ids(seeded) == ["tarot:rws:swords:1", "tarot:rws:wands:3", "tarot:rws:pentacles:11"])
+    assert(flags(seeded) == [true, true, true])
+
+fn test_reversals_are_drawn_after_the_shuffle() -> Unit:
+    # with reversals the stream is advanced by the shuffle, then one uniform(2) per card; the cards
+    # themselves are the same with and without reversals
+    let plain = unwrap(tarot_rws(stream_new(zero_seed(), 64), 4, false, false))
+    let flipped = unwrap(tarot_rws(stream_new(zero_seed(), 64), 4, false, true))
+    assert(card_ids(plain) == card_ids(flipped))
+    assert(flags(plain) == [false, false, false, false])

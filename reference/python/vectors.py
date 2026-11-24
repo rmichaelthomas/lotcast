@@ -91,6 +91,21 @@ def iching_coins(stream):
 def iching_yarrow(stream):
     return [6 + stream.weighted([1, 5, 7, 3]) for _ in range(6)]
 
+def rws_ids():
+    ids = [f"tarot:rws:major:{i}" for i in range(22)]
+    for suit in ("wands", "cups", "swords", "pentacles"):
+        ids += [f"tarot:rws:{suit}:{i}" for i in range(1, 15)]
+    return ids
+
+def tarot_rws(stream, count, majors_only, reversals):
+    """shuffle(78 or 22), take the first `count`, then one bit() per card drawn when reversals."""
+    ids = rws_ids()
+    order = stream.shuffle(22 if majors_only else 78)[:count]
+    cards = [ids[i] for i in order]
+    if reversals:
+        return [(c, stream.uniform(2) == 1) for c in cards]
+    return [(c, False) for c in cards]
+
 if __name__ == "__main__":
     zero = bytes(64)
     print("seed zero, width 64, words 0..16:")
@@ -113,3 +128,7 @@ if __name__ == "__main__":
     print("iching yarrow, zero seed:", iching_yarrow(Stream(zero)))
     print("iching coins, seed A unanchored:", iching_coins(Stream(seed(ha, b"", drand_only))))
     print("iching yarrow, seed A unanchored:", iching_yarrow(Stream(seed(ha, b"", drand_only))))
+    hb = entry_hash("tarot", "rws", {"reversals": "true", "count": "3"}, 0, b"", ["drand-quicknet"], 1795000000, bytes([9]) * 32, b"")
+    print("tarot rws count 3 reversals, zero seed:", tarot_rws(Stream(zero), 3, False, True))
+    print("tarot rws count 5 majors only, zero seed:", tarot_rws(Stream(zero), 5, True, False))
+    print("tarot rws count 3 reversals, seed B unanchored:", tarot_rws(Stream(seed(hb, b"", drand_only)), 3, False, True))

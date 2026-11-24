@@ -1,0 +1,49 @@
+import "std:types"
+import "registry_data.gu"
+import "stream.gu"
+import "primitives.gu"
+
+# The Rider-Waite-Smith tarot sampler (spec §5.1): shuffle the deck, take the first `count`, and with
+# reversals draw one bit() per card taken, in order, after the shuffle. Each card in each position
+# is 1/deck-size, and a card is reversed with probability 1/2.
+
+pub record TarotCard:
+    id: Text
+    reversed: Bool
+
+pub record TarotDraw:
+    cards: List[TarotCard]
+    stream: Stream
+
+# The sampler on any deck (the exact-odds tests run it on 8 cards, the same code path). `count` must
+# already be in range.
+pub fn tarot_draw(s: Stream, deck: List[Text], count: Int, reversals: Bool) -> TarotDraw:
+    let shuffled = shuffle(s, len(deck))
+    var current = shuffled.stream
+    var cards: List[TarotCard] = []
+    var i = 0
+    while i < count:
+        var reversed = false
+        if reversals:
+            let d = bit(current)
+            set current = d.stream
+            set reversed = d.value == 1
+        set cards = list_push(cards, TarotCard(deck[shuffled.values[i]], reversed))
+        set i = i + 1
+    return TarotDraw(cards, current)
+
+fn majors() -> List[Text]:
+    var out: List[Text] = []
+    var i = 0
+    while i < 22:
+        set out = list_push(out, rws_deck()[i])
+        set i = i + 1
+    return out
+
+pub fn tarot_rws(s: Stream, count: Int, majors_only: Bool, reversals: Bool) -> Result[TarotDraw, StdError]:
+    var deck = rws_deck()
+    if majors_only:
+        set deck = majors()
+    if count < 1 or count > len(deck):
+        return Err(std_error("E_LOTCAST_COUNT", "count must be from 1 to " + int_to_text(len(deck)) + " for this deck"))
+    return Ok(tarot_draw(s, deck, count, reversals))

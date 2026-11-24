@@ -837,5 +837,321 @@
         "name": "Wei Ji"
       }
     ]
+  },
+  "tarot": {
+    "rws": [
+      {
+        "id": "tarot:rws:major:0",
+        "index": 0
+      },
+      {
+        "id": "tarot:rws:major:1",
+        "index": 1
+      },
+      {
+        "id": "tarot:rws:major:2",
+        "index": 2
+      },
+      {
+        "id": "tarot:rws:major:3",
+        "index": 3
+      },
+      {
+        "id": "tarot:rws:major:4",
+        "index": 4
+      },
+      {
+        "id": "tarot:rws:major:5",
+        "index": 5
+      },
+      {
+        "id": "tarot:rws:major:6",
+        "index": 6
+      },
+      {
+        "id": "tarot:rws:major:7",
+        "index": 7
+      },
+      {
+        "id": "tarot:rws:major:8",
+        "index": 8
+      },
+      {
+        "id": "tarot:rws:major:9",
+        "index": 9
+      },
+      {
+        "id": "tarot:rws:major:10",
+        "index": 10
+      },
+      {
+        "id": "tarot:rws:major:11",
+        "index": 11
+      },
+      {
+        "id": "tarot:rws:major:12",
+        "index": 12
+      },
+      {
+        "id": "tarot:rws:major:13",
+        "index": 13
+      },
+      {
+        "id": "tarot:rws:major:14",
+        "index": 14
+      },
+      {
+        "id": "tarot:rws:major:15",
+        "index": 15
+      },
+      {
+        "id": "tarot:rws:major:16",
+        "index": 16
+      },
+      {
+        "id": "tarot:rws:major:17",
+        "index": 17
+      },
+      {
+        "id": "tarot:rws:major:18",
+        "index": 18
+      },
+      {
+        "id": "tarot:rws:major:19",
+        "index": 19
+      },
+      {
+        "id": "tarot:rws:major:20",
+        "index": 20
+      },
+      {
+        "id": "tarot:rws:major:21",
+        "index": 21
+      },
+      {
+        "id": "tarot:rws:wands:1",
+        "index": 22
+      },
+      {
+        "id": "tarot:rws:wands:2",
+        "index": 23
+      },
+      {
+        "id": "tarot:rws:wands:3",
+        "index": 24
+      },
+      {
+        "id": "tarot:rws:wands:4",
+        "index": 25
+      },
+      {
+        "id": "tarot:rws:wands:5",
+        "index": 26
+      },
+      {
+        "id": "tarot:rws:wands:6",
+        "index": 27
+      },
+      {
+        "id": "tarot:rws:wands:7",
+        "index": 28
+      },
+      {
+        "id": "tarot:rws:wands:8",
+        "index": 29
+      },
+      {
+        "id": "tarot:rws:wands:9",
+        "index": 30
+      },
+      {
+        "id": "tarot:rws:wands:10",
+        "index": 31
+      },
+      {
+        "id": "tarot:rws:wands:11",
+        "index": 32
+      },
+      {
+        "id": "tarot:rws:wands:12",
+        "index": 33
+      },
+      {
+        "id": "tarot:rws:wands:13",
+        "index": 34
+      },
+      {
+        "id": "tarot:rws:wands:14",
+        "index": 35
+      },
+      {
+        "id": "tarot:rws:cups:1",
+        "index": 36
+      },
+      {
+        "id": "tarot:rws:cups:2",
+        "index": 37
+      },
+      {
+        "id": "tarot:rws:cups:3",
+        "index": 38
+      },
+      {
+        "id": "tarot:rws:cups:4",
+        "index": 39
+      },
+      {
+        "id": "tarot:rws:cups:5",
+        "index": 40
+      },
+      {
+        "id": "tarot:rws:cups:6",
+        "index": 41
+      },
+      {
+        "id": "tarot:rws:cups:7",
+        "index": 42
+      },
+      {
+        "id": "tarot:rws:cups:8",
+        "index": 43
+      },
+      {
+        "id": "tarot:rws:cups:9",
+        "index": 44
+      },
+      {
+        "id": "tarot:rws:cups:10",
+        "index": 45
+      },
+      {
+        "id": "tarot:rws:cups:11",
+        "index": 46
+      },
+      {
+        "id": "tarot:rws:cups:12",
+        "index": 47
+      },
+      {
+        "id": "tarot:rws:cups:13",
+        "index": 48
+      },
+      {
+        "id": "tarot:rws:cups:14",
+        "index": 49
+      },
+      {
+        "id": "tarot:rws:swords:1",
+        "index": 50
+      },
+      {
+        "id": "tarot:rws:swords:2",
+        "index": 51
+      },
+      {
+        "id": "tarot:rws:swords:3",
+        "index": 52
+      },
+      {
+        "id": "tarot:rws:swords:4",
+        "index": 53
+      },
+      {
+        "id": "tarot:rws:swords:5",
+        "index": 54
+      },
+      {
+        "id": "tarot:rws:swords:6",
+        "index": 55
+      },
+      {
+        "id": "tarot:rws:swords:7",
+        "index": 56
+      },
+      {
+        "id": "tarot:rws:swords:8",
+        "index": 57
+      },
+      {
+        "id": "tarot:rws:swords:9",
+        "index": 58
+      },
+      {
+        "id": "tarot:rws:swords:10",
+        "index": 59
+      },
+      {
+        "id": "tarot:rws:swords:11",
+        "index": 60
+      },
+      {
+        "id": "tarot:rws:swords:12",
+        "index": 61
+      },
+      {
+        "id": "tarot:rws:swords:13",
+        "index": 62
+      },
+      {
+        "id": "tarot:rws:swords:14",
+        "index": 63
+      },
+      {
+        "id": "tarot:rws:pentacles:1",
+        "index": 64
+      },
+      {
+        "id": "tarot:rws:pentacles:2",
+        "index": 65
+      },
+      {
+        "id": "tarot:rws:pentacles:3",
+        "index": 66
+      },
+      {
+        "id": "tarot:rws:pentacles:4",
+        "index": 67
+      },
+      {
+        "id": "tarot:rws:pentacles:5",
+        "index": 68
+      },
+      {
+        "id": "tarot:rws:pentacles:6",
+        "index": 69
+      },
+      {
+        "id": "tarot:rws:pentacles:7",
+        "index": 70
+      },
+      {
+        "id": "tarot:rws:pentacles:8",
+        "index": 71
+      },
+      {
+        "id": "tarot:rws:pentacles:9",
+        "index": 72
+      },
+      {
+        "id": "tarot:rws:pentacles:10",
+        "index": 73
+      },
+      {
+        "id": "tarot:rws:pentacles:11",
+        "index": 74
+      },
+      {
+        "id": "tarot:rws:pentacles:12",
+        "index": 75
+      },
+      {
+        "id": "tarot:rws:pentacles:13",
+        "index": 76
+      },
+      {
+        "id": "tarot:rws:pentacles:14",
+        "index": 77
+      }
+    ]
   }
 }

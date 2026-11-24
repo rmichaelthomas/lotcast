@@ -227,3 +227,30 @@ fn test_coins_old_yang_and_old_yin_are_equally_likely() -> Unit:
     let six = dist["6"]
     let nine = dist["9"]
     assert(nine[0] * six[1] == six[0] * nine[1])
+
+# ---- Tarot, deck shrunk to 8 (the same code path) ----
+
+fn small_deck() -> List[Text]:
+    return ["a", "b", "c", "d", "e", "f", "g", "h"]
+
+fn tarot_key(draw: TarotDraw) -> Text:
+    var out = ""
+    for card in draw.cards:
+        var mark = "+"
+        if card.reversed:
+            set mark = "-"
+        set out = out + card.id + mark + ","
+    return out
+
+fn tarot_small_run(s: Stream) -> Traced:
+    let draw = tarot_draw(s, small_deck(), 3, true)
+    return Traced(tarot_key(draw), draw.stream)
+
+fn test_tarot_exact_position_odds_n8() -> Unit:
+    let dist = distribution(enumerate(tarot_small_run))
+    # 8 * 7 * 6 ordered triples, each card reversed or not: 2688 outcomes, all equally likely, so every
+    # card is 1/8 in every position and each reversal flag is 1/2
+    assert(len(dist) == 8 * 7 * 6 * 8)
+    for key in dist:
+        let p = dist[key]
+        assert(p[0] == 1 and p[1] == 8 * 7 * 6 * 8)

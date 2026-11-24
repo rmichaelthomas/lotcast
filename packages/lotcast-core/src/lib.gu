@@ -6,6 +6,7 @@ pub import "entry.gu"
 pub import "seed.gu"
 pub import "registry_data.gu"
 pub import "iching.gu"
+pub import "tarot.gu"
 
 pub fn lotcast_core_version() -> Text:
     return "0.1.0"

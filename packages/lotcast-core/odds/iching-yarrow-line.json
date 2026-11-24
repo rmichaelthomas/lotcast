@@ -1,0 +1,24 @@
+{
+ "method": "iching/yarrow",
+ "feature": "line value, one line (exact rationals)",
+ "6": {
+  "num": 1,
+  "den": 16
+ },
+ "7": {
+  "num": 5,
+  "den": 16
+ },
+ "8": {
+  "num": 7,
+  "den": 16
+ },
+ "9": {
+  "num": 3,
+  "den": 16
+ },
+ "changing": {
+  "num": 1,
+  "den": 4
+ }
+}

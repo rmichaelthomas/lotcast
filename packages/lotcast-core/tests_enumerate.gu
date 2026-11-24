@@ -1,5 +1,6 @@
 import "std:types"
 import "std:text"
+import "std:json"
 import "src/lib.gu"
 
 # Exact tests by enumeration (spec §7.1): proof, not statistics. Run with `guion test tests_enumerate.gu`.
@@ -165,3 +166,64 @@ fn test_shuffle_every_permutation_equally_n_up_to_8() -> Unit:
             let p = dist[key]
             assert(p[0] == 1 and p[1] == factorial(n))
         set n = n + 1
+
+# ---- I Ching lines, against the odds spec files ----
+
+fn line_run(yarrow: Bool) -> fn(Stream) -> Traced:
+    fn run(s: Stream) -> Traced:
+        var d = DrawInt(0, s)
+        if yarrow:
+            set d = yarrow_line(s)
+        else:
+            set d = coins_line(s)
+        return Traced(int_to_text(d.value), d.stream)
+    return run
+
+# {"num": n, "den": d} under `key` -> [n, d]
+fn odds_fraction(odds: Json, key: Text) -> List[Int]:
+    let entry = unwrap(json_get_safe(odds, key))
+    return [unwrap(json_get_int_safe(entry, "num")), unwrap(json_get_int_safe(entry, "den"))]
+
+fn odds_file(path: Text) -> Json:
+    let body = unwrap(read_text(path))
+    return unwrap(json_parse(body))
+
+# True when the enumerated distribution has exactly the file's value for `key`.
+fn matches_file(dist: Map[Text, List[Int]], odds: Json, key: Text) -> Bool:
+    let expected = odds_fraction(odds, key)
+    let got = dist[key]
+    return got[0] * expected[1] == expected[0] * got[1]
+
+fn check_line_odds(yarrow: Bool, path: Text) -> Unit:
+    let dist = distribution(enumerate(line_run(yarrow)))
+    let odds = odds_file(path)
+    assert(len(dist) == 4)
+    assert(sum_one(dist))
+    assert(matches_file(dist, odds, "6"))
+    assert(matches_file(dist, odds, "7"))
+    assert(matches_file(dist, odds, "8"))
+    assert(matches_file(dist, odds, "9"))
+    # a line changes when it is a 6 or a 9
+    let six = dist["6"]
+    let nine = dist["9"]
+    let changing = odds_fraction(odds, "changing")
+    assert((six[0] * nine[1] + nine[0] * six[1]) * changing[1] == changing[0] * six[1] * nine[1])
+
+fn test_coins_one_line_exact_odds() -> Unit:
+    check_line_odds(false, "odds/iching-coins-line.json")
+
+fn test_yarrow_one_line_exact_odds() -> Unit:
+    check_line_odds(true, "odds/iching-yarrow-line.json")
+
+fn test_yarrow_old_yang_is_three_times_old_yin() -> Unit:
+    let dist = distribution(enumerate(line_run(true)))
+    let six = dist["6"]
+    let nine = dist["9"]
+    # nine / six == 3
+    assert(nine[0] * six[1] == 3 * six[0] * nine[1])
+
+fn test_coins_old_yang_and_old_yin_are_equally_likely() -> Unit:
+    let dist = distribution(enumerate(line_run(false)))
+    let six = dist["6"]
+    let nine = dist["9"]
+    assert(nine[0] * six[1] == six[0] * nine[1])

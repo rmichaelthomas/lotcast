@@ -162,3 +162,118 @@ fn test_seed_sources_out_of_order_is_rejected() -> Unit:
     let h = unwrap(entry_hash(request_a()))
     assert(not is_ok(seed(h, bytes_from_ints([]), [SourceValue("nist-beacon-2", 2, bytes_from_ints([])), SourceValue("drand-quicknet", 1, repeated(170, 32)), SourceValue("curby-rng", 2, bytes_from_ints([])), SourceValue("curby-q", 2, bytes_from_ints([]))])))
     assert(is_ok(seed(h, bytes_from_ints([]), drand_only())))
+
+# ---- I Ching ----
+
+fn relating_is(o: Option[Int], n: Int) -> Bool:
+    match o:
+        Some(v):
+            return v == n
+        None:
+            return false
+
+fn all_yang() -> List[Int]:
+    return [7, 7, 7, 7, 7, 7]
+
+fn test_king_wen_table_is_a_permutation_of_1_to_64() -> Unit:
+    var seen: Map[Int, Bool] = {}
+    for row in king_wen_table():
+        assert(len(row) == 8)
+        for n in row:
+            assert(n >= 1 and n <= 64)
+            assert(not map_has(seen, n))
+            set seen = map_set(seen, n, true)
+    assert(len(seen) == 64)
+
+# Every pattern of six lines (as 7 for yang, 8 for yin), bottom line first.
+fn pattern_lines(code: Int) -> List[Int]:
+    var lines: List[Int] = []
+    var rest = code
+    var k = 0
+    while k < 6:
+        set lines = list_push(lines, 7 + (1 - rest % 2))
+        set rest = rest // 2
+        set k = k + 1
+    return lines
+
+fn reversed_lines(lines: List[Int]) -> List[Int]:
+    var out: List[Int] = []
+    var i = len(lines) - 1
+    while i >= 0:
+        set out = list_push(out, lines[i])
+        set i = i - 1
+    return out
+
+fn inverted_lines(lines: List[Int]) -> List[Int]:
+    var out: List[Int] = []
+    for v in lines:
+        set out = list_push(out, 15 - v)
+    return out
+
+fn test_king_wen_pairs_are_reverse_or_inverse() -> Unit:
+    var lines_of: Map[Int, List[Int]] = {}
+    var code = 0
+    while code < 64:
+        let lines = pattern_lines(code)
+        set lines_of = map_set(lines_of, hexagram_number(lines), lines)
+        set code = code + 1
+    assert(len(lines_of) == 64)
+    var k = 1
+    while k <= 32:
+        let a = lines_of[2 * k - 1]
+        let b = lines_of[2 * k]
+        assert(b == reversed_lines(a) or b == inverted_lines(a))
+        set k = k + 1
+
+fn test_anchor_hexagrams() -> Unit:
+    assert(hexagram_number([7, 7, 7, 7, 7, 7]) == 1)
+    assert(hexagram_number([8, 8, 8, 8, 8, 8]) == 2)
+    assert(hexagram_number([8, 8, 8, 8, 8, 7]) == 23)
+    assert(hexagram_number([8, 8, 8, 8, 7, 7]) == 20)
+    assert(hexagram_number([8, 7, 8, 8, 7, 8]) == 29)
+    assert(hexagram_number([7, 8, 7, 7, 8, 7]) == 30)
+    assert(hexagram_number([7, 7, 7, 8, 8, 8]) == 11)
+    assert(hexagram_number([8, 8, 8, 7, 7, 7]) == 12)
+
+fn test_nines_and_sixes_count_as_yang_and_yin() -> Unit:
+    assert(hexagram_number([9, 9, 9, 9, 9, 9]) == 1)
+    assert(hexagram_number([6, 6, 6, 6, 6, 6]) == 2)
+
+fn test_changing_lines_and_relating() -> Unit:
+    # 23 (Bo) with line 5 changing (a 6 where the line is yin) becomes 20 (Guan)
+    let one = iching_from_lines([8, 8, 8, 8, 6, 7])
+    assert(one.hexagram == 23)
+    assert(one.changing == [5])
+    assert(relating_is(one.relating, 20))
+    let none = iching_from_lines([8, 8, 8, 8, 8, 7])
+    assert(len(none.changing) == 0)
+    assert(not is_some(none.relating))
+    let all_six = iching_from_lines([9, 9, 9, 9, 9, 9])
+    assert(all_six.hexagram == 1)
+    assert(all_six.changing == [1, 2, 3, 4, 5, 6])
+    assert(relating_is(all_six.relating, 2))
+
+fn test_hexagram_id_text() -> Unit:
+    assert(hexagram_id(23) == "iching:hexagram:23")
+
+fn test_coins_match_python_vector() -> Unit:
+    let zero = iching_coins(stream_new(zero_seed(), 64))
+    assert(zero.result.lines == [7, 8, 8, 7, 8, 7])
+    assert(zero.result.hexagram == 21)
+    assert(not is_some(zero.result.relating))
+    let h = unwrap(entry_hash(request_a()))
+    let seeded = iching_coins(stream_new(unwrap(seed(h, bytes_from_ints([]), drand_only())), 64))
+    assert(seeded.result.lines == [9, 6, 6, 8, 8, 7])
+    assert(seeded.result.hexagram == 27)
+    assert(seeded.result.changing == [1, 2, 3])
+    assert(relating_is(seeded.result.relating, 18))
+
+fn test_yarrow_match_python_vector() -> Unit:
+    let zero = iching_yarrow(stream_new(zero_seed(), 64))
+    assert(zero.result.lines == [8, 7, 8, 8, 8, 8])
+    assert(zero.result.hexagram == 7)
+    let h = unwrap(entry_hash(request_a()))
+    let seeded = iching_yarrow(stream_new(unwrap(seed(h, bytes_from_ints([]), drand_only())), 64))
+    assert(seeded.result.lines == [8, 7, 7, 7, 6, 8])
+    assert(seeded.result.changing == [5])
+    assert(relating_is(seeded.result.relating, 28))

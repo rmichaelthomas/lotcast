@@ -1,0 +1,111 @@
+import "std:types"
+import "std:text"
+import "registry_data.gu"
+import "stream.gu"
+import "primitives.gu"
+
+# The I Ching samplers (spec §5.1): six lines, bottom to top, valued 6, 7, 8 or 9. 6 and 9 are
+# changing lines (old yin, old yang); 7 and 9 are yang.
+#
+# coins:  each line is three coins, `bit()` each, heads (bit 1) = 3 and tails (bit 0) = 2, summed.
+# yarrow: each line is `weighted([1, 5, 7, 3])` over 6, 7, 8, 9.
+
+pub record IChing:
+    lines: List[Int]
+    hexagram: Int
+    changing: List[Int]
+    relating: Option[Int]
+
+pub record IChingDraw:
+    result: IChing
+    stream: Stream
+
+pub fn hexagram_id(n: Int) -> Text:
+    return "iching:hexagram:" + int_to_text(n)
+
+pub fn hexagram_name(n: Int) -> Text:
+    return hexagram_names()[n - 1]
+
+fn is_yang(value: Int) -> Bool:
+    return value == 7 or value == 9
+
+# Trigram index (Qian, Zhen, Kan, Gen, Kun, Xun, Li, Dui) from its three lines, bottom to top, read
+# as a 3-bit code with the bottom line as the high bit (yang = 1).
+fn trigram_index(bottom: Int, middle: Int, top: Int) -> Int:
+    var code = 0
+    if is_yang(bottom):
+        set code = code + 4
+    if is_yang(middle):
+        set code = code + 2
+    if is_yang(top):
+        set code = code + 1
+    return [4, 3, 2, 5, 1, 6, 7, 0][code]
+
+# The King Wen number of six lines (each 6, 7, 8 or 9), bottom first.
+pub fn hexagram_number(lines: List[Int]) -> Int:
+    assert(len(lines) == 6)
+    let lower = trigram_index(lines[0], lines[1], lines[2])
+    let upper = trigram_index(lines[3], lines[4], lines[5])
+    return king_wen_table()[lower][upper]
+
+pub fn iching_from_lines(lines: List[Int]) -> IChing:
+    var changing: List[Int] = []
+    var flipped: List[Int] = []
+    var i = 0
+    while i < 6:
+        let v = lines[i]
+        assert(v >= 6 and v <= 9)
+        if v == 6 or v == 9:
+            set changing = list_push(changing, i + 1)
+        set flipped = list_push(flipped, if_changing(v))
+        set i = i + 1
+    var relating: Option[Int] = None
+    if len(changing) > 0:
+        set relating = Some(hexagram_number(flipped))
+    return IChing(lines, hexagram_number(lines), changing, relating)
+
+fn if_changing(v: Int) -> Int:
+    if v == 6:
+        return 7
+    if v == 9:
+        return 8
+    return v
+
+pub fn coins_line(s: Stream) -> DrawInt:
+    var current = s
+    var total = 0
+    var coin = 0
+    while coin < 3:
+        let d = bit(current)
+        set current = d.stream
+        if d.value == 1:
+            set total = total + 3
+        else:
+            set total = total + 2
+        set coin = coin + 1
+    return DrawInt(total, current)
+
+pub fn yarrow_line(s: Stream) -> DrawInt:
+    let d = weighted(s, [1, 5, 7, 3])
+    return DrawInt(6 + d.value, d.stream)
+
+fn six_lines(s: Stream, yarrow: Bool) -> IChingDraw:
+    var current = s
+    var lines: List[Int] = []
+    var line = 0
+    while line < 6:
+        var d = DrawInt(0, current)
+        if yarrow:
+            set d = yarrow_line(current)
+        else:
+            set d = coins_line(current)
+        set current = d.stream
+        set lines = list_push(lines, d.value)
+        set line = line + 1
+    return IChingDraw(iching_from_lines(lines), current)
+
+pub fn iching_coins(s: Stream) -> IChingDraw:
+    return six_lines(s, false)
+
+pub fn iching_yarrow(s: Stream) -> IChingDraw:
+    return six_lines(s, true)

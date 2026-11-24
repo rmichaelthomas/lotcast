@@ -1,0 +1,841 @@
+{
+  "registry": "lotcast/registry/v1",
+  "license": "CC0-1.0",
+  "note": "Identifiers only: no meanings, keywords or texts. Names are from memory until the tradition's audit confirms them.",
+  "iching": {
+    "hexagrams": [
+      {
+        "id": "iching:hexagram:1",
+        "number": 1,
+        "lines": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "name": "Qian"
+      },
+      {
+        "id": "iching:hexagram:2",
+        "number": 2,
+        "lines": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "name": "Kun"
+      },
+      {
+        "id": "iching:hexagram:3",
+        "number": 3,
+        "lines": [
+          1,
+          0,
+          0,
+          0,
+          1,
+          0
+        ],
+        "name": "Zhun"
+      },
+      {
+        "id": "iching:hexagram:4",
+        "number": 4,
+        "lines": [
+          0,
+          1,
+          0,
+          0,
+          0,
+          1
+        ],
+        "name": "Meng"
+      },
+      {
+        "id": "iching:hexagram:5",
+        "number": 5,
+        "lines": [
+          1,
+          1,
+          1,
+          0,
+          1,
+          0
+        ],
+        "name": "Xu"
+      },
+      {
+        "id": "iching:hexagram:6",
+        "number": 6,
+        "lines": [
+          0,
+          1,
+          0,
+          1,
+          1,
+          1
+        ],
+        "name": "Song"
+      },
+      {
+        "id": "iching:hexagram:7",
+        "number": 7,
+        "lines": [
+          0,
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        "name": "Shi"
+      },
+      {
+        "id": "iching:hexagram:8",
+        "number": 8,
+        "lines": [
+          0,
+          0,
+          0,
+          0,
+          1,
+          0
+        ],
+        "name": "Bi"
+      },
+      {
+        "id": "iching:hexagram:9",
+        "number": 9,
+        "lines": [
+          1,
+          1,
+          1,
+          0,
+          1,
+          1
+        ],
+        "name": "Xiao Chu"
+      },
+      {
+        "id": "iching:hexagram:10",
+        "number": 10,
+        "lines": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          1
+        ],
+        "name": "Lu"
+      },
+      {
+        "id": "iching:hexagram:11",
+        "number": 11,
+        "lines": [
+          1,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "name": "Tai"
+      },
+      {
+        "id": "iching:hexagram:12",
+        "number": 12,
+        "lines": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          1
+        ],
+        "name": "Pi"
+      },
+      {
+        "id": "iching:hexagram:13",
+        "number": 13,
+        "lines": [
+          1,
+          0,
+          1,
+          1,
+          1,
+          1
+        ],
+        "name": "Tong Ren"
+      },
+      {
+        "id": "iching:hexagram:14",
+        "number": 14,
+        "lines": [
+          1,
+          1,
+          1,
+          1,
+          0,
+          1
+        ],
+        "name": "Da You"
+      },
+      {
+        "id": "iching:hexagram:15",
+        "number": 15,
+        "lines": [
+          0,
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        "name": "Qian"
+      },
+      {
+        "id": "iching:hexagram:16",
+        "number": 16,
+        "lines": [
+          0,
+          0,
+          0,
+          1,
+          0,
+          0
+        ],
+        "name": "Yu"
+      },
+      {
+        "id": "iching:hexagram:17",
+        "number": 17,
+        "lines": [
+          1,
+          0,
+          0,
+          1,
+          1,
+          0
+        ],
+        "name": "Sui"
+      },
+      {
+        "id": "iching:hexagram:18",
+        "number": 18,
+        "lines": [
+          0,
+          1,
+          1,
+          0,
+          0,
+          1
+        ],
+        "name": "Gu"
+      },
+      {
+        "id": "iching:hexagram:19",
+        "number": 19,
+        "lines": [
+          1,
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        "name": "Lin"
+      },
+      {
+        "id": "iching:hexagram:20",
+        "number": 20,
+        "lines": [
+          0,
+          0,
+          0,
+          0,
+          1,
+          1
+        ],
+        "name": "Guan"
+      },
+      {
+        "id": "iching:hexagram:21",
+        "number": 21,
+        "lines": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          1
+        ],
+        "name": "Shi He"
+      },
+      {
+        "id": "iching:hexagram:22",
+        "number": 22,
+        "lines": [
+          1,
+          0,
+          1,
+          0,
+          0,
+          1
+        ],
+        "name": "Bi"
+      },
+      {
+        "id": "iching:hexagram:23",
+        "number": 23,
+        "lines": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          1
+        ],
+        "name": "Bo"
+      },
+      {
+        "id": "iching:hexagram:24",
+        "number": 24,
+        "lines": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "name": "Fu"
+      },
+      {
+        "id": "iching:hexagram:25",
+        "number": 25,
+        "lines": [
+          1,
+          0,
+          0,
+          1,
+          1,
+          1
+        ],
+        "name": "Wu Wang"
+      },
+      {
+        "id": "iching:hexagram:26",
+        "number": 26,
+        "lines": [
+          1,
+          1,
+          1,
+          0,
+          0,
+          1
+        ],
+        "name": "Da Chu"
+      },
+      {
+        "id": "iching:hexagram:27",
+        "number": 27,
+        "lines": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          1
+        ],
+        "name": "Yi"
+      },
+      {
+        "id": "iching:hexagram:28",
+        "number": 28,
+        "lines": [
+          0,
+          1,
+          1,
+          1,
+          1,
+          0
+        ],
+        "name": "Da Guo"
+      },
+      {
+        "id": "iching:hexagram:29",
+        "number": 29,
+        "lines": [
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "name": "Kan"
+      },
+      {
+        "id": "iching:hexagram:30",
+        "number": 30,
+        "lines": [
+          1,
+          0,
+          1,
+          1,
+          0,
+          1
+        ],
+        "name": "Li"
+      },
+      {
+        "id": "iching:hexagram:31",
+        "number": 31,
+        "lines": [
+          0,
+          0,
+          1,
+          1,
+          1,
+          0
+        ],
+        "name": "Xian"
+      },
+      {
+        "id": "iching:hexagram:32",
+        "number": 32,
+        "lines": [
+          0,
+          1,
+          1,
+          1,
+          0,
+          0
+        ],
+        "name": "Heng"
+      },
+      {
+        "id": "iching:hexagram:33",
+        "number": 33,
+        "lines": [
+          0,
+          0,
+          1,
+          1,
+          1,
+          1
+        ],
+        "name": "Dun"
+      },
+      {
+        "id": "iching:hexagram:34",
+        "number": 34,
+        "lines": [
+          1,
+          1,
+          1,
+          1,
+          0,
+          0
+        ],
+        "name": "Da Zhuang"
+      },
+      {
+        "id": "iching:hexagram:35",
+        "number": 35,
+        "lines": [
+          0,
+          0,
+          0,
+          1,
+          0,
+          1
+        ],
+        "name": "Jin"
+      },
+      {
+        "id": "iching:hexagram:36",
+        "number": 36,
+        "lines": [
+          1,
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        "name": "Ming Yi"
+      },
+      {
+        "id": "iching:hexagram:37",
+        "number": 37,
+        "lines": [
+          1,
+          0,
+          1,
+          0,
+          1,
+          1
+        ],
+        "name": "Jia Ren"
+      },
+      {
+        "id": "iching:hexagram:38",
+        "number": 38,
+        "lines": [
+          1,
+          1,
+          0,
+          1,
+          0,
+          1
+        ],
+        "name": "Kui"
+      },
+      {
+        "id": "iching:hexagram:39",
+        "number": 39,
+        "lines": [
+          0,
+          0,
+          1,
+          0,
+          1,
+          0
+        ],
+        "name": "Jian"
+      },
+      {
+        "id": "iching:hexagram:40",
+        "number": 40,
+        "lines": [
+          0,
+          1,
+          0,
+          1,
+          0,
+          0
+        ],
+        "name": "Xie"
+      },
+      {
+        "id": "iching:hexagram:41",
+        "number": 41,
+        "lines": [
+          1,
+          1,
+          0,
+          0,
+          0,
+          1
+        ],
+        "name": "Sun"
+      },
+      {
+        "id": "iching:hexagram:42",
+        "number": 42,
+        "lines": [
+          1,
+          0,
+          0,
+          0,
+          1,
+          1
+        ],
+        "name": "Yi"
+      },
+      {
+        "id": "iching:hexagram:43",
+        "number": 43,
+        "lines": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          0
+        ],
+        "name": "Guai"
+      },
+      {
+        "id": "iching:hexagram:44",
+        "number": 44,
+        "lines": [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "name": "Gou"
+      },
+      {
+        "id": "iching:hexagram:45",
+        "number": 45,
+        "lines": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          0
+        ],
+        "name": "Cui"
+      },
+      {
+        "id": "iching:hexagram:46",
+        "number": 46,
+        "lines": [
+          0,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "name": "Sheng"
+      },
+      {
+        "id": "iching:hexagram:47",
+        "number": 47,
+        "lines": [
+          0,
+          1,
+          0,
+          1,
+          1,
+          0
+        ],
+        "name": "Kun"
+      },
+      {
+        "id": "iching:hexagram:48",
+        "number": 48,
+        "lines": [
+          0,
+          1,
+          1,
+          0,
+          1,
+          0
+        ],
+        "name": "Jing"
+      },
+      {
+        "id": "iching:hexagram:49",
+        "number": 49,
+        "lines": [
+          1,
+          0,
+          1,
+          1,
+          1,
+          0
+        ],
+        "name": "Ge"
+      },
+      {
+        "id": "iching:hexagram:50",
+        "number": 50,
+        "lines": [
+          0,
+          1,
+          1,
+          1,
+          0,
+          1
+        ],
+        "name": "Ding"
+      },
+      {
+        "id": "iching:hexagram:51",
+        "number": 51,
+        "lines": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0
+        ],
+        "name": "Zhen"
+      },
+      {
+        "id": "iching:hexagram:52",
+        "number": 52,
+        "lines": [
+          0,
+          0,
+          1,
+          0,
+          0,
+          1
+        ],
+        "name": "Gen"
+      },
+      {
+        "id": "iching:hexagram:53",
+        "number": 53,
+        "lines": [
+          0,
+          0,
+          1,
+          0,
+          1,
+          1
+        ],
+        "name": "Jian"
+      },
+      {
+        "id": "iching:hexagram:54",
+        "number": 54,
+        "lines": [
+          1,
+          1,
+          0,
+          1,
+          0,
+          0
+        ],
+        "name": "Gui Mei"
+      },
+      {
+        "id": "iching:hexagram:55",
+        "number": 55,
+        "lines": [
+          1,
+          0,
+          1,
+          1,
+          0,
+          0
+        ],
+        "name": "Feng"
+      },
+      {
+        "id": "iching:hexagram:56",
+        "number": 56,
+        "lines": [
+          0,
+          0,
+          1,
+          1,
+          0,
+          1
+        ],
+        "name": "Lu"
+      },
+      {
+        "id": "iching:hexagram:57",
+        "number": 57,
+        "lines": [
+          0,
+          1,
+          1,
+          0,
+          1,
+          1
+        ],
+        "name": "Xun"
+      },
+      {
+        "id": "iching:hexagram:58",
+        "number": 58,
+        "lines": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          0
+        ],
+        "name": "Dui"
+      },
+      {
+        "id": "iching:hexagram:59",
+        "number": 59,
+        "lines": [
+          0,
+          1,
+          0,
+          0,
+          1,
+          1
+        ],
+        "name": "Huan"
+      },
+      {
+        "id": "iching:hexagram:60",
+        "number": 60,
+        "lines": [
+          1,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "name": "Jie"
+      },
+      {
+        "id": "iching:hexagram:61",
+        "number": 61,
+        "lines": [
+          1,
+          1,
+          0,
+          0,
+          1,
+          1
+        ],
+        "name": "Zhong Fu"
+      },
+      {
+        "id": "iching:hexagram:62",
+        "number": 62,
+        "lines": [
+          0,
+          0,
+          1,
+          1,
+          0,
+          0
+        ],
+        "name": "Xiao Guo"
+      },
+      {
+        "id": "iching:hexagram:63",
+        "number": 63,
+        "lines": [
+          1,
+          0,
+          1,
+          0,
+          1,
+          0
+        ],
+        "name": "Ji Ji"
+      },
+      {
+        "id": "iching:hexagram:64",
+        "number": 64,
+        "lines": [
+          0,
+          1,
+          0,
+          1,
+          0,
+          1
+        ],
+        "name": "Wei Ji"
+      }
+    ]
+  }
+}

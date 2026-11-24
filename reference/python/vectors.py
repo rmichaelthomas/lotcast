@@ -51,6 +51,46 @@ def seed(entry_hash_: bytes, checkpoint_hash: bytes, sources: dict) -> bytes:
         body += lp(sid.encode()) + u8(status) + lp(value)
     return sha512(body)
 
+class Stream:
+    def __init__(self, seed, bits=64):
+        self.seed, self.bits, self.i, self.buf = seed, bits, 0, []
+    def word(self):
+        if not self.buf:
+            self.buf = self._block()
+        return self.buf.pop(0)
+    def _block(self):
+        size = self.bits // 8
+        b = block(self.seed, self.i)
+        self.i += 1
+        return [int.from_bytes(b[k:k + size], "big") for k in range(0, 64, size)]
+    def uniform(self, n):
+        space = 2 ** self.bits
+        limit = space - space % n
+        while True:
+            x = self.word()
+            if x < limit:
+                return x % n
+    def weighted(self, ws):
+        r = self.uniform(sum(ws))
+        run = 0
+        for i, w in enumerate(ws):
+            run += w
+            if run > r:
+                return i
+    def shuffle(self, n):
+        deck = list(range(n))
+        for i in range(n - 1, 0, -1):
+            j = self.uniform(i + 1)
+            deck[i], deck[j] = deck[j], deck[i]
+        return deck
+
+def iching_coins(stream):
+    """Six lines bottom to top; each is three coins, bit 1 = heads = 3, bit 0 = tails = 2."""
+    return [sum(3 if stream.uniform(2) == 1 else 2 for _ in range(3)) for _ in range(6)]
+
+def iching_yarrow(stream):
+    return [6 + stream.weighted([1, 5, 7, 3]) for _ in range(6)]
+
 if __name__ == "__main__":
     zero = bytes(64)
     print("seed zero, width 64, words 0..16:")
@@ -68,3 +108,8 @@ if __name__ == "__main__":
     print("seed A unanchored:", seed(ha, b"", drand_only).hex())
     cp = sha512(b"checkpoint")
     print("seed A anchored:", seed(ha, cp, drand_only).hex())
+
+    print("iching coins, zero seed:", iching_coins(Stream(zero)))
+    print("iching yarrow, zero seed:", iching_yarrow(Stream(zero)))
+    print("iching coins, seed A unanchored:", iching_coins(Stream(seed(ha, b"", drand_only))))
+    print("iching yarrow, seed A unanchored:", iching_yarrow(Stream(seed(ha, b"", drand_only))))

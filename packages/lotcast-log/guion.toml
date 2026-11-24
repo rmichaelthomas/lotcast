@@ -7,6 +7,8 @@ exports = [
     "src/note.gu",
     "src/tiles.gu",
     "src/log.gu",
+    "src/tsa_pins.gu",
+    "src/anchor.gu",
 ]
 name = "lotcast-log"
 version = "0.1.0"

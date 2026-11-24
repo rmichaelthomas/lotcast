@@ -4,6 +4,8 @@ pub import "merkle.gu"
 pub import "note.gu"
 pub import "tiles.gu"
 pub import "log.gu"
+pub import "tsa_pins.gu"
+pub import "anchor.gu"
 
 pub fn lotcast_log_version() -> Text:
     return "0.1.0"

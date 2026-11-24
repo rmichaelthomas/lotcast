@@ -366,3 +366,44 @@ fn test_checkpoint_from_other_key_or_origin_fails_open() -> Unit:
     assert(not is_ok(log_open(state.dir, "other.example/log", log_origin(), op_key_public())))
     let wrong_public = unwrap(crypto_ed25519_public_key(hexb("ff02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")))
     assert(not is_ok(log_open(state.dir, log_origin(), log_origin(), wrong_public)))
+
+fn tsa_fixtures() -> Json:
+    return unwrap(json_parse(unwrap(read_text("fixtures/tsa/tokens.json"))))
+
+fn fixture_digest() -> Bytes:
+    return hexb(json_as_text(json_get(tsa_fixtures(), "digest")))
+
+fn fixture_token(id: Text) -> Bytes:
+    return unwrap(base64_decode(json_as_text(json_get(json_get(tsa_fixtures(), "tokens"), id))))
+
+fn test_each_pinned_token_verifies() -> Unit:
+    for id in ["digicert", "sectigo", "freetsa"]:
+        let content = unwrap(tsa_check(unwrap(pin_by_id(id)), fixture_token(id), fixture_digest()))
+        assert(content.gen_time_ms > 1700000000000)
+        assert(content.accuracy_ms >= 0)
+
+fn test_token_for_other_digest_fails() -> Unit:
+    let other = crypto_sha512(text_bytes("another digest"))
+    assert(not is_ok(tsa_check(unwrap(pin_by_id("digicert")), fixture_token("digicert"), other)))
+
+fn test_token_with_other_pin_fails() -> Unit:
+    assert(not is_ok(tsa_check(unwrap(pin_by_id("sectigo")), fixture_token("digicert"), fixture_digest())))
+    assert(not is_ok(tsa_check(unwrap(pin_by_id("digicert")), fixture_token("freetsa"), fixture_digest())))
+    assert(not is_ok(pin_by_id("nobody")))
+
+fn test_anchor_g_is_max_of_gen_time_plus_accuracy_plus_one_second_rounded_up() -> Unit:
+    let a = TsaToken(1000500, 400, bytes_from_ints([1]), "1.2.3", bytes_from_ints([]))
+    let b = TsaToken(999000, 0, bytes_from_ints([2]), "1.2.3", bytes_from_ints([]))
+    assert(anchor_g([a, b]) == 1002)
+    assert(anchor_g([b, a]) == 1002)
+    assert(anchor_g([b]) == 1000)
+    let exact = TsaToken(5000, 0, bytes_from_ints([3]), "1.2.3", bytes_from_ints([]))
+    assert(anchor_g([exact]) == 6)
+
+fn test_choose_tsas_defaults_and_fallback_after_600_seconds() -> Unit:
+    let none: Map[Text, Int] = {}
+    assert(choose_tsas(none) == ["digicert", "sectigo"])
+    assert(choose_tsas({"digicert": 600}) == ["digicert", "sectigo"])
+    assert(choose_tsas({"digicert": 601}) == ["sectigo", "freetsa"])
+    assert(choose_tsas({"sectigo": 9999, "digicert": 5}) == ["digicert", "freetsa"])
+    assert(len(choose_tsas({"sectigo": 9999, "digicert": 9999})) == 0)

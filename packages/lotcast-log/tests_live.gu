@@ -1,0 +1,25 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "std:json"
+import "src/lib.gu"
+
+# Network check: stamps a real checkpoint with the pinned TSAs and verifies both tokens. Run:
+#     guion run --allow-http-host timestamp.digicert.com --allow-http-host timestamp.sectigo.com tests_live.gu
+# It prints "live stamp ok" and exits 0, or the failure and exits 1.
+
+fn main() -> Int:
+    let seed = bytes_from_ints([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32])
+    let text = checkpoint_text(Checkpoint("lotcast.example/log", 1, crypto_sha256(bytes_from_ints([1])), []))
+    let signed = sign_note(text, "lotcast.example/log", seed)
+    if not is_ok(signed):
+        print("could not sign the checkpoint")
+        return 1
+    match anchor_checkpoint(unwrap(signed), ["digicert", "sectigo"]):
+        Ok(anchored):
+            print("live stamp ok: g=" + int_to_text(json_as_int(json_get(anchored, "g"))))
+            return 0
+        Err(problem):
+            print("live stamp failed: " + problem.code + ": " + problem.message)
+            return 1

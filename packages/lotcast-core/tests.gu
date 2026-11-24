@@ -1,0 +1,29 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "src/lib.gu"
+
+fn main() -> Int:
+    return 0
+
+fn test_u64_bytes_big_endian() -> Unit:
+    assert(u64_bytes(1) == bytes_from_ints([0, 0, 0, 0, 0, 0, 0, 1]))
+    assert(u64_bytes(18446744073709551615) == bytes_from_ints([255, 255, 255, 255, 255, 255, 255, 255]))
+    assert(u64_bytes(0) == bytes_from_ints([0, 0, 0, 0, 0, 0, 0, 0]))
+
+fn test_u32_and_u8_bytes() -> Unit:
+    assert(u32_bytes(258) == bytes_from_ints([0, 0, 1, 2]))
+    assert(u8_bytes(200) == bytes_from_ints([200]))
+
+fn test_lp_prefixes_four_byte_length() -> Unit:
+    assert(lp(text_bytes("ab")) == bytes_from_ints([0, 0, 0, 2, 97, 98]))
+    assert(lp(bytes_from_ints([])) == bytes_from_ints([0, 0, 0, 0]))
+
+fn test_cat_joins_in_order() -> Unit:
+    assert(cat([bytes_from_ints([1]), bytes_from_ints([2, 3]), bytes_from_ints([])]) == bytes_from_ints([1, 2, 3]))
+
+fn test_bytes_to_int_round_trips_u64() -> Unit:
+    let values = [0, 1, 255, 256, 9223372036854775808, 18446744073709551615]
+    for v in values:
+        assert(bytes_to_int(u64_bytes(v)) == v)

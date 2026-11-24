@@ -1,0 +1,27 @@
+format_version = 2
+
+[native.beacons]
+entry = "src/lib.gu"
+exports = [
+    "src/lib.gu",
+    "src/multiformats.gu",
+    "src/drand.gu",
+    "src/twine.gu",
+    "src/curby.gu",
+    "src/nist.gu",
+]
+sha256 = "86e998107d8919988965ee06f2936c8aed161b7dd45676f7fde5e93463e30c08"
+source = "../../../guion/packages/beacons"
+source_kind = "path"
+version = "0.3.0"
+
+[native.beacons.capabilities]
+clock = true
+network = [
+    "api.drand.sh",
+    "beacon.nist.gov",
+    "drand.cloudflare.com",
+    "random.colorado.edu",
+]
+
+[native.beacons.dependencies]

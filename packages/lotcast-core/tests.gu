@@ -1,0 +1,631 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "std:json"
+import "src/lib.gu"
+import "pkg:beacons/src/lib.gu"
+
+fn main() -> Int:
+    return 0
+
+fn test_u64_bytes_big_endian() -> Unit:
+    assert(u64_bytes(1) == bytes_from_ints([0, 0, 0, 0, 0, 0, 0, 1]))
+    assert(u64_bytes(18446744073709551615) == bytes_from_ints([255, 255, 255, 255, 255, 255, 255, 255]))
+    assert(u64_bytes(0) == bytes_from_ints([0, 0, 0, 0, 0, 0, 0, 0]))
+
+fn test_u32_and_u8_bytes() -> Unit:
+    assert(u32_bytes(258) == bytes_from_ints([0, 0, 1, 2]))
+    assert(u8_bytes(200) == bytes_from_ints([200]))
+
+fn test_lp_prefixes_four_byte_length() -> Unit:
+    assert(lp(text_bytes("ab")) == bytes_from_ints([0, 0, 0, 2, 97, 98]))
+    assert(lp(bytes_from_ints([])) == bytes_from_ints([0, 0, 0, 0]))
+
+fn test_cat_joins_in_order() -> Unit:
+    assert(cat([bytes_from_ints([1]), bytes_from_ints([2, 3]), bytes_from_ints([])]) == bytes_from_ints([1, 2, 3]))
+
+fn test_bytes_to_int_round_trips_u64() -> Unit:
+    let values = [0, 1, 255, 256, 9223372036854775808, 18446744073709551615]
+    for v in values:
+        assert(bytes_to_int(u64_bytes(v)) == v)
+
+fn zero_seed() -> Bytes:
+    return bytes_from_ints([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+# The n-th word of a stream (0-based), reading every word before it.
+fn nth_word(seed: Bytes, bits: Int, n: Int) -> Int:
+    var s = stream_new(seed, bits)
+    var k = 0
+    while k < n:
+        set s = next_word(s).stream
+        set k = k + 1
+    return next_word(s).value
+
+fn test_stream_matches_python_vector() -> Unit:
+    # python3 reference/python/vectors.py: seed of 64 zero bytes, width 64
+    assert(nth_word(zero_seed(), 64, 0) == 5157822015497538534)
+    assert(nth_word(zero_seed(), 64, 1) == 3516891542917060802)
+    assert(nth_word(zero_seed(), 64, 7) == 3855672083927600077)
+
+fn test_stream_second_block_advances() -> Unit:
+    assert(nth_word(zero_seed(), 64, 8) == 8897356577867350241)
+    assert(nth_word(zero_seed(), 64, 16) == 18239457420714765276)
+    let block_one = crypto_sha512(cat([text_bytes("lotcast/stream/v1"), zero_seed(), u64_bytes(1)]))
+    assert(nth_word(zero_seed(), 64, 8) == bytes_to_int(bytes_slice(block_one, 0, 8)))
+
+fn test_width_8_words_are_the_block_bytes() -> Unit:
+    let block_zero = crypto_sha512(cat([text_bytes("lotcast/stream/v1"), zero_seed(), u64_bytes(0)]))
+    assert(nth_word(zero_seed(), 8, 0) == bytes_to_ints(block_zero)[0])
+    assert(nth_word(zero_seed(), 8, 63) == bytes_to_ints(block_zero)[63])
+    let block_one = crypto_sha512(cat([text_bytes("lotcast/stream/v1"), zero_seed(), u64_bytes(1)]))
+    assert(nth_word(zero_seed(), 8, 64) == bytes_to_ints(block_one)[0])
+
+fn test_uniform_one_is_always_zero() -> Unit:
+    var s = stream_new(zero_seed(), 64)
+    var k = 0
+    while k < 50:
+        let d = uniform(s, 1)
+        assert(d.value == 0)
+        set s = d.stream
+        set k = k + 1
+
+fn test_uniform_never_returns_n() -> Unit:
+    var s = stream_new(zero_seed(), 64)
+    var k = 0
+    while k < 1000:
+        let d = uniform(s, 4294967296)
+        assert(d.value >= 0 and d.value < 4294967296)
+        set s = d.stream
+        set k = k + 1
+
+fn test_uniform_power_of_two_never_rejects() -> Unit:
+    var s = stream_new(zero_seed(), 64)
+    var k = 0
+    while k < 20:
+        let d = uniform(s, 8)
+        assert(d.value == nth_word(zero_seed(), 64, k) % 8)
+        set s = d.stream
+        set k = k + 1
+
+fn test_uniform_rejects_words_at_or_above_the_limit() -> Unit:
+    # width 8, n = 3: limit is 255, so only the word 255 is rejected
+    let s = stream_scripted([255, 7], 8)
+    let d = uniform(s, 3)
+    assert(d.value == 1)
+
+# ---- entry and seed (vectors from reference/python/vectors.py) ----
+
+fn salt_01_to_20() -> Bytes:
+    var octets: List[Int] = []
+    var k = 1
+    while k <= 32:
+        set octets = list_push(octets, k)
+        set k = k + 1
+    return bytes_from_ints(octets)
+
+fn repeated(value: Int, count: Int) -> Bytes:
+    var octets: List[Int] = []
+    var k = 0
+    while k < count:
+        set octets = list_push(octets, value)
+        set k = k + 1
+    return bytes_from_ints(octets)
+
+fn hx(text: Text) -> Bytes:
+    return unwrap(hex_decode(text))
+
+fn request_a() -> Request:
+    let commit = question_commit("Should I go?", salt_01_to_20())
+    let options: Map[Text, Text] = {}
+    return Request("iching", "yarrow", options, 1, commit, ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
+
+fn request_b(options: Map[Text, Text]) -> Request:
+    return Request("tarot", "rws", options, 0, bytes_from_ints([]), ["drand-quicknet"], 1795000000, repeated(9, 32), bytes_from_ints([]))
+
+fn drand_only() -> List[SourceValue]:
+    return [SourceValue("drand-quicknet", 1, repeated(170, 32)), SourceValue("nist-beacon-2", 2, bytes_from_ints([])), SourceValue("curby-rng", 2, bytes_from_ints([])), SourceValue("curby-q", 2, bytes_from_ints([]))]
+
+fn test_question_commit_matches_python_vector() -> Unit:
+    assert(question_commit("Should I go?", salt_01_to_20()) == hx("4f8d55e655f5f8b87c241e93cd2a6dbe5cde78bd4cdd28f3655df07bfd247623467c145636977eba073e896e8669f90d9fee6cd0086d569c0c7622b160a9e1bc"))
+
+fn test_entry_hash_matches_python_vector() -> Unit:
+    assert(unwrap(entry_hash(request_a())) == hx("6cebba2d701b7f2afb405d1dcf6cd08536e79d56bab997476ffe785ddb8262321d6080d2644f9b6d2eb2a7ba4adf438acafb35f05d3b4ae2d3c8f852eaf4abd8"))
+    let options: Map[Text, Text] = {"reversals": "true", "count": "3"}
+    assert(unwrap(entry_hash(request_b(options))) == hx("763d949f3da9e0da2d464049853342f382186a63692d82205960b5acb823a8157663edd82db6ce683a09c7dd20065c5b252c1844f728b68db462b2bacc552268"))
+
+fn test_options_order_does_not_change_the_entry_hash() -> Unit:
+    let one: Map[Text, Text] = {"count": "3", "reversals": "true"}
+    let two: Map[Text, Text] = {"reversals": "true", "count": "3"}
+    assert(unwrap(entry_hash(request_b(one))) == unwrap(entry_hash(request_b(two))))
+
+fn test_option_with_equals_sign_or_newline_is_an_error() -> Unit:
+    let bad_key: Map[Text, Text] = {"a=b": "1"}
+    let bad_value: Map[Text, Text] = {"a": "x\ny"}
+    assert(not is_ok(canonical_options(bad_key)))
+    assert(not is_ok(canonical_options(bad_value)))
+    assert(not is_ok(entry_hash(request_b(bad_key))))
+
+fn test_canonical_options_are_sorted_lines() -> Unit:
+    let options: Map[Text, Text] = {"reversals": "true", "count": "3"}
+    assert(unwrap(canonical_options(options)) == "count=3\nreversals=true")
+
+fn test_seed_matches_python_vector() -> Unit:
+    let h = unwrap(entry_hash(request_a()))
+    assert(unwrap(seed(h, bytes_from_ints([]), drand_only())) == hx("a0916580e3ec50e65bc0248595ef22ad347d01ab0fd38306f9e39c6f96139221c922c8cffcad6e6279e5a8f7100f259082a4d96955ff4e24cbdd80a561731665"))
+    let checkpoint = crypto_sha512(text_bytes("checkpoint"))
+    assert(unwrap(seed(h, checkpoint, drand_only())) == hx("c7dd47a10e6514e1f2ee531813eac72d8bfb3659827ede6ccb17e312e9822efd6a575193d7e02c0bfd12f796e957d163f5efa09abdd809800accba75b7aca322"))
+
+fn test_unanchored_and_anchored_seeds_differ() -> Unit:
+    let h = unwrap(entry_hash(request_a()))
+    assert(unwrap(seed(h, bytes_from_ints([]), drand_only())) != unwrap(seed(h, crypto_sha512(text_bytes("checkpoint")), drand_only())))
+
+fn test_seed_sources_out_of_order_is_rejected() -> Unit:
+    let h = unwrap(entry_hash(request_a()))
+    assert(not is_ok(seed(h, bytes_from_ints([]), [SourceValue("nist-beacon-2", 2, bytes_from_ints([])), SourceValue("drand-quicknet", 1, repeated(170, 32)), SourceValue("curby-rng", 2, bytes_from_ints([])), SourceValue("curby-q", 2, bytes_from_ints([]))])))
+    assert(is_ok(seed(h, bytes_from_ints([]), drand_only())))
+
+# ---- I Ching ----
+
+fn relating_is(o: Option[Int], n: Int) -> Bool:
+    match o:
+        Some(v):
+            return v == n
+        None:
+            return false
+
+fn all_yang() -> List[Int]:
+    return [7, 7, 7, 7, 7, 7]
+
+fn test_king_wen_table_is_a_permutation_of_1_to_64() -> Unit:
+    var seen: Map[Int, Bool] = {}
+    for row in king_wen_table():
+        assert(len(row) == 8)
+        for n in row:
+            assert(n >= 1 and n <= 64)
+            assert(not map_has(seen, n))
+            set seen = map_set(seen, n, true)
+    assert(len(seen) == 64)
+
+# Every pattern of six lines (as 7 for yang, 8 for yin), bottom line first.
+fn pattern_lines(code: Int) -> List[Int]:
+    var lines: List[Int] = []
+    var rest = code
+    var k = 0
+    while k < 6:
+        set lines = list_push(lines, 7 + (1 - rest % 2))
+        set rest = rest // 2
+        set k = k + 1
+    return lines
+
+fn reversed_lines(lines: List[Int]) -> List[Int]:
+    var out: List[Int] = []
+    var i = len(lines) - 1
+    while i >= 0:
+        set out = list_push(out, lines[i])
+        set i = i - 1
+    return out
+
+fn inverted_lines(lines: List[Int]) -> List[Int]:
+    var out: List[Int] = []
+    for v in lines:
+        set out = list_push(out, 15 - v)
+    return out
+
+fn test_king_wen_pairs_are_reverse_or_inverse() -> Unit:
+    var lines_of: Map[Int, List[Int]] = {}
+    var code = 0
+    while code < 64:
+        let lines = pattern_lines(code)
+        set lines_of = map_set(lines_of, hexagram_number(lines), lines)
+        set code = code + 1
+    assert(len(lines_of) == 64)
+    var k = 1
+    while k <= 32:
+        let a = lines_of[2 * k - 1]
+        let b = lines_of[2 * k]
+        assert(b == reversed_lines(a) or b == inverted_lines(a))
+        set k = k + 1
+
+fn test_anchor_hexagrams() -> Unit:
+    assert(hexagram_number([7, 7, 7, 7, 7, 7]) == 1)
+    assert(hexagram_number([8, 8, 8, 8, 8, 8]) == 2)
+    assert(hexagram_number([8, 8, 8, 8, 8, 7]) == 23)
+    assert(hexagram_number([8, 8, 8, 8, 7, 7]) == 20)
+    assert(hexagram_number([8, 7, 8, 8, 7, 8]) == 29)
+    assert(hexagram_number([7, 8, 7, 7, 8, 7]) == 30)
+    assert(hexagram_number([7, 7, 7, 8, 8, 8]) == 11)
+    assert(hexagram_number([8, 8, 8, 7, 7, 7]) == 12)
+
+fn test_nines_and_sixes_count_as_yang_and_yin() -> Unit:
+    assert(hexagram_number([9, 9, 9, 9, 9, 9]) == 1)
+    assert(hexagram_number([6, 6, 6, 6, 6, 6]) == 2)
+
+fn test_changing_lines_and_relating() -> Unit:
+    # 23 (Bo) with line 5 changing (a 6 where the line is yin) becomes 20 (Guan)
+    let one = iching_from_lines([8, 8, 8, 8, 6, 7])
+    assert(one.hexagram == 23)
+    assert(one.changing == [5])
+    assert(relating_is(one.relating, 20))
+    let none = iching_from_lines([8, 8, 8, 8, 8, 7])
+    assert(len(none.changing) == 0)
+    assert(not is_some(none.relating))
+    let all_six = iching_from_lines([9, 9, 9, 9, 9, 9])
+    assert(all_six.hexagram == 1)
+    assert(all_six.changing == [1, 2, 3, 4, 5, 6])
+    assert(relating_is(all_six.relating, 2))
+
+fn test_hexagram_id_text() -> Unit:
+    assert(hexagram_id(23) == "iching:hexagram:23")
+
+fn test_coins_match_python_vector() -> Unit:
+    let zero = iching_coins(stream_new(zero_seed(), 64))
+    assert(zero.result.lines == [7, 8, 8, 7, 8, 7])
+    assert(zero.result.hexagram == 21)
+    assert(not is_some(zero.result.relating))
+    let h = unwrap(entry_hash(request_a()))
+    let seeded = iching_coins(stream_new(unwrap(seed(h, bytes_from_ints([]), drand_only())), 64))
+    assert(seeded.result.lines == [9, 6, 6, 8, 8, 7])
+    assert(seeded.result.hexagram == 27)
+    assert(seeded.result.changing == [1, 2, 3])
+    assert(relating_is(seeded.result.relating, 18))
+
+fn test_yarrow_match_python_vector() -> Unit:
+    let zero = iching_yarrow(stream_new(zero_seed(), 64))
+    assert(zero.result.lines == [8, 7, 8, 8, 8, 8])
+    assert(zero.result.hexagram == 7)
+    let h = unwrap(entry_hash(request_a()))
+    let seeded = iching_yarrow(stream_new(unwrap(seed(h, bytes_from_ints([]), drand_only())), 64))
+    assert(seeded.result.lines == [8, 7, 7, 7, 6, 8])
+    assert(seeded.result.changing == [5])
+    assert(relating_is(seeded.result.relating, 28))
+
+# ---- Tarot (Rider-Waite-Smith) ----
+
+fn card_ids(draw: TarotDraw) -> List[Text]:
+    var ids: List[Text] = []
+    for card in draw.cards:
+        set ids = list_push(ids, card.id)
+    return ids
+
+fn flags(draw: TarotDraw) -> List[Bool]:
+    var out: List[Bool] = []
+    for card in draw.cards:
+        set out = list_push(out, card.reversed)
+    return out
+
+fn test_rws_deck_has_78_unique_ids_in_order() -> Unit:
+    let deck = rws_deck()
+    assert(len(deck) == 78)
+    assert(deck[0] == "tarot:rws:major:0")
+    assert(deck[21] == "tarot:rws:major:21")
+    assert(deck[22] == "tarot:rws:wands:1")
+    assert(deck[35] == "tarot:rws:wands:14")
+    assert(deck[36] == "tarot:rws:cups:1")
+    assert(deck[77] == "tarot:rws:pentacles:14")
+    var seen: Map[Text, Bool] = {}
+    for id in deck:
+        assert(not map_has(seen, id))
+        set seen = map_set(seen, id, true)
+
+fn test_count_zero_one_78_79() -> Unit:
+    let s = stream_new(zero_seed(), 64)
+    assert(not is_ok(tarot_rws(s, 0, false, false)))
+    assert(len(unwrap(tarot_rws(s, 1, false, false)).cards) == 1)
+    assert(len(unwrap(tarot_rws(s, 78, false, false)).cards) == 78)
+    assert(not is_ok(tarot_rws(s, 79, false, false)))
+
+fn test_majors_only_count_22_ok_and_23_is_an_error() -> Unit:
+    let s = stream_new(zero_seed(), 64)
+    assert(len(unwrap(tarot_rws(s, 22, true, false)).cards) == 22)
+    assert(not is_ok(tarot_rws(s, 23, true, false)))
+
+fn test_no_card_repeats_and_full_deck_is_a_permutation() -> Unit:
+    let draw = unwrap(tarot_rws(stream_new(zero_seed(), 64), 78, false, true))
+    var seen: Map[Text, Bool] = {}
+    for id in card_ids(draw):
+        assert(not map_has(seen, id))
+        set seen = map_set(seen, id, true)
+    assert(len(seen) == 78)
+
+fn test_tarot_matches_python_vector() -> Unit:
+    let zero = unwrap(tarot_rws(stream_new(zero_seed(), 64), 3, false, true))
+    assert(card_ids(zero) == ["tarot:rws:cups:2", "tarot:rws:cups:7", "tarot:rws:swords:11"])
+    assert(flags(zero) == [false, false, false])
+    let majors = unwrap(tarot_rws(stream_new(zero_seed(), 64), 5, true, false))
+    assert(card_ids(majors) == ["tarot:rws:major:3", "tarot:rws:major:14", "tarot:rws:major:2", "tarot:rws:major:1", "tarot:rws:major:13"])
+    let options: Map[Text, Text] = {"reversals": "true", "count": "3"}
+    let h = unwrap(entry_hash(request_b(options)))
+    let seeded = unwrap(tarot_rws(stream_new(unwrap(seed(h, bytes_from_ints([]), drand_only())), 64), 3, false, true))
+    assert(card_ids(seeded) == ["tarot:rws:swords:1", "tarot:rws:wands:3", "tarot:rws:pentacles:11"])
+    assert(flags(seeded) == [true, true, true])
+
+fn test_reversals_are_drawn_after_the_shuffle() -> Unit:
+    # with reversals the stream is advanced by the shuffle, then one uniform(2) per card; the cards
+    # themselves are the same with and without reversals
+    let plain = unwrap(tarot_rws(stream_new(zero_seed(), 64), 4, false, false))
+    let flipped = unwrap(tarot_rws(stream_new(zero_seed(), 64), 4, false, true))
+    assert(card_ids(plain) == card_ids(flipped))
+    assert(flags(plain) == [false, false, false, false])
+
+# ---- Catalogue and options ----
+
+fn error_code(result: Result[Json, StdError]) -> Text:
+    match result:
+        Ok(value):
+            return ""
+        Err(problem):
+            return problem.code
+
+fn run(tradition: Text, method: Text, options: Map[Text, Text]) -> Result[Json, StdError]:
+    return run_method(stream_new(zero_seed(), 64), tradition, method, options)
+
+fn no_options() -> Map[Text, Text]:
+    let none: Map[Text, Text] = {}
+    return none
+
+fn test_unknown_option_is_an_error() -> Unit:
+    let bad: Map[Text, Text] = {"colour": "red"}
+    assert(error_code(run("tarot", "rws", bad)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("iching", "coins", bad)) == "E_LOTCAST_OPTION")
+
+fn test_option_values_are_validated() -> Unit:
+    let words: Map[Text, Text] = {"count": "three"}
+    let negative: Map[Text, Text] = {"count": "-1"}
+    let padded: Map[Text, Text] = {"count": "03"}
+    let empty: Map[Text, Text] = {"count": ""}
+    let bad_flag: Map[Text, Text] = {"reversals": "yes"}
+    assert(error_code(run("tarot", "rws", words)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("tarot", "rws", negative)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("tarot", "rws", padded)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("tarot", "rws", empty)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("tarot", "rws", bad_flag)) == "E_LOTCAST_OPTION")
+
+fn test_count_out_of_range_through_run_method() -> Unit:
+    let zero: Map[Text, Text] = {"count": "0"}
+    let many: Map[Text, Text] = {"count": "79"}
+    assert(error_code(run("tarot", "rws", zero)) == "E_LOTCAST_COUNT")
+    assert(error_code(run("tarot", "rws", many)) == "E_LOTCAST_COUNT")
+
+fn test_unknown_tradition_or_method_is_an_error() -> Unit:
+    assert(error_code(run("iching", "tortoise", no_options())) == "E_LOTCAST_METHOD")
+    assert(error_code(run("astrology", "natal", no_options())) == "E_LOTCAST_METHOD")
+
+fn test_marseille_and_thoth_refuse() -> Unit:
+    assert(error_code(run("tarot", "marseille", no_options())) == "E_LOTCAST_AUDIT_PENDING")
+    assert(error_code(run("tarot", "thoth", no_options())) == "E_LOTCAST_AUDIT_PENDING")
+
+fn test_defaults_applied_and_drawn() -> Unit:
+    let out = unwrap(run("tarot", "rws", no_options()))
+    assert(json_stringify(json_get(out, "cards")) == "[{\"id\":\"tarot:rws:cups:2\",\"reversed\":false}]")
+
+fn test_outcome_json_shape_iching() -> Unit:
+    let out = unwrap(run("iching", "coins", no_options()))
+    assert(json_stringify(json_get(out, "lines")) == "[7,8,8,7,8,7]")
+    assert(json_get(out, "hexagram") == json_int(21))
+    assert(json_stringify(json_get(out, "changing")) == "[]")
+    assert(json_get(out, "relating") == json_null())
+    let h = unwrap(entry_hash(request_a()))
+    let seeded = unwrap(run_method(stream_new(unwrap(seed(h, bytes_from_ints([]), drand_only())), 64), "iching", "coins", no_options()))
+    assert(json_stringify(json_get(seeded, "changing")) == "[1,2,3]")
+    assert(json_get(seeded, "relating") == json_int(18))
+
+fn test_outcome_json_shape_tarot() -> Unit:
+    let options: Map[Text, Text] = {"count": "3", "reversals": "true"}
+    let out = unwrap(run("tarot", "rws", options))
+    assert(json_stringify(json_get(out, "cards")) == "[{\"id\":\"tarot:rws:cups:2\",\"reversed\":false},{\"id\":\"tarot:rws:cups:7\",\"reversed\":false},{\"id\":\"tarot:rws:swords:11\",\"reversed\":false}]")
+
+fn test_catalogue_lists_methods_with_status() -> Unit:
+    var ready = 0
+    var pending = 0
+    for m in catalogue():
+        if m.status == "ready":
+            set ready = ready + 1
+        if m.status == "audit-pending":
+            set pending = pending + 1
+    assert(ready == 3)
+    assert(pending == 2)
+
+# ---- Receipts (one real drand quicknet round, fixtures/drand-round-34231267.json) ----
+
+fn fixture_round() -> DrandRound:
+    let body = unwrap(read_text("fixtures/drand-round-34231267.json"))
+    return unwrap(drand_parse_round(body, 34231267))
+
+# the first moment whose next quicknet round is 34231267
+fn fixture_t0() -> Int:
+    return 1795497162
+
+fn tarot_request() -> Request:
+    let options: Map[Text, Text] = {"count": "3", "reversals": "true"}
+    return Request("tarot", "rws", options, 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(9, 32), bytes_from_ints([]))
+
+fn iching_request() -> Request:
+    return Request("iching", "coins", no_options(), 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
+
+fn built(r: Request) -> Json:
+    return unwrap(build_receipt(r, fixture_t0(), fixture_round()))
+
+fn nothing_checked_for(v: Verdict, steps: List[Int]) -> Bool:
+    return v.not_checked == steps
+
+fn test_build_then_verify_iching_is_verified_unanchored() -> Unit:
+    let v = verify_receipt(built(iching_request()))
+    assert(v.result == "verified-unanchored")
+    assert(v.failed_step == 0)
+    assert(nothing_checked_for(v, [2, 3]))
+
+fn test_build_then_verify_tarot_is_verified_unanchored() -> Unit:
+    let v = verify_receipt(built(tarot_request()))
+    assert(v.result == "verified-unanchored")
+    assert(len(json_stringify(json_get(built(tarot_request()), "outcome"))) > 10)
+
+fn test_receipt_round_trips_through_json_text() -> Unit:
+    let text = json_stringify(built(tarot_request()))
+    let again = unwrap(json_parse(text))
+    assert(verify_receipt(again).result == "verified-unanchored")
+
+fn test_receipt_shape() -> Unit:
+    let r = built(iching_request())
+    assert(json_get(r, "receipt") == json_text("lotcast/receipt/v1"))
+    assert(json_get(r, "sampler") == json_text("lotcast/sampler/v1"))
+    assert(json_get(r, "registry") == json_text("lotcast/registry/v1"))
+    assert(json_is_null(json_get(r, "log")))
+    assert(json_is_null(json_get(r, "promise")))
+    assert(json_get(json_get(r, "anchor"), "t0") == json_int(fixture_t0()))
+
+fn test_edited_outcome_is_invalid_at_step_5() -> Unit:
+    let r = built(iching_request())
+    let outcome = json_set(json_get(r, "outcome"), "hexagram", json_int(1))
+    let v = verify_receipt(json_set(r, "outcome", outcome))
+    assert(v.result == "invalid")
+    assert(v.failed_step == 5)
+
+fn source_with(r: Json, key: Text, value: Json) -> Json:
+    let entry = json_set(json_index(json_get(r, "sources"), 0), key, value)
+    return json_set(r, "sources", json_push(json_array(), entry))
+
+fn test_edited_randomness_is_invalid_at_step_4() -> Unit:
+    let r = source_with(built(iching_request()), "randomness", json_text(hex_encode(repeated(1, 32))))
+    let v = verify_receipt(r)
+    assert(v.result == "invalid")
+    assert(v.failed_step == 4)
+
+fn test_edited_signature_is_invalid_at_step_4() -> Unit:
+    let r = source_with(built(iching_request()), "signature", json_text(hex_encode(repeated(2, 48))))
+    let v = verify_receipt(r)
+    assert(v.result == "invalid")
+    assert(v.failed_step == 4)
+
+fn test_wrong_round_for_t0_is_invalid_at_step_4() -> Unit:
+    let r = built(iching_request())
+    let anchor = json_set(json_get(r, "anchor"), "t0", json_int(fixture_t0() + 3000))
+    let v = verify_receipt(json_set(r, "anchor", anchor))
+    assert(v.result == "invalid")
+    assert(v.failed_step == 4)
+
+fn test_build_refuses_a_round_that_does_not_follow_t0() -> Unit:
+    assert(not is_ok(build_receipt(iching_request(), fixture_t0() + 3000, fixture_round())))
+
+fn test_edited_request_option_fails_step_5() -> Unit:
+    let r = built(tarot_request())
+    let request = json_get(r, "request")
+    let options = json_set(json_get(request, "options"), "count", json_text("4"))
+    let edited = json_set(r, "request", json_set(request, "options", options))
+    let v = verify_receipt(edited)
+    assert(v.result == "invalid")
+    assert(v.failed_step == 5)
+
+fn test_unknown_option_in_receipt_is_invalid_at_step_1() -> Unit:
+    let r = built(tarot_request())
+    let request = json_get(r, "request")
+    let options = json_set(json_get(request, "options"), "colour", json_text("red"))
+    let v = verify_receipt(json_set(r, "request", json_set(request, "options", options)))
+    assert(v.result == "invalid")
+    assert(v.failed_step == 1)
+
+fn test_unknown_receipt_sampler_or_registry_id_is_invalid_at_step_1() -> Unit:
+    let r = built(iching_request())
+    assert(verify_receipt(json_set(r, "receipt", json_text("lotcast/receipt/v9"))).failed_step == 1)
+    assert(verify_receipt(json_set(r, "sampler", json_text("lotcast/sampler/v9"))).failed_step == 1)
+    assert(verify_receipt(json_set(r, "registry", json_text("lotcast/registry/v9"))).failed_step == 1)
+
+fn test_garbage_receipt_is_invalid_not_a_crash() -> Unit:
+    let v = verify_receipt(json_object())
+    assert(v.result == "invalid")
+    assert(v.failed_step == 1)
+    assert(verify_receipt(json_int(5)).result == "invalid")
+
+fn test_question_commit_is_checked_when_supplied() -> Unit:
+    let commit = question_commit("Should I go?", salt_01_to_20())
+    let r = Request("iching", "coins", no_options(), 1, commit, ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
+    let receipt = built(r)
+    let good = verify_receipt_with_question(receipt, "Should I go?", salt_01_to_20())
+    assert(good.result == "verified-unanchored")
+    let wrong_salt = verify_receipt_with_question(receipt, "Should I go?", repeated(5, 32))
+    assert(wrong_salt.result == "invalid")
+    assert(wrong_salt.failed_step == 6)
+    let wrong_question = verify_receipt_with_question(receipt, "Should I stay?", salt_01_to_20())
+    assert(wrong_question.failed_step == 6)
+
+fn test_question_check_on_a_receipt_with_no_question_is_invalid_at_step_6() -> Unit:
+    let v = verify_receipt_with_question(built(iching_request()), "anything", salt_01_to_20())
+    assert(v.failed_step == 6)
+
+fn test_not_requested_drand_is_refused_at_build() -> Unit:
+    let r = Request("iching", "coins", no_options(), 0, bytes_from_ints([]), ["nist-beacon-2"], 0, repeated(7, 32), bytes_from_ints([]))
+    assert(not is_ok(build_receipt(r, fixture_t0(), fixture_round())))
+
+# ---- Review fixes ----
+
+fn set_in(r: Json, path: List[Text], value: Json) -> Json:
+    if len(path) == 1:
+        return json_set(r, path[0], value)
+    let inner = json_get(r, path[0])
+    var rest: List[Text] = []
+    var i = 1
+    while i < len(path):
+        set rest = list_push(rest, path[i])
+        set i = i + 1
+    return json_set(r, path[0], set_in(inner, rest, value))
+
+fn step_of(r: Json) -> Int:
+    return verify_receipt(r).failed_step
+
+# F5: reversal flags are paired with the cards in order (mixed flags)
+fn test_reversal_flags_pair_with_cards_in_order() -> Unit:
+    let k0 = stream_new(crypto_sha512(cat([text_bytes("lotcast/test/v1"), u64_bytes(0)])), 64)
+    let draw = unwrap(tarot_rws(k0, 4, false, true))
+    assert(card_ids(draw) == ["tarot:rws:major:18", "tarot:rws:wands:12", "tarot:rws:cups:10", "tarot:rws:major:3"])
+    assert(flags(draw) == [false, true, false, true])
+
+# F1: an unsigned subject key is refused by the builder and the verifier
+fn test_subject_key_is_refused_until_signatures_are_carried() -> Unit:
+    let r = Request("iching", "coins", no_options(), 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(7, 32), repeated(3, 32))
+    assert(not is_ok(build_receipt(r, fixture_t0(), fixture_round())))
+    let receipt = built(iching_request())
+    assert(step_of(set_in(receipt, ["request", "subject"], json_text(hex_encode(repeated(3, 32))))) == 1)
+
+# F2: the result says what it does not prove
+fn test_unanchored_detail_says_it_does_not_prove_the_order() -> Unit:
+    let v = verify_receipt(built(iching_request()))
+    assert(len(text_split(v.detail, "before")) > 1)
+    assert(len(text_split(v.detail, "not prove")) > 1)
+
+# F3: the verifier applies the builder's own checks, and nothing unchecked rides along
+fn test_verifier_refuses_what_the_builder_refuses() -> Unit:
+    let r = built(iching_request())
+    assert(step_of(set_in(r, ["request", "client_nonce"], json_text(""))) == 1)
+    assert(step_of(set_in(r, ["request", "not_before"], json_int(99))) == 1)
+    assert(step_of(set_in(r, ["request", "question", "mode"], json_text("tlock"))) == 1)
+
+fn test_a_question_commit_with_mode_none_is_refused() -> Unit:
+    let r = built(iching_request())
+    assert(step_of(set_in(r, ["request", "question", "commit"], json_text(hex_encode(repeated(1, 64))))) == 1)
+
+fn test_a_hash_question_needs_a_64_byte_commit() -> Unit:
+    let r = built(iching_request())
+    let one = set_in(r, ["request", "question", "mode"], json_text("hash"))
+    assert(step_of(set_in(one, ["request", "question", "commit"], json_text(hex_encode(repeated(1, 1))))) == 1)
+
+fn test_log_promise_anchor_g_and_attachments_must_be_empty() -> Unit:
+    let r = built(iching_request())
+    assert(step_of(set_in(r, ["log"], json_set(json_object(), "origin", json_text("x")))) == 1)
+    assert(step_of(set_in(r, ["promise"], json_text("note"))) == 1)
+    assert(step_of(set_in(r, ["anchor", "g"], json_int(12345))) == 1)
+    assert(step_of(set_in(r, ["attachments"], json_push(json_array(), json_text("x")))) == 1)
+
+# F4: a t0 before the chain's genesis has no first round to name
+fn test_t0_before_genesis_is_refused() -> Unit:
+    assert(not is_ok(build_receipt(iching_request(), 1692803366, fixture_round())))
+    let r = built(iching_request())
+    let v = verify_receipt(set_in(r, ["anchor", "t0"], json_int(1692803366)))
+    assert(v.failed_step == 4)
+    assert(len(text_split(v.detail, "genesis")) > 1)
+
+# F7: option names and values are exact; case is not folded
+fn test_option_names_and_values_are_case_sensitive() -> Unit:
+    let upper_name: Map[Text, Text] = {"Count": "3"}
+    let upper_value: Map[Text, Text] = {"reversals": "True"}
+    assert(error_code(run("tarot", "rws", upper_name)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("tarot", "rws", upper_value)) == "E_LOTCAST_OPTION")

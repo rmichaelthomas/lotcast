@@ -1,3 +1,5 @@
 /target
 .superpowers/
 /scratch/
+__pycache__/
+*.pyc

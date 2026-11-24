@@ -1,0 +1,126 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "src/lib.gu"
+
+# Statistical tests on the real stream (spec §7.2): chi-square against the exact odds, over seeds
+# SHA-512("lotcast/test/v1" ‖ u64(k)). Fixed seeds make every run reproducible. Run with
+# `guion test tests_statistical.gu`; it is not part of the per-commit run.
+#
+# DRAWS is 20000 here. The Guion VM is too slow for the spec's 10^7 draws per method; that scale is the
+# job of the Rust reference implementation of the stream (spec §7.3, a later step), which must match
+# this one byte for byte. The critical values are chi-square at a family-wise alpha of 0.001 split over
+# the five tests below, alpha = 0.0002 each:
+#   df 1: 13.8311   df 3: 19.6561   df 5: 24.1855   df 77: 128.7630
+
+fn main() -> Int:
+    return 0
+
+fn draws() -> Int:
+    return 20000
+
+fn fixed_stream(k: Int) -> Stream:
+    return stream_new(crypto_sha512(cat([text_bytes("lotcast/test/v1"), u64_bytes(k)])), 64)
+
+# sum over bins of (observed - expected)^2 / expected
+fn chi_square(observed: List[Int], expected: List[Float64]) -> Float64:
+    var total = 0.0
+    var i = 0
+    while i < len(observed):
+        let diff = int_to_float(observed[i]) - expected[i]
+        set total = total + diff * diff / expected[i]
+        set i = i + 1
+    return total
+
+fn zeros(n: Int) -> List[Int]:
+    var out: List[Int] = []
+    var i = 0
+    while i < n:
+        set out = list_push(out, 0)
+        set i = i + 1
+    return out
+
+fn bump(counts: List[Int], index: Int) -> List[Int]:
+    return list_set(counts, index, counts[index] + 1)
+
+fn scaled(probabilities: List[Float64], total: Int) -> List[Float64]:
+    var out: List[Float64] = []
+    for p in probabilities:
+        set out = list_push(out, p * int_to_float(total))
+    return out
+
+fn line_value_chi(yarrow: Bool, probabilities: List[Float64]) -> Float64:
+    var counts = zeros(4)
+    var k = 0
+    while k < draws():
+        var draw = iching_coins(fixed_stream(k))
+        if yarrow:
+            set draw = iching_yarrow(fixed_stream(k))
+        for v in draw.result.lines:
+            set counts = bump(counts, v - 6)
+        set k = k + 1
+    return chi_square(counts, scaled(probabilities, 6 * draws()))
+
+fn test_iching_coins_line_values_chi_square() -> Unit:
+    let stat = line_value_chi(false, [0.125, 0.375, 0.375, 0.125])
+    print(f"coins line values chi-square (df 3, critical 19.6561): {float_to_text(stat)}")
+    assert(stat < 19.6561)
+
+fn test_iching_yarrow_line_values_chi_square() -> Unit:
+    let stat = line_value_chi(true, [0.0625, 0.3125, 0.4375, 0.1875])
+    print(f"yarrow line values chi-square (df 3, critical 19.6561): {float_to_text(stat)}")
+    assert(stat < 19.6561)
+
+# Number of changing lines among six, each changing with probability 1/4: Binomial(6, 1/4), with 5 and
+# 6 changing lines merged into one bin.
+fn test_iching_coins_changing_line_count_chi_square() -> Unit:
+    var counts = zeros(6)
+    var k = 0
+    while k < draws():
+        let n = len(iching_coins(fixed_stream(k)).result.changing)
+        if n >= 5:
+            set counts = bump(counts, 5)
+        else:
+            set counts = bump(counts, n)
+        set k = k + 1
+    let probabilities = [0.177978515625, 0.35595703125, 0.296630859375, 0.1318359375, 0.032958984375, 0.004638671875]
+    let stat = chi_square(counts, scaled(probabilities, draws()))
+    print(f"coins changing-line count chi-square (df 5, critical 24.1855): {float_to_text(stat)}")
+    assert(stat < 24.1855)
+
+fn test_tarot_first_card_chi_square() -> Unit:
+    var counts = zeros(78)
+    var k = 0
+    while k < draws():
+        let draw = unwrap(tarot_rws(fixed_stream(k), 1, false, false))
+        var at = 0
+        let deck = rws_deck()
+        while deck[at] != draw.cards[0].id:
+            set at = at + 1
+        set counts = bump(counts, at)
+        set k = k + 1
+    var expected: List[Float64] = []
+    var i = 0
+    while i < 78:
+        set expected = list_push(expected, int_to_float(draws()) / 78.0)
+        set i = i + 1
+    let stat = chi_square(counts, expected)
+    print(f"tarot first card chi-square (df 77, critical 128.7630): {float_to_text(stat)}")
+    assert(stat < 128.763)
+
+fn test_tarot_reversal_rate_chi_square() -> Unit:
+    var counts = zeros(2)
+    var k = 0
+    while k < draws():
+        let draw = unwrap(tarot_rws(fixed_stream(k), 3, false, true))
+        for card in draw.cards:
+            if card.reversed:
+                set counts = bump(counts, 1)
+            else:
+                set counts = bump(counts, 0)
+        set k = k + 1
+    let half = int_to_float(3 * draws()) / 2.0
+    let stat = chi_square(counts, [half, half])
+    print(f"tarot reversal chi-square (df 1, critical 13.8311): {float_to_text(stat)}")
+    assert(stat < 13.8311)

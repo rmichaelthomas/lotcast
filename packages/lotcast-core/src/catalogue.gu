@@ -1,0 +1,124 @@
+import "std:types"
+import "std:json"
+import "std:text"
+import "stream.gu"
+import "iching.gu"
+import "tarot.gu"
+
+# The method catalogue and the dispatcher (spec §5.1). A method's `audit` is where its tradition
+# audit stands (§6); an `audit-pending` method refuses requests and consumes no stream.
+
+pub record Method:
+    tradition: Text
+    method: Text
+    status: Text
+    audit: Text
+    odds: Text
+
+pub fn catalogue() -> List[Method]:
+    var out: List[Method] = []
+    set out = list_push(out, Method("iching", "coins", "ready", "pending", "6:7:8:9 = 1/8 : 3/8 : 3/8 : 1/8; a line changes with probability 1/4"))
+    set out = list_push(out, Method("iching", "yarrow", "ready", "odds-unconfirmed", "6:7:8:9 = 1/16 : 5/16 : 7/16 : 3/16; a line changes with probability 1/4, old yang three times as likely as old yin"))
+    set out = list_push(out, Method("tarot", "rws", "ready", "pending", "each card in each position 1/78 (1/22 majors only); reversed 1/2"))
+    set out = list_push(out, Method("tarot", "marseille", "audit-pending", "pending", "ids fixed at audit"))
+    set out = list_push(out, Method("tarot", "thoth", "audit-pending", "pending", "ids fixed at audit"))
+    return out
+
+fn option_error(message: Text) -> StdError:
+    return std_error("E_LOTCAST_OPTION", message)
+
+# A non-negative integer in its one canonical spelling: digits only, no sign, no leading zero.
+fn parse_count(text: Text) -> Result[Int, StdError]:
+    let chars = text_chars(text)
+    if len(chars) == 0 or len(chars) > 9:
+        return Err(option_error("count must be a whole number of 1 to 9 digits"))
+    if len(chars) > 1 and chars[0] == "0":
+        return Err(option_error("count must be written without leading zeros"))
+    var value = 0
+    for c in chars:
+        let digit = digit_value(c)
+        if digit < 0:
+            return Err(option_error("count must be a whole number"))
+        set value = value * 10 + digit
+    return Ok(value)
+
+fn digit_value(c: Text) -> Int:
+    var digits = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+    var i = 0
+    while i < 10:
+        if digits[i] == c:
+            return i
+        set i = i + 1
+    return -1
+
+fn parse_flag(name: Text, text: Text) -> Result[Bool, StdError]:
+    if text == "true":
+        return Ok(true)
+    if text == "false":
+        return Ok(false)
+    return Err(option_error(name + " must be true or false"))
+
+# Refuses any option not in `allowed`.
+fn check_names(options: Map[Text, Text], allowed: List[Text]) -> Result[Bool, StdError]:
+    for key in options:
+        var known = false
+        for name in allowed:
+            if name == key:
+                set known = true
+        if not known:
+            return Err(option_error("unknown option: " + key))
+    return Ok(true)
+
+fn iching_json(r: IChing) -> Json:
+    var lines = json_array()
+    for v in r.lines:
+        set lines = json_push(lines, json_int(v))
+    var changing = json_array()
+    for c in r.changing:
+        set changing = json_push(changing, json_int(c))
+    var relating = json_null()
+    match r.relating:
+        Some(n):
+            set relating = json_int(n)
+        None:
+            set relating = json_null()
+    return json_set(json_set(json_set(json_set(json_object(), "lines", lines), "hexagram", json_int(r.hexagram)), "changing", changing), "relating", relating)
+
+fn tarot_json(draw: TarotDraw) -> Json:
+    var cards = json_array()
+    for card in draw.cards:
+        set cards = json_push(cards, json_set(json_set(json_object(), "id", json_text(card.id)), "reversed", json_bool(card.reversed)))
+    return json_set(json_object(), "cards", cards)
+
+# Runs one method on a stream and returns its outcome as JSON.
+pub fn run_method(s: Stream, tradition: Text, method: Text, options: Map[Text, Text]) -> Result[Json, StdError]:
+    for m in catalogue():
+        if m.tradition == tradition and m.method == method and m.status == "audit-pending":
+            return Err(std_error("E_LOTCAST_AUDIT_PENDING", tradition + "/" + method + " has not been audited yet and refuses requests"))
+    if tradition == "iching" and (method == "coins" or method == "yarrow"):
+        let no_names: List[Text] = []
+        let checked = check_names(options, no_names)?
+        if method == "coins":
+            return Ok(iching_json(iching_coins(s).result))
+        return Ok(iching_json(iching_yarrow(s).result))
+    if tradition == "tarot" and method == "rws":
+        let checked = check_names(options, ["count", "majors_only", "reversals"])?
+        var count = 1
+        if map_has(options, "count"):
+            set count = parse_count(options["count"])?
+        var majors_only = false
+        if map_has(options, "majors_only"):
+            set majors_only = parse_flag("majors_only", options["majors_only"])?
+        var reversals = false
+        if map_has(options, "reversals"):
+            set reversals = parse_flag("reversals", options["reversals"])?
+        let draw = tarot_rws(s, count, majors_only, reversals)?
+        return Ok(tarot_json(draw))
+    return Err(std_error("E_LOTCAST_METHOD", "unknown method: " + tradition + "/" + method))
+
+# The option names a method accepts (empty for an unknown method).
+pub fn option_names(tradition: Text, method: Text) -> List[Text]:
+    var names: List[Text] = []
+    if tradition == "tarot" and method == "rws":
+        set names = ["count", "majors_only", "reversals"]
+    return names

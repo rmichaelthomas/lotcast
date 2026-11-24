@@ -1,0 +1,33 @@
+[approved-capabilities.beacons]
+clock = true
+network = [
+    "api.drand.sh",
+    "beacon.nist.gov",
+    "drand.cloudflare.com",
+    "random.colorado.edu",
+]
+
+[clock]
+enabled = true
+
+[dependencies.beacons]
+path = "../../../guion/packages/beacons"
+version = "0.3.0"
+
+[package]
+entry = "src/lib.gu"
+exports = [
+    "src/lib.gu",
+    "src/encode.gu",
+    "src/stream.gu",
+    "src/primitives.gu",
+    "src/entry.gu",
+    "src/seed.gu",
+    "src/registry_data.gu",
+    "src/iching.gu",
+    "src/tarot.gu",
+    "src/catalogue.gu",
+    "src/receipt.gu",
+]
+name = "lotcast-core"
+version = "0.1.0"

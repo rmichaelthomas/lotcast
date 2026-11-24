@@ -1,0 +1,46 @@
+import "std:types"
+import "std:encoding"
+import "std:json"
+import "std:text"
+import "src/lib.gu"
+
+# Re-checks a receipt offline. It reads the file, recomputes the entry, the seed and the outcome, and
+# checks the drand round's BLS signature.
+#
+#   guion run verify_receipt.gu RECEIPT.json [--question TEXT --salt HEX]
+#
+# Prints the result on the first line: verified-unanchored or invalid (receipts with a log can also
+# give verified or verified-pending-live once the log exists). For
+# invalid it names the failing step (1 entry, 4 sources, 5 outcome, 6 question) and why; otherwise
+# it lists the steps this receipt does not cover. Exit 0 when verified, 1 when invalid, 2 when the
+# file cannot be read.
+
+fn main() -> Int:
+    let all = args()
+    if len(all) != 1 and len(all) != 5:
+        eprint("usage: verify_receipt.gu RECEIPT.json [--question TEXT --salt HEX]")
+        return 2
+    let body = read_text(all[0])
+    if not is_ok(body):
+        eprint("cannot read " + all[0])
+        return 2
+    let parsed = json_parse(unwrap(body))
+    if not is_ok(parsed):
+        eprint(all[0] + " is not JSON")
+        return 2
+    var verdict = verify_receipt(unwrap(parsed))
+    if len(all) == 5:
+        if all[1] != "--question" or all[3] != "--salt":
+            eprint("usage: verify_receipt.gu RECEIPT.json [--question TEXT --salt HEX]")
+            return 2
+        let salt = hex_decode(all[4])
+        if not is_ok(salt):
+            eprint("the salt is not hex")
+            return 2
+        set verdict = verify_receipt_with_question(unwrap(parsed), all[2], unwrap(salt))
+    print(verdict.result)
+    if verdict.result == "invalid":
+        print("failed step " + int_to_text(verdict.failed_step) + ": " + verdict.detail)
+        return 1
+    print(verdict.detail)
+    return 0

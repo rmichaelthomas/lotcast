@@ -39,7 +39,7 @@
 2. A stream asked for more than one block of words (more than 8 `uniform` calls): the block counter advances. Tested in Task 2.
 3. A receipt whose `outcome` was edited, whose drand `randomness` was edited, or whose round is not `drand_round_at(t0)+1`: `invalid` with the failing step named. Tested in Task 7.
 4. Tarot `count` of 0, 1, 78, 79 and `majors_only` with `count` over 22: a clear error for out-of-range, never a short or repeated draw. Tested in Task 5.
-5. Options in a different order or with different case in the request must give the same `entry_hash` (canonical sorted `key=value` lines) and an unknown option is an error, not ignored. Tested in Task 3.
+5. Options in a different order in the request give the same `entry_hash` (canonical sorted `key=value` lines). Names and values are exact: a different case (`Count`, `True`) is an unknown option or a bad value, an error, never folded or ignored. Tested in Task 3.
 
 ## File structure
 

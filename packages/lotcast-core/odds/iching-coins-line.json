@@ -1,0 +1,24 @@
+{
+ "method": "iching/coins",
+ "feature": "line value, one line (exact rationals)",
+ "6": {
+  "num": 1,
+  "den": 8
+ },
+ "7": {
+  "num": 3,
+  "den": 8
+ },
+ "8": {
+  "num": 3,
+  "den": 8
+ },
+ "9": {
+  "num": 1,
+  "den": 8
+ },
+ "changing": {
+  "num": 1,
+  "den": 4
+ }
+}

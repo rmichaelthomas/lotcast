@@ -1,0 +1,37 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "encode.gu"
+
+# The seed (spec §4.3). Status per source: 1 present, 0 absent, 2 not requested.
+
+pub record SourceValue:
+    id: Text
+    status: Int
+    value: Bytes
+
+fn seed_error(message: Text) -> StdError:
+    return std_error("E_LOTCAST_SEED", message)
+
+fn source_order() -> List[Text]:
+    return ["drand-quicknet", "nist-beacon-2", "curby-rng", "curby-q"]
+
+# `checkpoint_hash` is SHA-512 of the signed checkpoint note, or empty for an unanchored draw (one
+# with no log yet). `sources` must be exactly the four ids in the fixed order.
+pub fn seed(entry_hash: Bytes, checkpoint_hash: Bytes, sources: List[SourceValue]) -> Result[Bytes, StdError]:
+    let order = source_order()
+    if len(sources) != len(order):
+        return Err(seed_error("the seed takes exactly the four sources"))
+    var parts: List[Bytes] = [text_bytes("lotcast/seed/v1"), lp(entry_hash), lp(checkpoint_hash)]
+    var i = 0
+    while i < len(order):
+        let source = sources[i]
+        if source.id != order[i]:
+            return Err(seed_error("sources are out of order: expected " + order[i] + " at position " + int_to_text(i)))
+        if source.status < 0 or source.status > 2:
+            return Err(seed_error("source status must be 0, 1 or 2"))
+        set parts = list_push(parts, lp(text_bytes(source.id)))
+        set parts = list_push(parts, u8_bytes(source.status))
+        set parts = list_push(parts, lp(source.value))
+        set i = i + 1
+    return Ok(crypto_sha512(cat(parts)))

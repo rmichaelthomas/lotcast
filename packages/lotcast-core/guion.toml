@@ -7,13 +7,6 @@ network = [
     "random.colorado.edu",
 ]
 
-[capabilities]
-clock = true
-network = [
-    "api.drand.sh",
-    "drand.cloudflare.com",
-]
-
 [clock]
 enabled = true
 

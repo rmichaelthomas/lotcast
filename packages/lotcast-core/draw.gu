@@ -1,0 +1,96 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:json"
+import "std:text"
+import "std:process"
+import "pkg:beacons/src/lib.gu"
+import "src/lib.gu"
+
+# Draws once from the next real drand quicknet round and prints the receipt (JSON) to stdout.
+#
+#   guion run --allow-http-host api.drand.sh --allow-http-host drand.cloudflare.com --allow-clock \
+#       draw.gu TRADITION METHOD [KEY=VALUE ...] [--question TEXT]
+#
+# Examples:  draw.gu iching yarrow
+#            draw.gu tarot rws count=3 reversals=true --question "Should I go?"
+#
+# With --question the question never leaves this machine: the receipt holds only its SHA-512
+# commitment, and the 32-byte salt is printed to stderr as `salt=<hex>`; keep it to open the
+# commitment later (verify_receipt.gu --question TEXT --salt HEX).
+#
+# This version has no log or timestamps, so the receipt is unanchored: it shows the outcome follows
+# from a real drand round and the request, not that the request was fixed before that round.
+
+fn fail(message: Text) -> Int:
+    eprint(message)
+    return 1
+
+# KEY=VALUE -> [key, value], or an empty list when there is no `=`.
+fn split_option(arg: Text) -> List[Text]:
+    let at = text_find(arg, "=", 0)
+    let none: List[Text] = []
+    if at < 0:
+        return none
+    return [text_slice(arg, 0, at), text_slice(arg, at + 1, len(arg))]
+
+# Waits for `round` to be published (a few seconds after its time) and fetches it.
+fn fetch_when_ready(chain: DrandChain, round: Int) -> Result[DrandRound, StdError]:
+    var attempts = 0
+    while attempts < 40:
+        let published = drand_round_time(chain, round)
+        if unix_time_ms() // 1000 >= published:
+            let got = drand_fetch(chain, round)
+            if is_ok(got):
+                return got
+        sleep_ms(500)
+        set attempts = attempts + 1
+    return drand_fetch(chain, round)
+
+fn main() -> Int:
+    let all = args()
+    if len(all) < 2:
+        return fail("usage: draw.gu TRADITION METHOD [KEY=VALUE ...] [--question TEXT]")
+    let tradition = all[0]
+    let method = all[1]
+    var options: Map[Text, Text] = {}
+    var question = ""
+    var asked = false
+    var i = 2
+    while i < len(all):
+        if all[i] == "--question":
+            if i + 1 >= len(all):
+                return fail("--question needs the question text")
+            set question = all[i + 1]
+            set asked = true
+            set i = i + 2
+        else:
+            let pair = split_option(all[i])
+            if len(pair) != 2:
+                return fail("unrecognised argument: " + all[i])
+            set options = map_set(options, pair[0], pair[1])
+            set i = i + 1
+    let nonce = crypto_random_bytes(32)
+    let salt = crypto_random_bytes(32)
+    if not is_ok(nonce) or not is_ok(salt):
+        return fail("no secure randomness available")
+    var mode = 0
+    var commit = bytes_from_ints([])
+    if asked:
+        set mode = 1
+        set commit = question_commit(question, unwrap(salt))
+    let request = Request(tradition, method, options, mode, commit, ["drand-quicknet"], 0, unwrap(nonce), bytes_from_ints([]))
+    let chain = drand_quicknet()
+    let t0 = unix_time_ms() // 1000
+    let round = fetch_when_ready(chain, drand_round_at(chain, t0) + 1)
+    if not is_ok(round):
+        return fail("could not fetch the drand round")
+    let receipt = build_receipt(request, t0, unwrap(round))
+    match receipt:
+        Ok(document):
+            if asked:
+                eprint("salt=" + hex_encode(unwrap(salt)))
+            print(json_stringify(document))
+            return 0
+        Err(problem):
+            return fail(problem.code + ": " + problem.message)

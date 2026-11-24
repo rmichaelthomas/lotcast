@@ -2,6 +2,7 @@ import "std:types"
 import "std:crypto"
 import "std:encoding"
 import "std:text"
+import "std:json"
 import "src/lib.gu"
 
 fn main() -> Int:
@@ -345,3 +346,81 @@ fn test_reversals_are_drawn_after_the_shuffle() -> Unit:
     let flipped = unwrap(tarot_rws(stream_new(zero_seed(), 64), 4, false, true))
     assert(card_ids(plain) == card_ids(flipped))
     assert(flags(plain) == [false, false, false, false])
+
+# ---- Catalogue and options ----
+
+fn error_code(result: Result[Json, StdError]) -> Text:
+    match result:
+        Ok(value):
+            return ""
+        Err(problem):
+            return problem.code
+
+fn run(tradition: Text, method: Text, options: Map[Text, Text]) -> Result[Json, StdError]:
+    return run_method(stream_new(zero_seed(), 64), tradition, method, options)
+
+fn no_options() -> Map[Text, Text]:
+    let none: Map[Text, Text] = {}
+    return none
+
+fn test_unknown_option_is_an_error() -> Unit:
+    let bad: Map[Text, Text] = {"colour": "red"}
+    assert(error_code(run("tarot", "rws", bad)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("iching", "coins", bad)) == "E_LOTCAST_OPTION")
+
+fn test_option_values_are_validated() -> Unit:
+    let words: Map[Text, Text] = {"count": "three"}
+    let negative: Map[Text, Text] = {"count": "-1"}
+    let padded: Map[Text, Text] = {"count": "03"}
+    let empty: Map[Text, Text] = {"count": ""}
+    let bad_flag: Map[Text, Text] = {"reversals": "yes"}
+    assert(error_code(run("tarot", "rws", words)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("tarot", "rws", negative)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("tarot", "rws", padded)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("tarot", "rws", empty)) == "E_LOTCAST_OPTION")
+    assert(error_code(run("tarot", "rws", bad_flag)) == "E_LOTCAST_OPTION")
+
+fn test_count_out_of_range_through_run_method() -> Unit:
+    let zero: Map[Text, Text] = {"count": "0"}
+    let many: Map[Text, Text] = {"count": "79"}
+    assert(error_code(run("tarot", "rws", zero)) == "E_LOTCAST_COUNT")
+    assert(error_code(run("tarot", "rws", many)) == "E_LOTCAST_COUNT")
+
+fn test_unknown_tradition_or_method_is_an_error() -> Unit:
+    assert(error_code(run("iching", "tortoise", no_options())) == "E_LOTCAST_METHOD")
+    assert(error_code(run("astrology", "natal", no_options())) == "E_LOTCAST_METHOD")
+
+fn test_marseille_and_thoth_refuse() -> Unit:
+    assert(error_code(run("tarot", "marseille", no_options())) == "E_LOTCAST_AUDIT_PENDING")
+    assert(error_code(run("tarot", "thoth", no_options())) == "E_LOTCAST_AUDIT_PENDING")
+
+fn test_defaults_applied_and_drawn() -> Unit:
+    let out = unwrap(run("tarot", "rws", no_options()))
+    assert(json_stringify(json_get(out, "cards")) == "[{\"id\":\"tarot:rws:cups:2\",\"reversed\":false}]")
+
+fn test_outcome_json_shape_iching() -> Unit:
+    let out = unwrap(run("iching", "coins", no_options()))
+    assert(json_stringify(json_get(out, "lines")) == "[7,8,8,7,8,7]")
+    assert(json_get(out, "hexagram") == json_int(21))
+    assert(json_stringify(json_get(out, "changing")) == "[]")
+    assert(json_get(out, "relating") == json_null())
+    let h = unwrap(entry_hash(request_a()))
+    let seeded = unwrap(run_method(stream_new(unwrap(seed(h, bytes_from_ints([]), drand_only())), 64), "iching", "coins", no_options()))
+    assert(json_stringify(json_get(seeded, "changing")) == "[1,2,3]")
+    assert(json_get(seeded, "relating") == json_int(18))
+
+fn test_outcome_json_shape_tarot() -> Unit:
+    let options: Map[Text, Text] = {"count": "3", "reversals": "true"}
+    let out = unwrap(run("tarot", "rws", options))
+    assert(json_stringify(json_get(out, "cards")) == "[{\"id\":\"tarot:rws:cups:2\",\"reversed\":false},{\"id\":\"tarot:rws:cups:7\",\"reversed\":false},{\"id\":\"tarot:rws:swords:11\",\"reversed\":false}]")
+
+fn test_catalogue_lists_methods_with_status() -> Unit:
+    var ready = 0
+    var pending = 0
+    for m in catalogue():
+        if m.status == "ready":
+            set ready = ready + 1
+        if m.status == "audit-pending":
+            set pending = pending + 1
+    assert(ready == 3)
+    assert(pending == 2)

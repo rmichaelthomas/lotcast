@@ -20,7 +20,7 @@ fn main() -> Int:
 fn draws() -> Int:
     return 20000
 
-fn fixed_stream(k: Int) -> Stream:
+fn fixed_stream(k: Int) -> WordStream:
     return stream_new(crypto_sha512(cat([text_bytes("lotcast/test/v1"), u64_bytes(k)])), 64)
 
 # sum over bins of (observed - expected)^2 / expected

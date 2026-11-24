@@ -13,11 +13,11 @@ pub record TarotCard:
 
 pub record TarotDraw:
     cards: List[TarotCard]
-    stream: Stream
+    stream: WordStream
 
 # The sampler on any deck (the exact-odds tests run it on 8 cards, the same code path). `count` must
 # already be in range.
-pub fn tarot_draw(s: Stream, deck: List[Text], count: Int, reversals: Bool) -> TarotDraw:
+pub fn tarot_draw(s: WordStream, deck: List[Text], count: Int, reversals: Bool) -> TarotDraw:
     let shuffled = shuffle(s, len(deck))
     var current = shuffled.stream
     var cards: List[TarotCard] = []
@@ -40,7 +40,7 @@ fn majors() -> List[Text]:
         set i = i + 1
     return out
 
-pub fn tarot_rws(s: Stream, count: Int, majors_only: Bool, reversals: Bool) -> Result[TarotDraw, StdError]:
+pub fn tarot_rws(s: WordStream, count: Int, majors_only: Bool, reversals: Bool) -> Result[TarotDraw, StdError]:
     var deck = rws_deck()
     if majors_only:
         set deck = majors()

@@ -75,7 +75,7 @@ fn test_weighted_exact() -> Unit:
 # modulus of every primitive call it made).
 pub record Traced:
     key: Text
-    stream: Stream
+    stream: WordStream
 
 # One enumerated leaf: its outcome and its exact probability 1/den.
 pub record Leaf:
@@ -84,7 +84,7 @@ pub record Leaf:
 
 # Runs `run` over every sequence of primitive results (tape mode). Each leaf's probability is
 # 1/(product of the moduli on its path), exact.
-fn enumerate(run: fn(Stream) -> Traced) -> List[Leaf]:
+fn enumerate(run: fn(WordStream) -> Traced) -> List[Leaf]:
     var leaves: List[Leaf] = []
     var queue: List[List[Int]] = [[]]
     var at = 0
@@ -145,8 +145,8 @@ fn factorial(n: Int) -> Int:
         set k = k + 1
     return f
 
-fn shuffle_run(n: Int) -> fn(Stream) -> Traced:
-    fn run(s: Stream) -> Traced:
+fn shuffle_run(n: Int) -> fn(WordStream) -> Traced:
+    fn run(s: WordStream) -> Traced:
         let d = shuffle(s, n)
         return Traced(join_ints(d.values), d.stream)
     return run
@@ -169,8 +169,8 @@ fn test_shuffle_every_permutation_equally_n_up_to_8() -> Unit:
 
 # ---- I Ching lines, against the odds spec files ----
 
-fn line_run(yarrow: Bool) -> fn(Stream) -> Traced:
-    fn run(s: Stream) -> Traced:
+fn line_run(yarrow: Bool) -> fn(WordStream) -> Traced:
+    fn run(s: WordStream) -> Traced:
         var d = DrawInt(0, s)
         if yarrow:
             set d = yarrow_line(s)
@@ -242,7 +242,7 @@ fn tarot_key(draw: TarotDraw) -> Text:
         set out = out + card.id + mark + ","
     return out
 
-fn tarot_small_run(s: Stream) -> Traced:
+fn tarot_small_run(s: WordStream) -> Traced:
     let draw = tarot_draw(s, small_deck(), 3, true)
     return Traced(tarot_key(draw), draw.stream)
 

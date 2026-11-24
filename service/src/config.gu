@@ -15,6 +15,7 @@ pub record Config:
     origin: Text
     workers: Int
     trust_proxy: Int
+    registry_file: Text
 
 fn config_error(message: Text) -> StdError:
     return std_error("E_CONFIG", message)
@@ -36,6 +37,7 @@ pub fn config_from_args(args: List[Text], env_key: Bool) -> Result[Config, StdEr
     var origin = "lotcast.local/log"
     var workers = 8
     var trust_proxy = 0
+    var registry_file = "registry/lotcast-registry-v1.json"
     var i = 0
     while i < len(args):
         let name = args[i]
@@ -69,7 +71,10 @@ pub fn config_from_args(args: List[Text], env_key: Bool) -> Result[Config, StdEr
                                         if name == "--trust-proxy":
                                             set trust_proxy = int_flag(name, value, 0, 5)?
                                         else:
-                                            return Err(config_error("unknown flag: " + name))
+                                            if name == "--registry":
+                                                set registry_file = value
+                                            else:
+                                                return Err(config_error("unknown flag: " + name))
         set i = i + 2
     if data_dir == "":
         return Err(config_error("--data-dir is required"))
@@ -77,4 +82,4 @@ pub fn config_from_args(args: List[Text], env_key: Bool) -> Result[Config, StdEr
         return Err(config_error("give the operator key by --key-file or by LOTCAST_OPERATOR_KEY, not both"))
     if key_file == "" and not env_key:
         return Err(config_error("the operator key is required: --key-file FILE or LOTCAST_OPERATOR_KEY"))
-    return Ok(Config(host, port, data_dir, key_file, epoch_seconds, stamp_budget, origin, workers, trust_proxy))
+    return Ok(Config(host, port, data_dir, key_file, epoch_seconds, stamp_budget, origin, workers, trust_proxy, registry_file))

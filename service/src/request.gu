@@ -125,7 +125,7 @@ fn parse_not_before(body: Json, now: Int) -> Result[Int, ApiError]:
     return Ok(unwrap(r))
 
 # Checks a request body and returns the entry the log will hold. `now` is unix seconds.
-pub fn parse_draw_request(body_bytes: Bytes, now: Int) -> Result[Request, ApiError]:
+pub fn parse_draw_request(body_bytes: Bytes, now: Int) -> Result[DrawRequest, ApiError]:
     if len(body_bytes) > max_body_bytes():
         return Err(ApiError(413, "E_TOO_LARGE", "the request body is limited to 65536 bytes"))
     let text = encoding_utf8_decode(body_bytes)
@@ -160,7 +160,7 @@ pub fn parse_draw_request(body_bytes: Bytes, now: Int) -> Result[Request, ApiErr
     if json_has(body, "commitment"):
         set mode = 1
         set commit = hex_field(body, "commitment", 64)?
-    return Ok(Request(tradition, method, options, mode, commit, sources, not_before, nonce, bytes_from_ints([])))
+    return Ok(DrawRequest(tradition, method, options, mode, commit, sources, not_before, nonce, bytes_from_ints([])))
 
 # The keys of a JSON object. Guion has no key listing, so this reads them from the compact
 # serialisation: a string that follows `{` or `,` at depth 1 is a key.

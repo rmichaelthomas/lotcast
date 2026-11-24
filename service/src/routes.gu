@@ -1,0 +1,189 @@
+import "std:types"
+import "std:encoding"
+import "std:fs"
+import "std:http_response"
+import "std:http_static"
+import "std:json"
+import "std:text"
+import "pkg:web/src/lib.gu"
+import "config.gu"
+import "request.gu"
+import "store.gu"
+import "api.gu"
+import "limits.gu"
+
+# The HTTP surface (spec 8.1). The service's settings reach the handlers as request headers named
+# `x-lotcast-*` set by a first layer (which also deletes any such header a client sent), because a
+# handler is a plain function and captures nothing.
+
+fn header_of(request: Request, name: Text) -> Text:
+    match request_header(request, name):
+        Some(value):
+            return value
+        None:
+            return ""
+
+fn json_response(status: Int, body: Json) -> Response:
+    let plain = response_text(status, json_stringify(body))
+    match response_set_header(plain, "Content-Type", "application/json; charset=utf-8"):
+        Ok(typed):
+            return typed
+        Err(ignored):
+            return plain
+
+fn error_response(e: ApiError) -> Response:
+    return json_response(e.status, api_error_json(e))
+
+fn store_of(request: Request) -> Store:
+    return Store(header_of(request, "x-lotcast-data"))
+
+fn int_of(text: Text, fallback: Int) -> Int:
+    let parsed = text_parse_int(text)
+    if is_ok(parsed):
+        return unwrap(parsed)
+    return fallback
+
+fn now_seconds() -> Int:
+    return unix_time_ms() // 1000
+
+# ---------------------------------------------------------------- handlers
+
+fn h_traditions(request: Request) -> Result[Response, HttpFailure]:
+    return Ok(json_response(200, api_traditions()))
+
+fn h_registry(request: Request) -> Result[Response, HttpFailure]:
+    match api_registry(header_of(request, "x-lotcast-registry")):
+        Ok(doc):
+            return Ok(json_response(200, doc))
+        Err(e):
+            return Ok(error_response(e))
+
+fn h_sources(request: Request) -> Result[Response, HttpFailure]:
+    return Ok(json_response(200, api_sources(store_of(request))))
+
+fn h_post_draw(request: Request) -> Result[Response, HttpFailure]:
+    let store = store_of(request)
+    let now = now_seconds()
+    let key = client_key(header_of(request, "x-forwarded-for"), int_of(header_of(request, "x-lotcast-trust"), 0))
+    if not rate_hit(store, key, now, 60):
+        let limited = error_response(ApiError(429, "E_RATE", "at most 60 draws per minute"))
+        match response_set_header(limited, "Retry-After", "60"):
+            Ok(with_header):
+                return Ok(with_header)
+            Err(ignored):
+                return Ok(limited)
+    match api_submit_start(store, request.body, now):
+        Err(e):
+            return Ok(error_response(e))
+        Ok(id):
+            match api_wait_draw(store, id, int_of(header_of(request, "x-lotcast-wait"), 6000)):
+                Err(e):
+                    return Ok(error_response(e))
+                Ok(view):
+                    if json_as_text(json_get(view, "status")) == "complete":
+                        return Ok(json_response(200, view))
+                    return Ok(json_response(202, view))
+
+fn h_get_draw(request: Request) -> Result[Response, HttpFailure]:
+    match path_param(request, "id"):
+        None:
+            return Ok(error_response(ApiError(404, "E_NOT_FOUND", "no such draw")))
+        Some(id):
+            match api_draw(store_of(request), id):
+                Ok(view):
+                    return Ok(json_response(200, view))
+                Err(e):
+                    return Ok(error_response(e))
+
+fn h_get_receipt(request: Request) -> Result[Response, HttpFailure]:
+    match path_param(request, "id"):
+        None:
+            return Ok(error_response(ApiError(404, "E_NOT_FOUND", "no such draw")))
+        Some(id):
+            match api_receipt(store_of(request), id):
+                Ok(receipt):
+                    return Ok(json_response(200, receipt))
+                Err(e):
+                    return Ok(error_response(e))
+
+fn operator_key_of(request: Request) -> Bytes:
+    let body = read_text(header_of(request, "x-lotcast-data") + "/state/operator_key.hex")
+    if not is_ok(body):
+        return bytes_from_ints([])
+    let decoded = hex_decode(text_trim(unwrap(body)))
+    if not is_ok(decoded):
+        return bytes_from_ints([])
+    return unwrap(decoded)
+
+fn h_verify(request: Request) -> Result[Response, HttpFailure]:
+    match api_verify(request.body, operator_key_of(request)):
+        Ok(out):
+            return Ok(json_response(200, out))
+        Err(e):
+            return Ok(error_response(e))
+
+# ---------------------------------------------------------------- the log, as static files
+
+fn log_path_ok(rest: Text) -> Bool:
+    let segments = text_split(rest, "/")
+    if len(segments) == 0 or (segments[0] != "checkpoint" and segments[0] != "tile"):
+        return false
+    for s in segments:
+        if s == "" or text_find(s, "..", 0) >= 0 or text_find(s, "\\", 0) >= 0 or text_find(s, "%", 0) >= 0:
+            return false
+    return true
+
+fn serve_log(request: Request) -> Response:
+    let rest = text_slice(request.path, len("/v1/log/"), len(request.path))
+    if not log_path_ok(rest):
+        return error_response(ApiError(404, "E_NOT_FOUND", "no such log file"))
+    let inner = Request(request.method, "/" + rest, request.query, request.headers, request.body, request.params)
+    match static_serve(inner, header_of(request, "x-lotcast-data") + "/log"):
+        Err(failure):
+            return error_response(ApiError(failure.status, "E_NOT_FOUND", "no such log file"))
+        Ok(response):
+            if rest == "checkpoint":
+                match response_set_header(response, "Content-Type", "text/plain; charset=utf-8"):
+                    Ok(typed):
+                        match response_set_header(typed, "Cache-Control", "no-cache"):
+                            Ok(fresh):
+                                return fresh
+                            Err(ignored):
+                                return typed
+                    Err(ignored):
+                        return response
+            return response
+
+# ---------------------------------------------------------------- layers
+
+fn is_internal(h: Header) -> Bool:
+    return len(h.name) >= 10 and text_casefold(text_slice(h.name, 0, 10)) == "x-lotcast-"
+
+# Sets the service's settings as headers (dropping any the client sent) and answers /v1/log/ itself.
+fn before(config: Map[Text, Text], request: Request) -> Result[Request, Response]:
+    var headers: List[Header] = []
+    for h in request.headers:
+        if not is_internal(h):
+            set headers = list_push(headers, h)
+    for name in config:
+        let made = header_new(name, config[name])
+        if is_ok(made):
+            set headers = list_push(headers, unwrap(made))
+    let fixed = Request(request.method, request.path, request.query, headers, request.body, request.params)
+    if len(fixed.path) > len("/v1/log/") and text_slice(fixed.path, 0, len("/v1/log/")) == "/v1/log/":
+        return Err(serve_log(fixed))
+    return Ok(fixed)
+
+fn after(config: Map[Text, Text], request: Request, response: Response) -> Result[Response, HttpFailure]:
+    return response_set_header(response, "Access-Control-Allow-Origin", "*")
+
+# The whole application for a configuration. `wait_ms` is how long POST /v1/draws waits for the
+# writer to log the request before answering 503.
+pub fn app_build(cfg: Config, wait_ms: Int) -> Result[App, HttpFailure]:
+    let made = router([route("GET", "/v1/traditions", h_traditions), route("GET", "/v1/registry", h_registry), route("GET", "/v1/sources", h_sources), route("POST", "/v1/draws", h_post_draw), route("GET", "/v1/draws/{id}", h_get_draw), route("GET", "/v1/draws/{id}/receipt", h_get_receipt), route("POST", "/v1/verify", h_verify)])?
+    var settings: Map[Text, Text] = {}
+    set settings = map_set(settings, "x-lotcast-data", cfg.data_dir)
+    set settings = map_set(settings, "x-lotcast-registry", cfg.registry_file)
+    set settings = map_set(settings, "x-lotcast-trust", int_to_text(cfg.trust_proxy))
+    set settings = map_set(settings, "x-lotcast-wait", int_to_text(wait_ms))
+    return Ok(app_with(made, [middleware_configured(before, after, settings)]))

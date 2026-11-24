@@ -7,6 +7,10 @@ network = [
     "random.colorado.edu",
 ]
 
+[approved-capabilities.lotcast-core]
+clock = true
+network = ["beacon.nist.gov"]
+
 [approved-capabilities.lotcast-log]
 files = [
     "read",
@@ -18,10 +22,6 @@ network = [
     "freetsa.org",
 ]
 
-[approved-capabilities.lotcast-core]
-clock = true
-network = ["beacon.nist.gov"]
-
 [approved-capabilities.web]
 clock = true
 files = [
@@ -29,6 +29,25 @@ files = [
     "write",
 ]
 network = ["127.0.0.1"]
+
+[capabilities]
+clock = true
+files = [
+    "read",
+    "write",
+]
+network = [
+    "api.drand.sh",
+    "beacon.nist.gov",
+    "drand.cloudflare.com",
+    "random.colorado.edu",
+    "timestamp.digicert.com",
+    "timestamp.sectigo.com",
+    "freetsa.org",
+]
+
+[clock]
+enabled = true
 
 [dependencies.beacons]
 registry = "^0.3.0"
@@ -56,21 +75,5 @@ exports = ["src/lib.gu"]
 name = "lotcast-service"
 version = "0.1.0"
 
-[capabilities]
-clock = true
-files = [
-    "read",
-    "write",
-]
-network = [
-    "api.drand.sh",
-    "beacon.nist.gov",
-    "drand.cloudflare.com",
-    "random.colorado.edu",
-    "timestamp.digicert.com",
-    "timestamp.sectigo.com",
-    "freetsa.org",
-]
-
-[clock]
-enabled = true
+[environment]
+variables = ["LOTCAST_OPERATOR_KEY"]

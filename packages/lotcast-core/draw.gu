@@ -161,7 +161,7 @@ fn problem_text(r: Result[Bool, StdError]) -> Text:
         Ok(ignored):
             return ""
 
-fn anchored_draw(request: Request, log_dir: Text, key_file: Text, new_key: Bool, origin: Text, epoch_seconds: Int) -> Int:
+fn anchored_draw(request: DrawRequest, log_dir: Text, key_file: Text, new_key: Bool, origin: Text, epoch_seconds: Int) -> Int:
     let seed_read = read_seed_file(key_file, new_key)
     if not is_ok(seed_read):
         match seed_read:
@@ -327,11 +327,11 @@ fn main() -> Int:
         set mode = 1
         set commit = question_commit(question, unwrap(salt))
     if anchored:
-        let request = Request(tradition, method, options, mode, commit, unwrap(listed), not_before, unwrap(nonce), bytes_from_ints([]))
+        let request = DrawRequest(tradition, method, options, mode, commit, unwrap(listed), not_before, unwrap(nonce), bytes_from_ints([]))
         if asked:
             eprint("salt=" + hex_encode(unwrap(salt)))
         return anchored_draw(request, log_dir, key_file, new_key, origin, epoch_seconds)
-    let request = Request(tradition, method, options, mode, commit, ["drand-quicknet"], 0, unwrap(nonce), bytes_from_ints([]))
+    let request = DrawRequest(tradition, method, options, mode, commit, ["drand-quicknet"], 0, unwrap(nonce), bytes_from_ints([]))
     let chain = drand_quicknet()
     let t0 = unix_time_ms() // 1000
     let round = fetch_when_ready(chain, drand_round_at(chain, t0) + 1)

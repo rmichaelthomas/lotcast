@@ -19,11 +19,11 @@ fn stamp_live(note: Text, ids: List[Text]) -> Result[Json, StdError]:
 fn main() -> Int:
     let root = "live-store"
     let store = unwrap(store_open(root))
-    let cfg = Config("127.0.0.1", 8080, root, "", 5, 30, "lotcast.live/log", 2, 0)
+    let cfg = Config("127.0.0.1", 8080, root, "", 5, 30, "lotcast.live/log", 2, 0, "registry.json")
     let seed = unwrap(crypto_random_bytes(32))
     var w = unwrap(writer_open(store, cfg, seed))
     let nonce = unwrap(crypto_random_bytes(32))
-    let request = Request("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 0, nonce, bytes_from_ints([]))
+    let request = DrawRequest("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 0, nonce, bytes_from_ints([]))
     let id = draw_id(unwrap(entry_hash(request)))
     let queued = unwrap(store_put_inbox(store, id, request_to_json(request)))
     set w = unwrap(writer_tick(w, unix_time_ms() // 1000))

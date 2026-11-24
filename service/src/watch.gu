@@ -41,7 +41,7 @@ fn inclusion_of(epoch_doc: Json, id: Text) -> Result[Json, StdError]:
             return Ok(e)
     return Err(std_error("E_STORE", "the epoch file has no entry for " + id))
 
-fn wanted(request: Request, id: Text) -> Bool:
+fn wanted(request: DrawRequest, id: Text) -> Bool:
     for r in request.sources:
         if r == id:
             return true
@@ -68,7 +68,7 @@ fn next_check_of(store: Store, id: Text) -> Int:
 # One pass at time `now`. Returns how many receipts were completed. `drand_fn(round)` fetches a
 # verified drand round, `source_fn(id, t0)` resolves one other source, and
 # `build_fn(request, log_part, promise, drand, others, operator_key)` returns the verified receipt.
-pub fn watch_once(store: Store, origin: Text, operator_key: Bytes, now: Int, drand_fn: fn(Int) -> Result[DrandRound, StdError], source_fn: fn(Text, Int) -> Result[SourceResult, StdError], build_fn: fn(Request, Json, Text, DrandRound, List[SourceResult], Bytes) -> Result[Json, StdError]) -> Result[Int, StdError]:
+pub fn watch_once(store: Store, origin: Text, operator_key: Bytes, now: Int, drand_fn: fn(Int) -> Result[DrandRound, StdError], source_fn: fn(Text, Int) -> Result[SourceResult, StdError], build_fn: fn(DrawRequest, Json, Text, DrandRound, List[SourceResult], Bytes) -> Result[Json, StdError]) -> Result[Int, StdError]:
     var completed = 0
     var drand_cache: Map[Text, DrandRound] = {}
     var source_cache: Map[Text, SourceResult] = {}
@@ -96,10 +96,12 @@ pub fn watch_once(store: Store, origin: Text, operator_key: Bytes, now: Int, dra
                     let round_time = drand_round_time(chain, round)
                     var drand = DrandRound(0, bytes_from_ints([]), bytes_from_ints([]))
                     if now < t0:
-                        var why = "the anchor time has not come"
+                        var why = "the epoch's deadline has not come"
+                        var which = "anchor-time"
                         if request.not_before > deadline:
                             set why = "not_before is in the future"
-                        set waiting = json_push(waiting, waiting_item("not-before", why))
+                            set which = "not-before"
+                        set waiting = json_push(waiting, waiting_item(which, why))
                         set retry = now + minimum(t0 - now, 30)
                     else:
                         if now < round_time:
@@ -176,7 +178,7 @@ fn build_problem(r: Result[Json, StdError]) -> Text:
         Ok(ignored):
             return ""
 
-fn parse_stored(request: Json) -> Result[Request, StdError]:
+fn parse_stored(request: Json) -> Result[DrawRequest, StdError]:
     match parse_request(json_set(json_object(), "request", request)):
         Ok(r):
             return Ok(r)

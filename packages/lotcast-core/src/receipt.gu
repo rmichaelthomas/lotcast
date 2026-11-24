@@ -55,7 +55,7 @@ pub fn mode_name(mode: Int) -> Text:
 
 # The fields this version can stand behind, checked by the builder and again by the verifier so that a
 # receipt cannot display a field that nothing checked.
-pub fn request_fields_ok(request: Request, anchored: Bool) -> Result[Bool, StdError]:
+pub fn request_fields_ok(request: DrawRequest, anchored: Bool) -> Result[Bool, StdError]:
     if len(request.client_nonce) != 32:
         return Err(receipt_error("E_LOTCAST_NONCE", "client_nonce must be 32 bytes"))
     if len(request.subject_key) != 0:
@@ -73,7 +73,7 @@ pub fn request_fields_ok(request: Request, anchored: Bool) -> Result[Bool, StdEr
     return Ok(true)
 
 # The request as the receipt shows it.
-pub fn request_to_json(request: Request) -> Json:
+pub fn request_to_json(request: DrawRequest) -> Json:
     var options = json_object()
     for key in request.options:
         set options = json_set(options, key, json_text(request.options[key]))
@@ -99,7 +99,7 @@ pub fn request_to_json(request: Request) -> Json:
 
 # ---------------------------------------------------------------- build
 
-pub fn build_receipt(request: Request, t0: Int, drand: DrandRound) -> Result[Json, StdError]:
+pub fn build_receipt(request: DrawRequest, t0: Int, drand: DrandRound) -> Result[Json, StdError]:
     if len(request.sources) != 1 or request.sources[0] != "drand-quicknet":
         return Err(receipt_error("E_LOTCAST_SOURCE", "this version draws from drand-quicknet only"))
     let fields = request_fields_ok(request, false)?
@@ -212,7 +212,7 @@ fn parse_options(tradition: Text, method: Text, options: Json) -> Result[Map[Tex
         return Err("the request carries an option this method does not take")
     return Ok(out)
 
-pub fn parse_request(receipt: Json) -> Result[Request, Text]:
+pub fn parse_request(receipt: Json) -> Result[DrawRequest, Text]:
     let request = field_json(receipt, "request")?
     let tradition = field_text(request, "tradition")?
     let method = field_text(request, "method")?
@@ -237,10 +237,10 @@ pub fn parse_request(receipt: Json) -> Result[Request, Text]:
     let not_before = field_int(request, "not_before")?
     let nonce = field_hex(request, "client_nonce")?
     let subject = optional_hex(request, "subject")?
-    return Ok(Request(tradition, method, options, mode, commit, sources, not_before, nonce, subject))
+    return Ok(DrawRequest(tradition, method, options, mode, commit, sources, not_before, nonce, subject))
 
 # Step 4 for the one source this version has. Returns the drand randomness on success.
-fn check_drand(receipt: Json, request: Request) -> Result[Bytes, Text]:
+fn check_drand(receipt: Json, request: DrawRequest) -> Result[Bytes, Text]:
     if len(request.sources) != 1 or request.sources[0] != "drand-quicknet":
         return Err("this verifier checks drand-quicknet receipts only")
     let anchor = field_json(receipt, "anchor")?
@@ -269,7 +269,7 @@ fn check_drand(receipt: Json, request: Request) -> Result[Bytes, Text]:
 
 # Fields this version carries but has nothing to check them against must be empty, so a receipt cannot
 # show a log, a promise, an anchor time or attachments that nobody verified.
-fn unbound_fields_problem(receipt: Json, request: Request) -> Text:
+fn unbound_fields_problem(receipt: Json, request: DrawRequest) -> Text:
     for key in ["log", "promise"]:
         let v = json_get_safe(receipt, key)
         if not is_ok(v) or not json_is_null(unwrap(v)):

@@ -18,7 +18,7 @@ pub record IChing:
 
 pub record IChingDraw:
     result: IChing
-    stream: Stream
+    stream: WordStream
 
 pub fn hexagram_id(n: Int) -> Text:
     return "iching:hexagram:" + int_to_text(n)
@@ -71,7 +71,7 @@ fn if_changing(v: Int) -> Int:
         return 8
     return v
 
-pub fn coins_line(s: Stream) -> DrawInt:
+pub fn coins_line(s: WordStream) -> DrawInt:
     var current = s
     var total = 0
     var coin = 0
@@ -85,11 +85,11 @@ pub fn coins_line(s: Stream) -> DrawInt:
         set coin = coin + 1
     return DrawInt(total, current)
 
-pub fn yarrow_line(s: Stream) -> DrawInt:
+pub fn yarrow_line(s: WordStream) -> DrawInt:
     let d = weighted(s, [1, 5, 7, 3])
     return DrawInt(6 + d.value, d.stream)
 
-fn six_lines(s: Stream, yarrow: Bool) -> IChingDraw:
+fn six_lines(s: WordStream, yarrow: Bool) -> IChingDraw:
     var current = s
     var lines: List[Int] = []
     var line = 0
@@ -104,8 +104,8 @@ fn six_lines(s: Stream, yarrow: Bool) -> IChingDraw:
         set line = line + 1
     return IChingDraw(iching_from_lines(lines), current)
 
-pub fn iching_coins(s: Stream) -> IChingDraw:
+pub fn iching_coins(s: WordStream) -> IChingDraw:
     return six_lines(s, false)
 
-pub fn iching_yarrow(s: Stream) -> IChingDraw:
+pub fn iching_yarrow(s: WordStream) -> IChingDraw:
     return six_lines(s, true)

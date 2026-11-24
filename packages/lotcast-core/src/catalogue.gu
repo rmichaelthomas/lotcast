@@ -91,7 +91,7 @@ fn tarot_json(draw: TarotDraw) -> Json:
     return json_set(json_object(), "cards", cards)
 
 # Runs one method on a stream and returns its outcome as JSON.
-pub fn run_method(s: Stream, tradition: Text, method: Text, options: Map[Text, Text]) -> Result[Json, StdError]:
+pub fn run_method(s: WordStream, tradition: Text, method: Text, options: Map[Text, Text]) -> Result[Json, StdError]:
     for m in catalogue():
         if m.tradition == tradition and m.method == method and m.status == "audit-pending":
             return Err(std_error("E_LOTCAST_AUDIT_PENDING", tradition + "/" + method + " has not been audited yet and refuses requests"))

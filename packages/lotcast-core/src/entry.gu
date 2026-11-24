@@ -6,7 +6,7 @@ import "encode.gu"
 
 # The request entry (spec §4.1) and the question commitment.
 
-pub record Request:
+pub record DrawRequest:
     tradition: Text
     method: Text
     options: Map[Text, Text]
@@ -38,14 +38,14 @@ pub fn canonical_options(options: Map[Text, Text]) -> Result[Text, StdError]:
         set lines = list_push(lines, key + "=" + value)
     return Ok(text_join(lines, "\n"))
 
-pub fn entry_bytes(r: Request) -> Result[Bytes, StdError]:
+pub fn entry_bytes(r: DrawRequest) -> Result[Bytes, StdError]:
     if r.not_before < 0 or r.not_before > 18446744073709551615:
         return Err(entry_error("not_before does not fit the entry's 64-bit field"))
     let options = canonical_options(r.options)?
     let sources = text_join(sort(r.sources), ",")
     return Ok(cat([text_bytes("lotcast/entry/v1"), lp(text_bytes(r.tradition)), lp(text_bytes(r.method)), lp(text_bytes(options)), u8_bytes(r.question_mode), lp(r.question_commit), lp(text_bytes(sources)), u64_bytes(r.not_before), lp(r.client_nonce), lp(r.subject_key)]))
 
-pub fn entry_hash(r: Request) -> Result[Bytes, StdError]:
+pub fn entry_hash(r: DrawRequest) -> Result[Bytes, StdError]:
     let bytes = entry_bytes(r)?
     return Ok(crypto_sha512(bytes))
 

@@ -121,7 +121,7 @@ fn close_if_due(w: Writer, now: Int) -> Result[Writer, StdError]:
             let removed = fs_remove(w.store.root + "/state/open.json")
             return Ok(w)
 
-fn parse_inbox(request: Json) -> Result[Request, StdError]:
+fn parse_inbox(request: Json) -> Result[DrawRequest, StdError]:
     let wrapped = json_set(json_object(), "request", request)
     match parse_request(wrapped):
         Ok(r):

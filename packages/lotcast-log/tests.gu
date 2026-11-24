@@ -1,0 +1,119 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "std:json"
+import "src/lib.gu"
+
+fn main() -> Int:
+    return 0
+
+fn hexb(t: Text) -> Bytes:
+    return unwrap(hex_decode(t))
+
+fn vectors() -> Json:
+    return unwrap(json_parse(unwrap(read_text("fixtures/merkle-vectors.json"))))
+
+fn hex_list(j: Json) -> List[Bytes]:
+    var out: List[Bytes] = []
+    var i = 0
+    while i < json_len(j):
+        set out = list_push(out, hexb(json_as_text(unwrap(json_index_safe(j, i)))))
+        set i = i + 1
+    return out
+
+fn first_leaves(v: Json, n: Int) -> List[Bytes]:
+    let all = hex_list(json_get(v, "leaves"))
+    var out: List[Bytes] = []
+    var i = 0
+    while i < n:
+        set out = list_push(out, all[i])
+        set i = i + 1
+    return out
+
+fn test_root_matches_vectors() -> Unit:
+    let v = vectors()
+    let roots = json_get(v, "roots")
+    var n = 0
+    while n < json_len(roots):
+        let expected = hexb(json_as_text(unwrap(json_index_safe(roots, n))))
+        assert(tree_root(first_leaves(v, n)) == expected)
+        set n = n + 1
+
+fn test_ct_reference_tree_root() -> Unit:
+    let v = vectors()
+    assert(tree_root(hex_list(json_get(v, "ct_leaves"))) == hexb(json_as_text(json_get(v, "ct_root_8"))))
+
+fn test_inclusion_proofs_match_vectors() -> Unit:
+    let v = vectors()
+    let cases = json_get(v, "inclusion")
+    var i = 0
+    while i < json_len(cases):
+        let c = unwrap(json_index_safe(cases, i))
+        let size = json_as_int(json_get(c, "size"))
+        let index = json_as_int(json_get(c, "index"))
+        let leaves = first_leaves(v, size)
+        let proof = unwrap(inclusion_proof(leaves, index))
+        assert(proof == hex_list(json_get(c, "proof")))
+        assert(verify_inclusion(leaves[index], index, size, proof, tree_root(leaves)))
+        set i = i + 1
+
+fn test_inclusion_rejects_wrong_leaf_index_size_and_root() -> Unit:
+    let v = vectors()
+    let leaves = first_leaves(v, 11)
+    let root = tree_root(leaves)
+    let proof = unwrap(inclusion_proof(leaves, 6))
+    assert(verify_inclusion(leaves[6], 6, 11, proof, root))
+    assert(not verify_inclusion(leaves[5], 6, 11, proof, root))
+    assert(not verify_inclusion(leaves[6], 7, 11, proof, root))
+    assert(not verify_inclusion(leaves[6], 6, 20, proof, root))
+    assert(not verify_inclusion(leaves[6], 6, 11, proof, tree_root(first_leaves(v, 10))))
+    assert(not verify_inclusion(leaves[6], 11, 11, proof, root))
+    assert(not verify_inclusion(leaves[6], 6, 11, [], root))
+
+fn test_consistency_proofs_match_vectors() -> Unit:
+    let v = vectors()
+    let cases = json_get(v, "consistency")
+    var i = 0
+    while i < json_len(cases):
+        let c = unwrap(json_index_safe(cases, i))
+        let old = json_as_int(json_get(c, "old"))
+        let new = json_as_int(json_get(c, "new"))
+        let leaves = first_leaves(v, new)
+        let proof = unwrap(consistency_proof(leaves, old))
+        assert(proof == hex_list(json_get(c, "proof")))
+        assert(verify_consistency(old, tree_root(first_leaves(v, old)), new, tree_root(leaves), proof))
+        set i = i + 1
+
+fn test_consistency_rejects_tampered_proof() -> Unit:
+    let v = vectors()
+    let leaves = first_leaves(v, 13)
+    let old_root = tree_root(first_leaves(v, 5))
+    let new_root = tree_root(leaves)
+    let proof = unwrap(consistency_proof(leaves, 5))
+    assert(verify_consistency(5, old_root, 13, new_root, proof))
+    assert(not verify_consistency(5, old_root, 13, new_root, []))
+    assert(not verify_consistency(5, new_root, 13, new_root, proof))
+    assert(not verify_consistency(6, old_root, 13, new_root, proof))
+    assert(not verify_consistency(5, old_root, 13, old_root, proof))
+    var flipped: List[Bytes] = []
+    var i = 0
+    for p in proof:
+        if i == 0:
+            set flipped = list_push(flipped, crypto_sha256(p))
+        else:
+            set flipped = list_push(flipped, p)
+        set i = i + 1
+    assert(not verify_consistency(5, old_root, 13, new_root, flipped))
+
+fn test_size_zero_and_one_edges() -> Unit:
+    let v = vectors()
+    let empty: List[Bytes] = []
+    assert(tree_root(empty) == crypto_sha256(bytes_from_ints([])))
+    assert(not is_ok(inclusion_proof(empty, 0)))
+    let one = first_leaves(v, 1)
+    assert(verify_inclusion(one[0], 0, 1, [], tree_root(one)))
+    assert(verify_consistency(0, tree_root(empty), 1, tree_root(one), []))
+    assert(verify_consistency(1, tree_root(one), 1, tree_root(one), []))
+    assert(not verify_consistency(2, tree_root(one), 1, tree_root(one), []))
+    assert(not is_ok(consistency_proof(one, 2)))

@@ -1,0 +1,9 @@
+[package]
+entry = "src/lib.gu"
+exports = [
+    "src/lib.gu",
+    "src/encode.gu",
+    "src/merkle.gu",
+]
+name = "lotcast-log"
+version = "0.1.0"

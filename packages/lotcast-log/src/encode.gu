@@ -1,0 +1,45 @@
+import "std:types"
+import "std:encoding"
+import "std:text"
+
+# Byte helpers for the log formats. The log package carries its own copy of the few encoders it
+# needs so that `lotcast-core` can depend on it without a cycle.
+
+fn be_bytes(x: Int, width: Int) -> Bytes:
+    assert(x >= 0)
+    var octets: List[Int] = []
+    var place = 1
+    var count = 1
+    while count < width:
+        set place = place * 256
+        set count = count + 1
+    assert(x // place < 256)
+    var rest = x
+    while place >= 1:
+        set octets = list_push(octets, rest // place)
+        set rest = rest % place
+        set place = place // 256
+    return bytes_from_ints(octets)
+
+pub fn u8_bytes(x: Int) -> Bytes:
+    return be_bytes(x, 1)
+
+pub fn u32_bytes(x: Int) -> Bytes:
+    return be_bytes(x, 4)
+
+pub fn u64_bytes(x: Int) -> Bytes:
+    return be_bytes(x, 8)
+
+pub fn cat(parts: List[Bytes]) -> Bytes:
+    return bytes_join(parts)
+
+# The bytes of `b` from index `from` up to but not including `to`.
+pub fn slice_bytes(b: Bytes, from: Int, to: Int) -> Bytes:
+    assert(from >= 0 and to >= from and to <= len(b))
+    let octets = bytes_to_ints(b)
+    var out: List[Int] = []
+    var at = from
+    while at < to:
+        set out = list_push(out, octets[at])
+        set at = at + 1
+    return bytes_from_ints(out)

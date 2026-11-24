@@ -1,0 +1,118 @@
+import "std:types"
+import "std:fs"
+import "std:json"
+import "std:text"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+import "store.gu"
+
+# The stamper: for every closed epoch that has no anchor yet, gets two RFC 3161 timestamps over the
+# checkpoint and records `anchors/<e>.json`. It retries until the epoch's deadline; an epoch whose
+# tokens do not all prove existence by the deadline is void (spec 3.2). The stamping function is a
+# parameter so tests run without a network: it takes the checkpoint note and the authority ids and
+# returns anchor_checkpoint's {timestamps, proven_by}.
+#
+# `failing_since` maps an authority to the unix second its failures began; after 600 seconds the
+# default pair is replaced by {the working one} + FreeTSA (choose_tsas).
+
+fn anchor_file(epoch: Int) -> Text:
+    return "anchors/" + int_to_text(epoch) + ".json"
+
+fn anchor_json(epoch: Int, deadline: Int, void: Bool, timestamps: Json, proven_by: Int) -> Json:
+    var a = json_object()
+    set a = json_set(a, "epoch", json_int(epoch))
+    set a = json_set(a, "deadline", json_int(deadline))
+    set a = json_set(a, "void", json_bool(void))
+    set a = json_set(a, "timestamps", timestamps)
+    set a = json_set(a, "proven_by", json_int(proven_by))
+    return a
+
+fn down_seconds(failing_since: Map[Text, Int], now: Int) -> Map[Text, Int]:
+    var out: Map[Text, Int] = {}
+    for id in failing_since:
+        set out = map_set(out, id, now - failing_since[id])
+    return out
+
+# The authority an error message names (`digicert: ...`), or "".
+fn failed_authority(message: Text) -> Text:
+    for id in ["digicert", "sectigo", "freetsa"]:
+        if len(text_split(message, id + ":")) > 1:
+            return id
+    return ""
+
+fn same_pair(a: List[Text], b: List[Text]) -> Bool:
+    if len(a) != len(b):
+        return false
+    for i in range(0, len(a)):
+        if a[i] != b[i]:
+            return false
+    return true
+
+# One attempt chain for one checkpoint: returns the anchor and the updated failure map, or the
+# error of the last attempt with the failure map in `failing`.
+record Attempt:
+    anchored: Option[Json]
+    failing: Map[Text, Int]
+
+fn attempt(note: Text, failing_in: Map[Text, Int], now: Int, stamp: fn(Text, List[Text]) -> Result[Json, StdError]) -> Attempt:
+    var failing = failing_in
+    var pair = choose_tsas(down_seconds(failing, now))
+    var tries = 0
+    while len(pair) >= 2 and tries < 3:
+        let got = stamp(note, pair)
+        if is_ok(got):
+            for id in pair:
+                var kept: Map[Text, Int] = {}
+                for other in failing:
+                    if other != id:
+                        set kept = map_set(kept, other, failing[other])
+                set failing = kept
+            return Attempt(Some(unwrap(got)), failing)
+        match got:
+            Err(problem):
+                let who = failed_authority(problem.message)
+                if who != "" and not map_has(failing, who):
+                    set failing = map_set(failing, who, now)
+            Ok(ignored):
+                set tries = tries
+        let next = choose_tsas(down_seconds(failing, now))
+        if same_pair(next, pair):
+            return Attempt(None, failing)
+        set pair = next
+        set tries = tries + 1
+    return Attempt(None, failing)
+
+fn pending_epochs(store: Store) -> List[Int]:
+    var out: List[Int] = []
+    let listed = fs_list_dir(store.root + "/epochs")
+    if not is_ok(listed):
+        return out
+    for name in sort(unwrap(listed)):
+        let size = len(name)
+        if size > 5 and text_slice(name, size - 5, size) == ".json":
+            let epoch = text_parse_int(text_slice(name, 0, size - 5))
+            if is_ok(epoch) and not store_has(store, anchor_file(unwrap(epoch))):
+                set out = list_push(out, unwrap(epoch))
+    return out
+
+# One pass at time `now`: stamps every unanchored closed epoch it can. Returns the failure map to
+# pass to the next pass.
+pub fn stamper_tick(store: Store, failing_in: Map[Text, Int], now: Int, stamp: fn(Text, List[Text]) -> Result[Json, StdError]) -> Result[Map[Text, Int], StdError]:
+    var failing = failing_in
+    for epoch in pending_epochs(store):
+        let closed = store_get_json(store, "epochs/" + int_to_text(epoch) + ".json")?
+        let deadline = json_as_int(json_get(closed, "deadline"))
+        let note = json_as_text(json_get(closed, "checkpoint"))
+        let result = attempt(note, failing, now, stamp)
+        set failing = result.failing
+        match result.anchored:
+            Some(anchored):
+                let proven = json_as_int(json_get(anchored, "proven_by"))
+                if stamped_in_time(proven, deadline):
+                    let saved = store_put_json(store, anchor_file(epoch), anchor_json(epoch, deadline, false, json_get(anchored, "timestamps"), proven))?
+                else:
+                    let saved = store_put_json(store, anchor_file(epoch), anchor_json(epoch, deadline, true, json_array(), proven))?
+            None:
+                if now >= deadline:
+                    let saved = store_put_json(store, anchor_file(epoch), anchor_json(epoch, deadline, true, json_array(), 0))?
+    return Ok(failing)

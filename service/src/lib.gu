@@ -2,6 +2,8 @@
 pub import "config.gu"
 pub import "request.gu"
 pub import "store.gu"
+pub import "epoch.gu"
+pub import "stamper.gu"
 
 pub fn lotcast_service_version() -> Text:
     return "0.1.0"

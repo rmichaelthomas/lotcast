@@ -27,3 +27,67 @@ fn test_bytes_to_int_round_trips_u64() -> Unit:
     let values = [0, 1, 255, 256, 9223372036854775808, 18446744073709551615]
     for v in values:
         assert(bytes_to_int(u64_bytes(v)) == v)
+
+fn zero_seed() -> Bytes:
+    return bytes_from_ints([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+# The n-th word of a stream (0-based), reading every word before it.
+fn nth_word(seed: Bytes, bits: Int, n: Int) -> Int:
+    var s = stream_new(seed, bits)
+    var k = 0
+    while k < n:
+        set s = next_word(s).stream
+        set k = k + 1
+    return next_word(s).value
+
+fn test_stream_matches_python_vector() -> Unit:
+    # python3 reference/python/vectors.py: seed of 64 zero bytes, width 64
+    assert(nth_word(zero_seed(), 64, 0) == 5157822015497538534)
+    assert(nth_word(zero_seed(), 64, 1) == 3516891542917060802)
+    assert(nth_word(zero_seed(), 64, 7) == 3855672083927600077)
+
+fn test_stream_second_block_advances() -> Unit:
+    assert(nth_word(zero_seed(), 64, 8) == 8897356577867350241)
+    assert(nth_word(zero_seed(), 64, 16) == 18239457420714765276)
+    let block_one = crypto_sha512(cat([text_bytes("lotcast/stream/v1"), zero_seed(), u64_bytes(1)]))
+    assert(nth_word(zero_seed(), 64, 8) == bytes_to_int(bytes_slice(block_one, 0, 8)))
+
+fn test_width_8_words_are_the_block_bytes() -> Unit:
+    let block_zero = crypto_sha512(cat([text_bytes("lotcast/stream/v1"), zero_seed(), u64_bytes(0)]))
+    assert(nth_word(zero_seed(), 8, 0) == bytes_to_ints(block_zero)[0])
+    assert(nth_word(zero_seed(), 8, 63) == bytes_to_ints(block_zero)[63])
+    let block_one = crypto_sha512(cat([text_bytes("lotcast/stream/v1"), zero_seed(), u64_bytes(1)]))
+    assert(nth_word(zero_seed(), 8, 64) == bytes_to_ints(block_one)[0])
+
+fn test_uniform_one_is_always_zero() -> Unit:
+    var s = stream_new(zero_seed(), 64)
+    var k = 0
+    while k < 50:
+        let d = uniform(s, 1)
+        assert(d.value == 0)
+        set s = d.stream
+        set k = k + 1
+
+fn test_uniform_never_returns_n() -> Unit:
+    var s = stream_new(zero_seed(), 64)
+    var k = 0
+    while k < 1000:
+        let d = uniform(s, 4294967296)
+        assert(d.value >= 0 and d.value < 4294967296)
+        set s = d.stream
+        set k = k + 1
+
+fn test_uniform_power_of_two_never_rejects() -> Unit:
+    var s = stream_new(zero_seed(), 64)
+    var k = 0
+    while k < 20:
+        let d = uniform(s, 8)
+        assert(d.value == nth_word(zero_seed(), 64, k) % 8)
+        set s = d.stream
+        set k = k + 1
+
+fn test_uniform_rejects_words_at_or_above_the_limit() -> Unit:
+    # width 8, n = 3: limit is 255, so only the word 255 is rejected
+    let s = stream_scripted([255, 7], 8)
+    let d = uniform(s, 3)
+    assert(d.value == 1)

@@ -1,5 +1,7 @@
 # lotcast-core: the pure core of Lotcast (stream, primitives, samplers, receipt checking).
 pub import "encode.gu"
+pub import "stream.gu"
+pub import "primitives.gu"
 
 pub fn lotcast_core_version() -> Text:
     return "0.1.0"

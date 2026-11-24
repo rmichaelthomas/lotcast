@@ -1,0 +1,81 @@
+import "std:types"
+import "stream.gu"
+
+# The three primitives every sampler is built from (spec §4.3): uniform, weighted, shuffle.
+
+pub record DrawInt:
+    value: Int
+    stream: Stream
+
+pub record DrawList:
+    values: List[Int]
+    stream: Stream
+
+fn power_of_two(bits: Int) -> Int:
+    var value = 1
+    var k = 0
+    while k < bits:
+        set value = value * 2
+        set k = k + 1
+    return value
+
+# A uniform integer in 0..n-1 (1 <= n <= 2^32) by exact rejection: words at or above
+# 2^w - (2^w mod n) are discarded, the rest are reduced mod n.
+pub fn uniform(s: Stream, n: Int) -> DrawInt:
+    assert(n >= 1 and n <= 4294967296)
+    if s.mode == 1:
+        var choice = 0
+        if s.tape_pos < len(s.tape):
+            set choice = s.tape[s.tape_pos]
+        assert(choice >= 0 and choice < n)
+        return DrawInt(choice, Stream(s.seed, s.word_bits, s.block, s.words, s.pos, 1, s.tape, s.tape_pos + 1, list_push(s.trace, n)))
+    let space = power_of_two(s.word_bits)
+    let limit = space - space % n
+    var current = s
+    while true:
+        let w = next_word(current)
+        set current = w.stream
+        if w.value < limit:
+            return DrawInt(w.value % n, current)
+    return DrawInt(0, current)
+
+pub fn bit(s: Stream) -> DrawInt:
+    return uniform(s, 2)
+
+# The index drawn by weights `ws` (positive integers): r = uniform(sum), then the first index whose
+# running total exceeds r. Odds are exact rationals w_i / sum.
+pub fn weighted(s: Stream, ws: List[Int]) -> DrawInt:
+    assert(len(ws) >= 1)
+    var total = 0
+    for w in ws:
+        assert(w >= 1)
+        set total = total + w
+    let d = uniform(s, total)
+    var running = 0
+    var index = 0
+    while index < len(ws):
+        set running = running + ws[index]
+        if running > d.value:
+            return DrawInt(index, d.stream)
+        set index = index + 1
+    assert(false)
+    return DrawInt(0, d.stream)
+
+# A uniform permutation of 0..n-1: Fisher-Yates from i = n-1 down to 1, swapping i with uniform(i+1).
+pub fn shuffle(s: Stream, n: Int) -> DrawList:
+    assert(n >= 1)
+    var deck: List[Int] = []
+    var k = 0
+    while k < n:
+        set deck = list_push(deck, k)
+        set k = k + 1
+    var current = s
+    var i = n - 1
+    while i >= 1:
+        let d = uniform(current, i + 1)
+        set current = d.stream
+        let held = deck[i]
+        set deck = list_set(deck, i, deck[d.value])
+        set deck = list_set(deck, d.value, held)
+        set i = i - 1
+    return DrawList(deck, current)

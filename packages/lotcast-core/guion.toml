@@ -26,6 +26,8 @@ entry = "src/lib.gu"
 exports = [
     "src/lib.gu",
     "src/encode.gu",
+    "src/stream.gu",
+    "src/primitives.gu",
 ]
 name = "lotcast-core"
 version = "0.1.0"

@@ -1,0 +1,167 @@
+import "std:types"
+import "std:text"
+import "src/lib.gu"
+
+# Exact tests by enumeration (spec §7.1): proof, not statistics. Run with `guion test tests_enumerate.gu`.
+
+fn main() -> Int:
+    return 0
+
+fn gcd(a: Int, b: Int) -> Int:
+    var x = a
+    var y = b
+    while y != 0:
+        let r = x % y
+        set x = y
+        set y = r
+    return x
+
+# ---- primitives at word width 8 ----
+
+fn test_uniform_exact_every_n_1_to_256() -> Unit:
+    var n = 1
+    while n <= 256:
+        let limit = 256 - 256 % n
+        var hits: List[Int] = []
+        var r = 0
+        while r < n:
+            set hits = list_push(hits, 0)
+            set r = r + 1
+        var x = 0
+        while x < 256:
+            let d = uniform(stream_scripted([x, 0], 8), n)
+            if x >= limit:
+                # rejected: a second word was read
+                assert(d.stream.pos == 2)
+            else:
+                assert(d.stream.pos == 1)
+                assert(d.value == x % n)
+                set hits = list_set(hits, d.value, hits[d.value] + 1)
+            set x = x + 1
+        var residue = 0
+        while residue < n:
+            assert(hits[residue] == 256 // n)
+            set residue = residue + 1
+        set n = n + 1
+
+fn weighted_hits(ws: List[Int]) -> List[Int]:
+    var hits: List[Int] = []
+    for w in ws:
+        set hits = list_push(hits, 0)
+    var x = 0
+    while x < 256:
+        let d = weighted(stream_scripted([x, 0], 8), ws)
+        if d.stream.pos == 1:
+            set hits = list_set(hits, d.value, hits[d.value] + 1)
+        set x = x + 1
+    return hits
+
+fn test_weighted_exact() -> Unit:
+    let cases = [[1, 5, 7, 3], [2, 2], [1], [3, 1, 2]]
+    for ws in cases:
+        var total = 0
+        for w in ws:
+            set total = total + w
+        let hits = weighted_hits(ws)
+        var i = 0
+        while i < len(ws):
+            assert(hits[i] == ws[i] * (256 // total))
+            set i = i + 1
+
+# ---- enumeration of a sampler over every primitive result ----
+
+# What a run hands back: its outcome as text, and the stream it ended with (whose trace lists the
+# modulus of every primitive call it made).
+pub record Traced:
+    key: Text
+    stream: Stream
+
+# One enumerated leaf: its outcome and its exact probability 1/den.
+pub record Leaf:
+    key: Text
+    den: Int
+
+# Runs `run` over every sequence of primitive results (tape mode). Each leaf's probability is
+# 1/(product of the moduli on its path), exact.
+fn enumerate(run: fn(Stream) -> Traced) -> List[Leaf]:
+    var leaves: List[Leaf] = []
+    var queue: List[List[Int]] = [[]]
+    var at = 0
+    while at < len(queue):
+        let t = queue[at]
+        set at = at + 1
+        let out = run(stream_tape(t))
+        let trace = stream_trace(out.stream)
+        var den = 1
+        for modulus in trace:
+            set den = den * modulus
+        set leaves = list_push(leaves, Leaf(out.key, den))
+        var j = len(t)
+        while j < len(trace):
+            var c = 1
+            while c < trace[j]:
+                var child = t
+                var pad = len(t)
+                while pad < j:
+                    set child = list_push(child, 0)
+                    set pad = pad + 1
+                set child = list_push(child, c)
+                set queue = list_push(queue, child)
+                set c = c + 1
+            set j = j + 1
+    return leaves
+
+# The exact distribution: outcome key -> [numerator, denominator] in lowest terms.
+fn distribution(leaves: List[Leaf]) -> Map[Text, List[Int]]:
+    var dist: Map[Text, List[Int]] = {}
+    for leaf in leaves:
+        var num = 1
+        var den = leaf.den
+        if map_has(dist, leaf.key):
+            let old = dist[leaf.key]
+            set num = old[0] * leaf.den + 1 * old[1]
+            set den = old[1] * leaf.den
+        let g = gcd(num, den)
+        set dist = map_set(dist, leaf.key, [num // g, den // g])
+    return dist
+
+fn sum_one(dist: Map[Text, List[Int]]) -> Bool:
+    var num = 0
+    var den = 1
+    for key in dist:
+        let p = dist[key]
+        set num = num * p[1] + p[0] * den
+        set den = den * p[1]
+    return num == den
+
+# ---- shuffle ----
+
+fn factorial(n: Int) -> Int:
+    var f = 1
+    var k = 2
+    while k <= n:
+        set f = f * k
+        set k = k + 1
+    return f
+
+fn shuffle_run(n: Int) -> fn(Stream) -> Traced:
+    fn run(s: Stream) -> Traced:
+        let d = shuffle(s, n)
+        return Traced(join_ints(d.values), d.stream)
+    return run
+
+fn join_ints(xs: List[Int]) -> Text:
+    var out = ""
+    for x in xs:
+        set out = out + int_to_text(x) + ","
+    return out
+
+fn test_shuffle_every_permutation_equally_n_up_to_8() -> Unit:
+    var n = 1
+    while n <= 8:
+        let dist = distribution(enumerate(shuffle_run(n)))
+        assert(len(dist) == factorial(n))
+        for key in dist:
+            let p = dist[key]
+            assert(p[0] == 1 and p[1] == factorial(n))
+        set n = n + 1

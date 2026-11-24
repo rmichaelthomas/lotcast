@@ -629,3 +629,247 @@ fn test_option_names_and_values_are_case_sensitive() -> Unit:
     let upper_value: Map[Text, Text] = {"reversals": "True"}
     assert(error_code(run("tarot", "rws", upper_name)) == "E_LOTCAST_OPTION")
     assert(error_code(run("tarot", "rws", upper_value)) == "E_LOTCAST_OPTION")
+
+fn test_iso_ms_parses_known_instants() -> Unit:
+    assert(unwrap(iso_ms("1970-01-01T00:00:00Z")) == 0)
+    assert(unwrap(iso_ms("1970-01-01T00:00:01.5Z")) == 1500)
+    assert(unwrap(iso_ms("2026-11-24T07:01:00.338Z")) == 1795503660338)
+    assert(unwrap(iso_ms("2026-11-24T07:01:00.3389999Z")) == 1795503660338)
+    assert(unwrap(iso_ms("2000-02-29T23:59:59.999Z")) == 951868799999)
+    assert(unwrap(iso_ms("2025-08-22T19:43:39.561Z")) == 1755891819561)
+
+fn test_iso_ms_rejects_malformed_times() -> Unit:
+    for bad in ["", "2026-11-24", "2026-11-24T07:01:00", "2026-13-01T00:00:00Z", "2026-02-30T00:00:00Z", "2026-11-24T24:00:00Z", "2026-11-24T07:01:00.Z", "2026-11-24 07:01:00Z", "2026-11-24T07:01:0xZ", "1969-12-31T23:59:59Z", "2026-11-24T07:01:00+01:00"]:
+        assert(not is_ok(iso_ms(bad)))
+
+fn test_window_seconds_per_source() -> Unit:
+    assert(unwrap(window_seconds("nist-beacon-2")) == 180)
+    assert(unwrap(window_seconds("curby-rng")) == 180)
+    assert(unwrap(window_seconds("curby-q")) == 1890)
+    assert(not is_ok(window_seconds("drand-quicknet")))
+
+fn test_judge_covers_each_position() -> Unit:
+    # t0 = 1000 s, W = 180 s
+    assert(judge(1000, 180, 990000, 1000000) == "not-after")
+    assert(judge(1000, 180, 990000, 999999) == "not-after")
+    assert(judge(1000, 180, 1000001, 1030000) == "not-first")
+    assert(judge(1000, 180, 1000000, 1000001) == "present")
+    assert(judge(1000, 180, 970000, 1030000) == "present")
+    assert(judge(1000, 180, 970000, 1180000) == "present")
+    assert(judge(1000, 180, 970000, 1180001) == "gap")
+    assert(judge(1000, 180, 1000000, 1240000) == "gap")
+
+fn test_live_ok_needs_old_pulse_and_a_late_enough_check() -> Unit:
+    assert(live_ok(1000, 180, 1000000, 1180))
+    assert(live_ok(1000, 180, 999000, 5000))
+    assert(not live_ok(1000, 180, 1000001, 5000))
+    assert(not live_ok(1000, 180, 999000, 1179))
+
+# ---------------------------------------------------------------- sources (offline, real pulses)
+
+fn fixture(name: Text) -> Json:
+    return unwrap(json_parse(unwrap(read_text("fixtures/sources/" + name))))
+
+fn nth(list: Json, i: Int) -> Json:
+    return unwrap(json_index_safe(list, i))
+
+fn pulse_ts_ms(stamp: Text) -> Int:
+    return unwrap(iso_ms(stamp))
+
+fn nist_evidence(status: Text, a: Int, b: Int, key: Text) -> Json:
+    let f = fixture("nist.json")
+    let pulses = json_get(f, "pulses")
+    var e = json_object()
+    set e = json_set(e, "status", json_text(status))
+    set e = json_set(e, "previous", nth(pulses, a))
+    set e = json_set(e, key, nth(pulses, b))
+    set e = json_set(e, "certificate_pem", json_get(f, "certificate_pem"))
+    return e
+
+fn nist_t0_after(i: Int, plus_seconds: Int) -> Int:
+    let pulses = json_get(fixture("nist.json"), "pulses")
+    return pulse_ts_ms(json_as_text(json_get(nth(pulses, i), "timeStamp"))) // 1000 + plus_seconds
+
+fn test_nist_present_first_pulse_after_t0() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    let r = unwrap(check_nist(t0, nist_evidence("present", 3, 4, "pulse")))
+    assert(r.status == "present")
+    assert(len(r.value) == 64)
+    assert(status_code(r.status) == 1)
+
+fn test_nist_present_rejected_when_previous_is_after_t0() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    assert(not is_ok(check_nist(t0, nist_evidence("present", 4, 5, "pulse"))))
+
+fn test_nist_present_rejected_for_non_consecutive_or_not_after_t0() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    assert(not is_ok(check_nist(t0, nist_evidence("present", 3, 5, "pulse"))))
+    assert(not is_ok(check_nist(nist_t0_after(4, 10), nist_evidence("present", 3, 4, "pulse"))))
+
+fn test_nist_absent_proven_needs_a_real_gap_around_the_window() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    let proven = unwrap(check_nist_with(t0, 30, nist_evidence("absent-proven", 3, 4, "next")))
+    assert(proven.status == "absent-proven")
+    assert(len(proven.value) == 0)
+    assert(status_code(proven.status) == 0)
+
+fn test_nist_absent_claimed_while_pulse_in_window_is_rejected() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    assert(not is_ok(check_nist(t0, nist_evidence("absent-proven", 3, 4, "next"))))
+
+fn test_nist_absent_live_requires_old_pulse_and_late_check() -> Unit:
+    let f = fixture("nist.json")
+    let t0 = nist_t0_after(7, 5)
+    var e = json_object()
+    set e = json_set(e, "status", json_text("absent-live"))
+    set e = json_set(e, "latest", nth(json_get(f, "pulses"), 7))
+    set e = json_set(e, "certificate_pem", json_get(f, "certificate_pem"))
+    let ok = json_set(e, "checked_at", json_int(t0 + 180))
+    assert(unwrap(check_nist(t0, ok)).status == "absent-live")
+    assert(not is_ok(check_nist(t0, json_set(e, "checked_at", json_int(t0 + 179)))))
+    assert(not is_ok(check_nist(nist_t0_after(7, -5), json_set(e, "checked_at", json_int(t0 + 999)))))
+
+fn test_nist_tampered_pulse_is_rejected() -> Unit:
+    let t0 = nist_t0_after(3, 10)
+    let e = nist_evidence("present", 3, 4, "pulse")
+    let pulse = json_get(e, "pulse")
+    let flipped = json_set(pulse, "localRandomValue", json_text(text_replace(json_as_text(json_get(pulse, "localRandomValue")), "A", "B")))
+    assert(json_stringify(flipped) != json_stringify(pulse))
+    assert(not is_ok(check_nist(t0, json_set(e, "pulse", flipped))))
+    assert(not is_ok(check_nist(t0, json_set(e, "status", json_text("maybe")))))
+
+fn rng_evidence(status: Text, a: Int, b: Int, key: Text) -> Json:
+    let f = fixture("curby-rng.json")
+    let pulses = json_get(f, "pulses")
+    var e = json_object()
+    set e = json_set(e, "status", json_text(status))
+    set e = json_set(e, "chain", json_get(f, "chain"))
+    set e = json_set(e, "previous", nth(pulses, a))
+    set e = json_set(e, key, nth(pulses, b))
+    return e
+
+fn rng_ms(i: Int) -> Int:
+    let pulses = json_get(fixture("curby-rng.json"), "pulses")
+    return pulse_ts_ms(json_as_text(json_get(json_get(json_get(json_get(nth(pulses, i), "data"), "content"), "payload"), "timestamp")))
+
+fn test_curby_rng_present_first_pulse_after_t0() -> Unit:
+    let t0 = rng_ms(3) // 1000 + 1
+    let r = unwrap(check_curby_rng(t0, rng_evidence("present", 3, 4, "pulse")))
+    assert(r.status == "present")
+    assert(len(r.value) == 64)
+
+fn test_curby_rng_present_rejected_when_previous_is_after_t0() -> Unit:
+    let t0 = rng_ms(3) // 1000 + 1
+    assert(not is_ok(check_curby_rng(t0, rng_evidence("present", 4, 5, "pulse"))))
+    assert(not is_ok(check_curby_rng(t0, rng_evidence("present", 3, 5, "pulse"))))
+
+fn test_curby_rng_absent_proven_with_a_gap_and_rejected_without() -> Unit:
+    let t0 = rng_ms(3) // 1000 + 1
+    let small = (rng_ms(4) - t0 * 1000) // 1000 - 1
+    assert(small > 0)
+    assert(unwrap(check_curby_rng_with(t0, small, rng_evidence("absent-proven", 3, 4, "next"))).status == "absent-proven")
+    assert(not is_ok(check_curby_rng(t0, rng_evidence("absent-proven", 3, 4, "next"))))
+
+fn test_curby_rng_absent_live_and_pinned_chain() -> Unit:
+    let f = fixture("curby-rng.json")
+    let t0 = rng_ms(7) // 1000 + 1
+    var e = json_object()
+    set e = json_set(e, "status", json_text("absent-live"))
+    set e = json_set(e, "chain", json_get(f, "chain"))
+    set e = json_set(e, "latest", nth(json_get(f, "pulses"), 7))
+    assert(unwrap(check_curby_rng(t0, json_set(e, "checked_at", json_int(t0 + 180)))).status == "absent-live")
+    assert(not is_ok(check_curby_rng(t0, json_set(e, "checked_at", json_int(t0 + 100)))))
+    let q = fixture("curby-q.json")
+    assert(not is_ok(check_curby_rng(t0, json_set(json_set(e, "chain", json_get(q, "chain")), "checked_at", json_int(t0 + 180)))))
+
+fn qrow(stage: Text, round: Int, seconds: Int) -> QRow:
+    return QRow(stage, round, seconds * 1000)
+
+fn test_q_classify_present_gap_and_incomplete() -> Unit:
+    # t0 = 1000 s, W = 100 s, deadline 1100 s
+    let before = qrow("randomness", 1, 990)
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020), qrow("randomness", 2, 1090)]) == "present")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020), qrow("randomness", 2, 1100)]) == "present")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020), qrow("randomness", 2, 1101)]) == "gap")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020), qrow("request", 3, 1300)]) == "gap")
+    assert(q_classify(1000, 100, [before, qrow("randomness", 1, 1050), qrow("request", 2, 1400)]) == "gap")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010)]) == "incomplete")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("precommit", 2, 1020)]) == "incomplete")
+
+fn test_q_classify_rejects_a_pulse_hidden_in_the_window() -> Unit:
+    let before = qrow("randomness", 1, 990)
+    # the first round's randomness pulse arrived at 1090 but the run goes on to a pulse at 1300
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1010), qrow("randomness", 2, 1090), qrow("request", 3, 1300)]) == "invalid")
+    # a pulse not later than t0 after the first row, or time running backwards
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1000), qrow("randomness", 2, 1090)]) == "invalid")
+    assert(q_classify(1000, 100, [before, qrow("request", 2, 1020), qrow("randomness", 2, 1010)]) == "invalid")
+    assert(q_classify(1000, 100, [qrow("randomness", 1, 1001), qrow("request", 2, 1010)]) == "invalid")
+    assert(q_classify(1000, 100, [before]) == "incomplete")
+
+fn q_evidence(status: Text) -> Json:
+    let f = fixture("curby-q.json")
+    var list = json_array()
+    for key in ["before", "request", "precommit", "randomness"]:
+        set list = json_push(list, json_get(f, key))
+    var e = json_object()
+    set e = json_set(e, "status", json_text(status))
+    set e = json_set(e, "chain", json_get(f, "chain"))
+    return json_set(e, "pulses", list)
+
+fn q_ms(key: Text) -> Int:
+    let payload = json_get(json_get(json_get(json_get(fixture("curby-q.json"), key), "data"), "content"), "payload")
+    return pulse_ts_ms(json_as_text(json_get(payload, "timestamp")))
+
+fn test_curby_q_present_complete_round() -> Unit:
+    let t0 = q_ms("before") // 1000 + 1
+    let w = (q_ms("randomness") - t0 * 1000) // 1000 + 5
+    let r = unwrap(check_curby_q_with(t0, w, q_evidence("present")))
+    assert(r.status == "present")
+    assert(len(r.value) == 64)
+
+fn test_curby_q_present_rejected_when_randomness_arrives_after_the_window() -> Unit:
+    let t0 = q_ms("before") // 1000 + 1
+    let w = (q_ms("precommit") - t0 * 1000) // 1000 + 1
+    assert(not is_ok(check_curby_q_with(t0, w, q_evidence("present"))))
+
+fn test_curby_q_absent_proven_when_the_round_finishes_after_the_window() -> Unit:
+    let t0 = q_ms("before") // 1000 + 1
+    let w = (q_ms("precommit") - t0 * 1000) // 1000 + 1
+    let r = unwrap(check_curby_q_with(t0, w, q_evidence("absent-proven")))
+    assert(r.status == "absent-proven")
+    assert(len(r.value) == 0)
+
+fn test_curby_q_absent_claimed_while_randomness_is_in_window_is_rejected() -> Unit:
+    let t0 = q_ms("before") // 1000 + 1
+    let w = (q_ms("randomness") - t0 * 1000) // 1000 + 5
+    assert(not is_ok(check_curby_q_with(t0, w, q_evidence("absent-proven"))))
+
+fn test_curby_q_broken_run_is_rejected() -> Unit:
+    let t0 = q_ms("before") // 1000 + 1
+    let w = (q_ms("randomness") - t0 * 1000) // 1000 + 5
+    let e = q_evidence("present")
+    let f = fixture("curby-q.json")
+    var skipped = json_array()
+    for key in ["before", "request", "randomness"]:
+        set skipped = json_push(skipped, json_get(f, key))
+    assert(not is_ok(check_curby_q_with(t0, w, json_set(e, "pulses", skipped))))
+
+fn test_curby_q_idle_is_absent_live_with_the_latest_pulse() -> Unit:
+    let f = fixture("curby-q.json")
+    let latest = json_get(f, "latest")
+    let stamp = json_as_text(json_get(json_get(json_get(json_get(latest, "data"), "content"), "payload"), "timestamp"))
+    let t0 = pulse_ts_ms(stamp) // 1000 + 1
+    var e = json_object()
+    set e = json_set(e, "status", json_text("absent-live"))
+    set e = json_set(e, "chain", json_get(f, "chain"))
+    set e = json_set(e, "latest", latest)
+    let ok = unwrap(check_curby_q(t0, json_set(e, "checked_at", json_int(t0 + 1890))))
+    assert(ok.status == "absent-live")
+    assert(status_code(ok.status) == 0)
+    assert(not is_ok(check_curby_q(t0, json_set(e, "checked_at", json_int(t0 + 1889)))))
+
+fn test_not_requested_sources_carry_status_two() -> Unit:
+    let r = not_requested("curby-q")
+    assert(status_code(r.status) == 2)
+    assert(len(r.value) == 0)
+    assert(source_value(r).status == 2)

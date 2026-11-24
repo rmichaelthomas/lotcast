@@ -1,0 +1,1 @@
+{"curby_rng": {"period_seconds": 60, "window_seconds": 180, "pulses_sampled": 600}, "curby_q": {"median_round_seconds": 630, "window_seconds": 1890, "rounds_sampled": 332, "latest_index_when_measured": 84647}, "nist": {"period_seconds": 60, "window_seconds": 180}, "measured_at": "2026-11-24T07:04:11Z"}

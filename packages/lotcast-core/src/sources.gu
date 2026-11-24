@@ -1,0 +1,272 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:text"
+import "std:json"
+import "pkg:beacons/src/lib.gu"
+import "encode.gu"
+import "seed.gu"
+import "window.gu"
+
+# The three sources besides drand (spec 4.2): NIST beacon 2.0, CURBy-RNG and CURBy-Q. Each
+# `check_*` takes the evidence a receipt carries (no network) and returns what it proves; the
+# network resolvers in resolve.gu build that same evidence and then call these, so the builder and
+# the verifier cannot disagree.
+#
+# A source ends up as one of:
+#   present        the first pulse after t0 arrived within the window; its value goes into the seed
+#   absent-proven  verified pulses show no pulse arrived in the window (an empty value, status 0)
+#   absent-live    the chain has nothing after t0 yet and the check was made after the window
+#                  (an empty value, status 0; the verifier repeats the live check)
+
+pub record SourceResult:
+    id: Text
+    status: Text
+    value: Bytes
+    evidence: Json
+
+fn source_error(message: Text) -> StdError:
+    return std_error("E_LOTCAST_SOURCE", message)
+
+pub fn status_code(status: Text) -> Int:
+    if status == "present":
+        return 1
+    if status == "absent-proven" or status == "absent-live":
+        return 0
+    return 2
+
+pub fn source_value(r: SourceResult) -> SourceValue:
+    return SourceValue(r.id, status_code(r.status), r.value)
+
+# A source the client left out of the request.
+pub fn not_requested(id: Text) -> SourceResult:
+    var evidence = json_object()
+    set evidence = json_set(evidence, "id", json_text(id))
+    set evidence = json_set(evidence, "status", json_text("not-requested"))
+    return SourceResult(id, "not-requested", bytes_from_ints([]), evidence)
+
+fn text_member(j: Json, key: Text) -> Result[Text, StdError]:
+    let r = json_get_text_safe(j, key)
+    if not is_ok(r):
+        return Err(source_error("evidence is missing " + key))
+    return Ok(unwrap(r))
+
+fn json_member(j: Json, key: Text) -> Result[Json, StdError]:
+    let r = json_get_safe(j, key)
+    if not is_ok(r):
+        return Err(source_error("evidence is missing " + key))
+    return Ok(unwrap(r))
+
+fn int_member(j: Json, key: Text) -> Result[Int, StdError]:
+    let r = json_get_int_safe(j, key)
+    if not is_ok(r):
+        return Err(source_error("evidence is missing " + key))
+    return Ok(unwrap(r))
+
+fn finish(id: Text, status: Text, value: Bytes, evidence: Json) -> Result[SourceResult, StdError]:
+    return Ok(SourceResult(id, status, value, evidence))
+
+# ---------------------------------------------------------------- NIST beacon 2.0
+
+fn nist_pulse(evidence: Json, key: Text) -> Result[NistPulse, StdError]:
+    let raw = json_member(evidence, key)?
+    return nist_pulse_from_json(raw)
+
+fn nist_time(p: NistPulse) -> Result[Int, StdError]:
+    return iso_ms(p.time_stamp)
+
+fn nist_ok(p: NistPulse, pem: Text) -> Result[Bool, StdError]:
+    if p.chain_index != 2:
+        return Err(source_error("a NIST pulse must be on chain 2"))
+    if not nist_verify(p, pem)?:
+        return Err(source_error("a NIST pulse does not verify"))
+    return Ok(true)
+
+# `w` is the window in seconds (nist_window for the real rule; tests choose their own).
+pub fn check_nist_with(t0: Int, w: Int, evidence: Json) -> Result[SourceResult, StdError]:
+    let status = text_member(evidence, "status")?
+    let pem = text_member(evidence, "certificate_pem")?
+    if status == "absent-live":
+        let latest = nist_pulse(evidence, "latest")?
+        let checked_at = int_member(evidence, "checked_at")?
+        let proven = nist_ok(latest, pem)?
+        if not live_ok(t0, w, nist_time(latest)?, checked_at):
+            return Err(source_error("the NIST pulse is later than t0 or the check was made before the window ended"))
+        return finish("nist-beacon-2", "absent-live", bytes_from_ints([]), evidence)
+    var previous_key = "previous"
+    var next_key = "pulse"
+    var expected = "present"
+    if status == "absent-proven":
+        set next_key = "next"
+        set expected = "gap"
+    else:
+        if status != "present":
+            return Err(source_error("a NIST source is present, absent-proven or absent-live"))
+    let next = nist_pulse(evidence, next_key)?
+    let previous = nist_pulse(evidence, previous_key)?
+    var previous_pem = pem
+    if json_has(evidence, "previous_certificate_pem"):
+        set previous_pem = text_member(evidence, "previous_certificate_pem")?
+    let a = nist_ok(previous, previous_pem)?
+    let b = nist_ok(next, pem)?
+    if next.pulse_index != previous.pulse_index + 1 or not nist_verify_precommitment(previous, next)?:
+        return Err(source_error("the two NIST pulses are not consecutive"))
+    let verdict = judge(t0, w, nist_time(previous)?, nist_time(next)?)
+    if verdict != expected:
+        return Err(source_error("the NIST pulses do not prove " + status + " (they are " + verdict + ")"))
+    if status == "present":
+        return finish("nist-beacon-2", "present", nist_output_value(next), evidence)
+    return finish("nist-beacon-2", "absent-proven", bytes_from_ints([]), evidence)
+
+pub fn check_nist(t0: Int, evidence: Json) -> Result[SourceResult, StdError]:
+    return check_nist_with(t0, window_seconds("nist-beacon-2")?, evidence)
+
+# ---------------------------------------------------------------- CURBy (Twine)
+
+fn twine_rec(evidence: Json, key: Text) -> Result[TwineRecord, StdError]:
+    let raw = json_member(evidence, key)?
+    return twine_record_from_json(raw)
+
+fn payload_text(r: TwineRecord, key: Text) -> Result[Text, StdError]:
+    let payload = json_member(r.content, "payload")?
+    return text_member(payload, key)
+
+fn pulse_ms(r: TwineRecord) -> Result[Int, StdError]:
+    return iso_ms(payload_text(r, "timestamp")?)
+
+fn chain_of(evidence: Json, pinned: Text) -> Result[TwineRecord, StdError]:
+    let chain = twine_rec(evidence, "chain")?
+    if chain.cid != pinned:
+        return Err(source_error("the chain record is not the pinned chain"))
+    return Ok(chain)
+
+pub fn check_curby_rng_with(t0: Int, w: Int, evidence: Json) -> Result[SourceResult, StdError]:
+    let status = text_member(evidence, "status")?
+    let chain = chain_of(evidence, curby_rng_chain())?
+    if status == "absent-live":
+        let latest = twine_rec(evidence, "latest")?
+        let checked_at = int_member(evidence, "checked_at")?
+        if not twine_verify(chain, latest)?:
+            return Err(source_error("the CURBy-RNG pulse does not verify"))
+        if not live_ok(t0, w, pulse_ms(latest)?, checked_at):
+            return Err(source_error("the CURBy-RNG pulse is later than t0 or the check was made before the window ended"))
+        return finish("curby-rng", "absent-live", bytes_from_ints([]), evidence)
+    var next_key = "pulse"
+    var expected = "present"
+    if status == "absent-proven":
+        set next_key = "next"
+        set expected = "gap"
+    else:
+        if status != "present":
+            return Err(source_error("a CURBy-RNG source is present, absent-proven or absent-live"))
+    let next = twine_rec(evidence, next_key)?
+    let previous = twine_rec(evidence, "previous")?
+    let randomness = curby_rng_randomness(chain, next, previous)?
+    let verdict = judge(t0, w, pulse_ms(previous)?, pulse_ms(next)?)
+    if verdict != expected:
+        return Err(source_error("the CURBy-RNG pulses do not prove " + status + " (they are " + verdict + ")"))
+    if status == "present":
+        return finish("curby-rng", "present", randomness, evidence)
+    return finish("curby-rng", "absent-proven", bytes_from_ints([]), evidence)
+
+pub fn check_curby_rng(t0: Int, evidence: Json) -> Result[SourceResult, StdError]:
+    return check_curby_rng_with(t0, window_seconds("curby-rng")?, evidence)
+
+# One CURBy-Q pulse reduced to what the inclusion rule reads.
+pub record QRow:
+    stage: Text
+    round: Int
+    ts_ms: Int
+
+# Classifies a run of consecutive CURBy-Q pulses against t0 and its window. `rows[0]` is the last
+# pulse not later than t0; the others are later. The run must end where the rule stops reading:
+#   present   at the randomness pulse of the first round whose request came after t0, arrived by t0 + W
+#   gap       at the first pulse later than t0 + W, with that round's randomness pulse not among the
+#             pulses up to t0 + W (or no round started by then)
+# Anything else is "incomplete" (the run is not canonical) or "invalid" (it contradicts itself).
+pub fn q_classify(t0: Int, w: Int, rows: List[QRow]) -> Text:
+    let n = len(rows)
+    if n < 2:
+        return "incomplete"
+    let t0_ms = t0 * 1000
+    let deadline = (t0 + w) * 1000
+    if rows[0].ts_ms > t0_ms:
+        return "invalid"
+    var i = 1
+    while i < n:
+        if rows[i].ts_ms <= t0_ms or rows[i].ts_ms < rows[i - 1].ts_ms:
+            return "invalid"
+        set i = i + 1
+    var request_at = -1
+    set i = 1
+    while i < n and request_at < 0:
+        if rows[i].stage == "request":
+            set request_at = i
+        set i = i + 1
+    var randomness_at = -1
+    if request_at >= 0:
+        set i = request_at + 1
+        while i < n and randomness_at < 0:
+            if rows[i].stage == "randomness" and rows[i].round == rows[request_at].round:
+                set randomness_at = i
+            set i = i + 1
+    let last = rows[n - 1]
+    if randomness_at >= 0 and randomness_at == n - 1 and last.ts_ms <= deadline:
+        return "present"
+    if last.ts_ms > deadline and rows[n - 2].ts_ms <= deadline:
+        if randomness_at >= 0 and randomness_at < n - 1 and rows[randomness_at].ts_ms <= deadline:
+            return "invalid"
+        return "gap"
+    return "incomplete"
+
+fn q_row(r: TwineRecord) -> Result[QRow, StdError]:
+    let payload = json_member(r.content, "payload")?
+    return Ok(QRow(text_member(payload, "stage")?, int_member(payload, "round")?, pulse_ms(r)?))
+
+fn pulses_of(evidence: Json) -> Result[List[TwineRecord], StdError]:
+    let list = json_member(evidence, "pulses")?
+    var out: List[TwineRecord] = []
+    var i = 0
+    while i < json_len(list):
+        let raw = json_index_safe(list, i)
+        if not is_ok(raw):
+            return Err(source_error("a pulse is missing"))
+        let rec = twine_record_from_json(unwrap(raw))?
+        set out = list_push(out, rec)
+        set i = i + 1
+    return Ok(out)
+
+pub fn check_curby_q_with(t0: Int, w: Int, evidence: Json) -> Result[SourceResult, StdError]:
+    let status = text_member(evidence, "status")?
+    let chain = chain_of(evidence, curby_q_chain())?
+    if status == "absent-live":
+        let latest = twine_rec(evidence, "latest")?
+        let checked_at = int_member(evidence, "checked_at")?
+        if not twine_verify(chain, latest)?:
+            return Err(source_error("the CURBy-Q pulse does not verify"))
+        if not live_ok(t0, w, pulse_ms(latest)?, checked_at):
+            return Err(source_error("the CURBy-Q pulse is later than t0 or the check was made before the window ended"))
+        return finish("curby-q", "absent-live", bytes_from_ints([]), evidence)
+    if status != "present" and status != "absent-proven":
+        return Err(source_error("a CURBy-Q source is present, absent-proven or absent-live"))
+    let pulses = pulses_of(evidence)?
+    var rows: List[QRow] = []
+    var i = 0
+    while i < len(pulses):
+        if not twine_verify(chain, pulses[i])?:
+            return Err(source_error("a CURBy-Q pulse does not verify"))
+        if i > 0 and (twine_link_count(pulses[i]) == 0 or twine_link(pulses[i], 0) != pulses[i - 1].cid):
+            return Err(source_error("the CURBy-Q pulses are not consecutive"))
+        let row = q_row(pulses[i])?
+        set rows = list_push(rows, row)
+        set i = i + 1
+    let verdict = q_classify(t0, w, rows)
+    if status == "present" and verdict == "present":
+        let value = curby_randomness(pulses[len(pulses) - 1])?
+        return finish("curby-q", "present", value, evidence)
+    if status == "absent-proven" and verdict == "gap":
+        return finish("curby-q", "absent-proven", bytes_from_ints([]), evidence)
+    return Err(source_error("the CURBy-Q pulses do not prove " + status + " (they are " + verdict + ")"))
+
+pub fn check_curby_q(t0: Int, evidence: Json) -> Result[SourceResult, StdError]:
+    return check_curby_q_with(t0, window_seconds("curby-q")?, evidence)

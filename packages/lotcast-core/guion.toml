@@ -11,7 +11,9 @@ network = [
 enabled = true
 
 [dependencies.beacons]
-path = "../../../guion/packages/beacons"
+registry = "^0.3"
+sha256 = "7dba151b9d59a7d7c79f42f7d262db8d39818907af308caa99d67a3f707e242f"
+url = "https://guion-registry.thomasbuild.workers.dev/objects/7dba151b9d59a7d7c79f42f7d262db8d39818907af308caa99d67a3f707e242f.tar"
 version = "0.3.0"
 
 [package]

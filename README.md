@@ -18,7 +18,7 @@ guion test tests_enumerate.gu   # exact odds by enumeration (spec §7.1)
 guion test tests_statistical.gu # chi-square on the real stream (spec §7.2, 20,000 draws)
 ```
 
-Needs a Guion build at artifact format 89 or later.
+Needs Guion 0.8.0 or later. The `beacons` dependency installs from the Guion registry (`beacons` 0.3.0).
 
 Receipts from this slice are **unanchored**: there is no log or timestamp yet, so they prove the outcome follows from a real drand round and the request, not that the request was fixed before that round existed. They verify as `verified-unanchored` and name steps 2 and 3 as not checked. The log, the timestamps, the other three beacons, the other methods and their audits, the Python verifier and the stream batteries are the next steps of the build order in the design spec (§11).
 

@@ -1,0 +1,222 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:fs"
+import "std:json"
+import "std:process"
+import "std:text"
+import "std:http"
+import "pkg:beacons/src/lib.gu"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+import "config.gu"
+import "store.gu"
+import "epoch.gu"
+import "stamper.gu"
+import "watch.gu"
+import "pins.gu"
+import "limits.gu"
+
+# The network side of the service: the real stamping, beacon and receipt functions the loops pass to
+# the epoch writer, the stamper and the watcher, and the loops themselves. A loop stops when
+# `state/stop` appears in the data directory (or after `max_ticks` passes when that is not 0).
+
+fn now_seconds() -> Int:
+    return unix_time_ms() // 1000
+
+fn stopped(store: Store) -> Bool:
+    return store_has(store, "state/stop")
+
+# ---------------------------------------------------------------- the real adapters
+
+pub fn real_stamp(note: Text, tsa_ids: List[Text]) -> Result[Json, StdError]:
+    return anchor_checkpoint(note, tsa_ids)
+
+# One tiny stamp request, to find out whether an authority answers again (not a checkpoint stamp).
+pub fn real_probe(id: Text) -> Bool:
+    let pin = pin_by_id(id)
+    if not is_ok(pin):
+        return false
+    return is_ok(tsa_stamp(unwrap(pin), crypto_sha512(bytes_from_text("lotcast probe"))))
+
+pub fn real_drand(round: Int) -> Result[DrandRound, StdError]:
+    return drand_fetch(drand_quicknet(), round)
+
+pub fn real_source(id: Text, t0: Int) -> Result[SourceResult, StdError]:
+    if id == "nist-beacon-2":
+        return resolve_nist(t0)
+    if id == "curby-rng":
+        return resolve_curby_rng(t0)
+    if id == "curby-q":
+        return resolve_curby_q(t0)
+    return Err(std_error("E_LOTCAST_SOURCE", "unknown source: " + id))
+
+pub fn real_build(request: DrawRequest, log_part: Json, promise: Text, drand: DrandRound, others: List[SourceResult], operator_key: Bytes) -> Result[Json, StdError]:
+    return build_anchored_receipt(request, log_part, promise, drand, others, operator_key, tsa_pins())
+
+# ---------------------------------------------------------------- the loops
+
+fn report(who: Text, problem: StdError) -> Unit:
+    eprint(who + ": " + problem.code + ": " + problem.message)
+
+# The writer: closes epochs and drains the inbox every quarter second. After any error it reopens
+# the log, which also resynchronises it with the disk.
+pub fn writer_loop(store: Store, cfg: Config, seed: Bytes, max_ticks: Int) -> Int:
+    var opened = writer_open(store, cfg, seed)
+    var ticks = 0
+    while not stopped(store) and (max_ticks == 0 or ticks < max_ticks):
+        if is_ok(opened):
+            let next = writer_tick(unwrap(opened), now_seconds())
+            if is_ok(next):
+                set opened = next
+            else:
+                match next:
+                    Err(problem):
+                        report("writer", problem)
+                    Ok(ignored):
+                        set ticks = ticks
+                sleep_ms(2000)
+                set opened = writer_open(store, cfg, seed)
+        else:
+            match opened:
+                Err(problem):
+                    report("writer (opening the log)", problem)
+                Ok(ignored):
+                    set ticks = ticks
+            sleep_ms(2000)
+            set opened = writer_open(store, cfg, seed)
+        set ticks = ticks + 1
+        sleep_ms(250)
+    return ticks
+
+pub fn stamper_loop(store: Store, max_ticks: Int) -> Int:
+    var failing: Map[Text, Int] = {}
+    var ticks = 0
+    while not stopped(store) and (max_ticks == 0 or ticks < max_ticks):
+        let next = stamper_tick(store, failing, now_seconds(), real_stamp, real_probe, 1)
+        if is_ok(next):
+            set failing = unwrap(next)
+        else:
+            match next:
+                Err(problem):
+                    report("stamper", problem)
+                Ok(ignored):
+                    set ticks = ticks
+        set ticks = ticks + 1
+        sleep_ms(1000)
+    return ticks
+
+# One line per pinned certificate that is expiring, expired or unreadable.
+fn alert_pins(now: Int) -> Unit:
+    let report = pin_report(now)
+    let pins = json_get(report, "pins")
+    for i in range(0, json_len(pins)):
+        let p = unwrap(json_index_safe(pins, i))
+        let status = json_as_text(json_get(p, "status"))
+        if status != "ok":
+            eprint("ALERT: pinned certificate " + json_as_text(json_get(p, "name")) + " is " + status + "; replace the pin (docs/operations.md)")
+
+pub fn watch_loop(store: Store, cfg: Config, operator_key: Bytes, max_ticks: Int) -> Int:
+    var ticks = 0
+    var last_snapshot = 0
+    var last_alert_day = -1
+    while not stopped(store) and (max_ticks == 0 or ticks < max_ticks):
+        let now = now_seconds()
+        let done = watch_once(store, cfg.origin, operator_key, now, real_drand, real_source, real_build)
+        if not is_ok(done):
+            match done:
+                Err(problem):
+                    report("watcher", problem)
+                Ok(ignored):
+                    set ticks = ticks
+        if now - last_snapshot >= 60:
+            let saved = store_put_json(store, "state/sources.json", sources_snapshot(now))
+            set last_snapshot = now
+            let swept = rate_sweep(store, now)
+        if now // 86400 != last_alert_day:
+            alert_pins(now)
+            set last_alert_day = now // 86400
+        set ticks = ticks + 1
+        sleep_ms(2000)
+    return ticks
+
+# ---------------------------------------------------------------- GET /v1/sources
+
+fn twine_time_ms(r: TwineRecord) -> Result[Int, StdError]:
+    let payload = json_get_safe(r.content, "payload")
+    if not is_ok(payload):
+        return Err(std_error("E_LOTCAST_FETCH", "a pulse has no payload"))
+    let stamp = json_get_text_safe(unwrap(payload), "timestamp")
+    if not is_ok(stamp):
+        return Err(std_error("E_LOTCAST_FETCH", "a pulse has no timestamp"))
+    return iso_ms(unwrap(stamp))
+
+fn source_entry(id: Text, window: Int, latest_index: Int, latest_ms: Int, verified: Bool, period: Int, now: Int) -> Json:
+    var s = json_object()
+    set s = json_set(s, "id", json_text(id))
+    set s = json_set(s, "window_seconds", json_int(window))
+    set s = json_set(s, "latest_index", json_int(latest_index))
+    set s = json_set(s, "latest_time", json_int(latest_ms // 1000))
+    set s = json_set(s, "verified", json_bool(verified))
+    set s = json_set(s, "state", json_text(live_state(now - latest_ms // 1000, period)))
+    return s
+
+fn live_state(age: Int, period: Int) -> Text:
+    if age <= 2 * period + 5:
+        return "live"
+    return "idle"
+
+fn source_failed(id: Text, problem: StdError) -> Json:
+    return json_set(json_set(json_set(json_object(), "id", json_text(id)), "state", json_text("unreachable")), "error", json_text(problem.code))
+
+fn drand_entry(now: Int) -> Json:
+    let chain = drand_quicknet()
+    let got = drand_fetch(chain, drand_round_at(chain, now))
+    if not is_ok(got):
+        match got:
+            Err(problem):
+                return source_failed("drand-quicknet", problem)
+            Ok(ignored):
+                return source_failed("drand-quicknet", std_error("E_LOTCAST_FETCH", "no round"))
+    let round = unwrap(got).round
+    return source_entry("drand-quicknet", 0, round, drand_round_time(chain, round) * 1000, true, chain.period, now)
+
+fn twine_entry(id: Text, cid: Text, period: Int, now: Int) -> Json:
+    let window = window_seconds(id)
+    let chain = twine_fetch_chain(cid)
+    let latest = twine_fetch_latest(cid)
+    if not is_ok(window) or not is_ok(chain) or not is_ok(latest):
+        return source_failed(id, std_error("E_LOTCAST_FETCH", "the chain could not be read"))
+    let ms = twine_time_ms(unwrap(latest))
+    let index = json_get_int_safe(unwrap(latest).content, "index")
+    if not is_ok(ms) or not is_ok(index):
+        return source_failed(id, std_error("E_LOTCAST_FETCH", "the latest pulse is malformed"))
+    let verified = twine_verify(unwrap(chain), unwrap(latest))
+    return source_entry(id, unwrap(window), unwrap(index), unwrap(ms), is_ok(verified) and unwrap(verified), period, now)
+
+# NIST's latest pulse is listed by its own time and index; its signature is checked by the receipt
+# verifier (which fetches the certificate), not here, so `verified` is false.
+fn nist_entry(now: Int) -> Json:
+    match http_get("https://beacon.nist.gov/beacon/2.0/pulse/last"):
+        Err(failure):
+            return source_failed("nist-beacon-2", std_error("E_LOTCAST_FETCH", "the pulse could not be fetched"))
+        Ok(body):
+            let parsed = json_parse(body)
+            if not is_ok(parsed):
+                return source_failed("nist-beacon-2", std_error("E_LOTCAST_FETCH", "not JSON"))
+            let pulse = nist_pulse_from_json(json_get(unwrap(parsed), "pulse"))
+            if not is_ok(pulse):
+                return source_failed("nist-beacon-2", std_error("E_LOTCAST_FETCH", "the pulse is malformed"))
+            let ms = iso_ms(unwrap(pulse).time_stamp)
+            if not is_ok(ms):
+                return source_failed("nist-beacon-2", std_error("E_LOTCAST_FETCH", "the pulse has no time"))
+            return source_entry("nist-beacon-2", 180, unwrap(pulse).pulse_index, unwrap(ms), false, 60, now)
+
+pub fn sources_snapshot(now: Int) -> Json:
+    var listed = json_array()
+    set listed = json_push(listed, drand_entry(now))
+    set listed = json_push(listed, nist_entry(now))
+    set listed = json_push(listed, twine_entry("curby-rng", curby_rng_chain(), 60, now))
+    set listed = json_push(listed, twine_entry("curby-q", curby_q_chain(), 630, now))
+    var out = json_set(json_set(json_object(), "sources", listed), "checked_at", json_int(now))
+    return json_set(out, "pins", pin_report(now))

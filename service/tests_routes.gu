@@ -1,0 +1,211 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:fs"
+import "std:http_response"
+import "std:json"
+import "std:text"
+import "pkg:web/src/lib.gu"
+import "src/config.gu"
+import "src/request.gu"
+import "src/store.gu"
+import "src/epoch.gu"
+import "src/stamper.gu"
+import "src/routes.gu"
+
+# HTTP route tests. They live apart from tests.gu because the web package and the draw core both
+# define a `Request` type, and a test file may import only one of them.
+#
+#   guion test tests_routes.gu
+
+fn main() -> Int:
+    return 0
+
+fn temp_root() -> Text:
+    return unwrap(fs_temp_dir("lotcast-routes"))
+
+fn cfg_at(root: Text, trust: Int) -> Config:
+    return Config("127.0.0.1", 8080, root, "", 5, 20, "lotcast.test/log", 2, trust, root + "/registry.json")
+
+fn make_app(root: Text, trust: Int) -> App:
+    let s = unwrap(store_open(root))
+    return unwrap(app_build(cfg_at(root, trust), 0))
+
+fn call(app: App, method: Text, path: Text, body: Text) -> Response:
+    let base = request_new(method, path)
+    return app_respond(app, Request(base.method, base.path, base.query, base.headers, bytes_from_text(body), base.params))
+
+fn call_with(app: App, method: Text, path: Text, body: Text, headers: List[Header]) -> Response:
+    let base = request_new(method, path)
+    return app_respond(app, Request(base.method, base.path, base.query, headers, bytes_from_text(body), base.params))
+
+fn body_of(r: Response) -> Text:
+    return unwrap(encoding_utf8_decode(r.body.data))
+
+# The bytes of a file-backed response (the server sends them in blocks; this reads the first one).
+fn file_bytes(r: Response) -> Bytes:
+    let plan = unwrap(unwrap(response_file_plan(r)))
+    return unwrap(response_file_block(plan, 0))
+
+fn json_body(r: Response) -> Json:
+    return unwrap(json_parse(body_of(r)))
+
+fn error_code(r: Response) -> Text:
+    return json_as_text(json_get(json_get(json_body(r), "error"), "code"))
+
+fn nonce_body(n: Int) -> Text:
+    var hex = ""
+    for i in range(0, 32):
+        set hex = hex + "0" + text_slice("0123456789abcdef", (n + i) % 16, (n + i) % 16 + 1)
+    return "{\"tradition\":\"iching\",\"method\":\"coins\",\"sources\":[\"drand-quicknet\"],\"nonce\":\"" + hex + "\"}"
+
+fn test_traditions_is_json_and_lists_methods() -> Unit:
+    let app = make_app(temp_root(), 0)
+    let r = call(app, "GET", "/v1/traditions", "")
+    assert(r.status == 200)
+    assert(json_len(json_get(json_body(r), "methods")) == 5)
+    assert(response_header(r, "Content-Type") == Some("application/json; charset=utf-8"))
+
+fn test_unknown_route_is_404_and_wrong_method_is_405() -> Unit:
+    let app = make_app(temp_root(), 0)
+    assert(call(app, "GET", "/v1/nothing", "").status == 404)
+    assert(call(app, "DELETE", "/v1/traditions", "").status == 405)
+
+fn test_post_draws_queues_and_answers_202_with_what_it_waits_on_when_no_writer_runs() -> Unit:
+    let root = temp_root()
+    let app = make_app(root, 0)
+    let r = call(app, "POST", "/v1/draws", nonce_body(1))
+    assert(r.status == 202)
+    assert(json_as_text(json_get(json_body(r), "status")) == "pending")
+    assert(json_as_text(json_get(unwrap(json_index_safe(json_get(json_body(r), "waiting_on"), 0)), "source")) == "log")
+    assert(len(store_inbox_ids(unwrap(store_open(root)))) == 1)
+
+fn test_post_draws_validation_errors_carry_their_codes() -> Unit:
+    let app = make_app(temp_root(), 0)
+    assert(error_code(call(app, "POST", "/v1/draws", "{}")) == "E_REQUEST")
+    assert(call(app, "POST", "/v1/draws", "{}").status == 400)
+    var big = "{\"x\":\""
+    for i in range(0, 6554):
+        set big = big + "0123456789"
+    let r = call(app, "POST", "/v1/draws", big + "\"}")
+    assert(r.status == 413)
+    assert(error_code(r) == "E_TOO_LARGE")
+
+fn test_get_draw_unknown_is_404() -> Unit:
+    let app = make_app(temp_root(), 0)
+    assert(call(app, "GET", "/v1/draws/00000000000000000000000000000000", "").status == 404)
+    assert(call(app, "GET", "/v1/draws/zzz", "").status == 404)
+    assert(call(app, "GET", "/v1/draws/00000000000000000000000000000000/receipt", "").status == 404)
+
+fn test_verify_junk_is_400_and_says_the_service_when_it_answers() -> Unit:
+    let app = make_app(temp_root(), 0)
+    assert(call(app, "POST", "/v1/verify", "nope").status == 400)
+    let r = call(app, "POST", "/v1/verify", "{\"receipt\":{}}")
+    assert(r.status == 200)
+    assert(json_as_text(json_get(json_body(r), "verified_by")) == "service")
+
+fn test_registry_and_sources() -> Unit:
+    let root = temp_root()
+    let app = make_app(root, 0)
+    assert(call(app, "GET", "/v1/registry", "").status == 404)
+    let wrote = write_text_atomic(root + "/registry.json", "{\"registry\":\"lotcast/registry/v1\"}")
+    assert(call(app, "GET", "/v1/registry", "").status == 200)
+    assert(call(app, "GET", "/v1/sources", "").status == 200)
+
+fn test_sixty_first_post_in_a_minute_is_rate_limited() -> Unit:
+    let app = make_app(temp_root(), 0)
+    for i in range(0, 60):
+        let r = call(app, "POST", "/v1/draws", "{}")
+        assert(r.status == 400)
+    let limited = call(app, "POST", "/v1/draws", "{}")
+    assert(limited.status == 429)
+    assert(error_code(limited) == "E_RATE")
+
+fn test_a_client_cannot_dodge_the_limit_by_inventing_forwarded_addresses() -> Unit:
+    let app = make_app(temp_root(), 1)
+    for i in range(0, 60):
+        let h = [unwrap(header_new("X-Forwarded-For", "10.0." + int_to_text(i) + ".1, 203.0.113.9"))]
+        assert(call_with(app, "POST", "/v1/draws", "{}", h).status == 400)
+    let h = [unwrap(header_new("X-Forwarded-For", "10.9.9.9, 203.0.113.9"))]
+    assert(call_with(app, "POST", "/v1/draws", "{}", h).status == 429)
+    let other = [unwrap(header_new("X-Forwarded-For", "10.9.9.9, 198.51.100.4"))]
+    assert(call_with(app, "POST", "/v1/draws", "{}", other).status == 400)
+
+fn test_a_client_cannot_set_the_services_own_headers() -> Unit:
+    let root = temp_root()
+    let app = make_app(root, 0)
+    let h = [unwrap(header_new("x-lotcast-data", "/etc"))]
+    assert(call_with(app, "GET", "/v1/sources", "", h).status == 200)
+    assert(not store_has(unwrap(store_open(root)), "../../etc"))
+    let spoof = [unwrap(header_new("X-Lotcast-Registry", "/etc/passwd"))]
+    assert(call_with(app, "GET", "/v1/registry", "", spoof).status == 404)
+
+fn test_log_files_are_served_byte_for_byte_and_nothing_else() -> Unit:
+    let root = temp_root()
+    let app = make_app(root, 0)
+    let made = fs_make_dir(root + "/log")
+    let made2 = fs_make_dir(root + "/log/tile")
+    let made3 = fs_make_dir(root + "/log/tile/0")
+    let w1 = write_text_atomic(root + "/log/checkpoint", "origin\n1\nabc\n")
+    let w2 = write_bytes(root + "/log/tile/0/000", bytes_from_ints([0, 1, 2, 255]))
+    let w3 = write_text_atomic(root + "/log/lock", "secret")
+    let c = call(app, "GET", "/v1/log/checkpoint", "")
+    assert(c.status == 200)
+    assert(file_bytes(c) == bytes_from_text("origin\n1\nabc\n"))
+    assert(response_header(c, "Content-Type") == Some("text/plain; charset=utf-8"))
+    let t = call(app, "GET", "/v1/log/tile/0/000", "")
+    assert(t.status == 200)
+    assert(file_bytes(t) == bytes_from_ints([0, 1, 2, 255]))
+    assert(call(app, "GET", "/v1/log/lock", "").status == 404)
+    assert(call(app, "GET", "/v1/log/tile/../checkpoint", "").status == 404)
+    assert(call(app, "GET", "/v1/log/tile/%2e%2e/%2e%2e/registry.json", "").status == 404)
+    assert(call(app, "GET", "/v1/log/../state/open.json", "").status == 404)
+    assert(call(app, "GET", "/v1/log/", "").status == 404)
+    assert(call(app, "POST", "/v1/log/checkpoint", "x").status == 405)
+
+fn test_the_operator_key_is_published_once_the_service_has_one() -> Unit:
+    let root = temp_root()
+    let app = make_app(root, 0)
+    assert(call(app, "GET", "/v1/operator", "").status == 404)
+    let wrote = write_text_atomic(root + "/state/operator_key.hex", "ab12\n")
+    let r = call(app, "GET", "/v1/operator", "")
+    assert(r.status == 200)
+    assert(json_as_text(json_get(json_body(r), "public_key")) == "ab12")
+    assert(json_as_text(json_get(json_body(r), "origin")) == "lotcast.test/log")
+
+fn test_epoch_and_anchor_files_are_served_from_the_log() -> Unit:
+    let root = temp_root()
+    let app = make_app(root, 0)
+    let a = fs_make_dir(root + "/log")
+    let b = fs_make_dir(root + "/log/epoch")
+    let c = fs_make_dir(root + "/log/anchor")
+    let w1 = write_text_atomic(root + "/log/epoch/7", "note")
+    let w2 = write_text_atomic(root + "/log/epoch/index", "7\n")
+    let w3 = write_text_atomic(root + "/log/anchor/7.json", "{\"void\":false}")
+    assert(call(app, "GET", "/v1/log/epoch/7", "").status == 200)
+    assert(call(app, "GET", "/v1/log/epoch/index", "").status == 200)
+    assert(call(app, "GET", "/v1/log/anchor/7.json", "").status == 200)
+    assert(call(app, "GET", "/v1/log/anchor/../../registry.json", "").status == 404)
+
+fn test_forwarded_for_lines_added_by_separate_proxies_are_read_from_the_right() -> Unit:
+    let app = make_app(temp_root(), 1)
+    for i in range(0, 60):
+        let h = [unwrap(header_new("X-Forwarded-For", "10.0." + int_to_text(i) + ".1")), unwrap(header_new("X-Forwarded-For", "203.0.113.9"))]
+        assert(call_with(app, "POST", "/v1/draws", "{}", h).status == 400)
+    let h = [unwrap(header_new("X-Forwarded-For", "10.9.9.9")), unwrap(header_new("X-Forwarded-For", "203.0.113.9"))]
+    assert(call_with(app, "POST", "/v1/draws", "{}", h).status == 429)
+
+fn test_verify_is_rate_limited_apart_from_draws() -> Unit:
+    let app = make_app(temp_root(), 0)
+    for i in range(0, 60):
+        assert(call(app, "POST", "/v1/verify", "{\"receipt\":{}}").status == 200)
+    assert(call(app, "POST", "/v1/verify", "{\"receipt\":{}}").status == 429)
+    assert(call(app, "POST", "/v1/draws", "{}").status == 400)
+
+fn test_verify_accepts_a_body_larger_than_a_draw_request() -> Unit:
+    let app = make_app(temp_root(), 0)
+    var big = "{\"receipt\":{\"x\":\""
+    for i in range(0, 8000):
+        set big = big + "0123456789"
+    let r = call(app, "POST", "/v1/verify", big + "\"}}")
+    assert(r.status == 200)

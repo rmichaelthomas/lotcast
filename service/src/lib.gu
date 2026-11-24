@@ -1,0 +1,15 @@
+# lotcast-service: the HTTP draw service (spec 8.1) and its loops.
+pub import "config.gu"
+pub import "request.gu"
+pub import "store.gu"
+pub import "epoch.gu"
+pub import "stamper.gu"
+pub import "watch.gu"
+pub import "api.gu"
+pub import "limits.gu"
+pub import "pins.gu"
+pub import "loops.gu"
+pub import "run.gu"
+
+pub fn lotcast_service_version() -> Text:
+    return "0.1.0"

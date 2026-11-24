@@ -1,0 +1,46 @@
+import "std:types"
+import "std:encoding"
+import "std:http"
+import "std:json"
+import "std:text"
+
+# The HTTP side of the CLI: JSON requests to a lotcast service.
+
+pub record Reply:
+    status: Int
+    body: Json
+
+fn client_error(message: Text) -> StdError:
+    return std_error("E_CLIENT", message)
+
+pub fn http_reply(method: Text, url: Text, body: Text) -> Result[Reply, StdError]:
+    var headers: Map[Text, Text] = {}
+    set headers = map_set(headers, "Content-Type", "application/json")
+    let answered = http_request_bytes(method, url, headers, bytes_from_text(body), 30000)
+    if not is_ok(answered):
+        return Err(client_error(url + ": the request failed"))
+    let text = encoding_utf8_decode(unwrap(answered).body)
+    if not is_ok(text):
+        return Err(client_error(url + ": the answer is not UTF-8"))
+    let parsed = json_parse(unwrap(text))
+    if not is_ok(parsed):
+        return Err(client_error(url + ": the answer is not JSON (status " + int_to_text(unwrap(answered).status) + ")"))
+    return Ok(Reply(unwrap(answered).status, unwrap(parsed)))
+
+# The message of an {"error": {...}} body, or "".
+pub fn error_message(body: Json) -> Text:
+    if not json_has(body, "error"):
+        return ""
+    let e = json_get(body, "error")
+    return json_as_text(json_get(e, "code")) + ": " + json_as_text(json_get(e, "message"))
+
+# The service's operator key (spec: pin it out of band for anything that matters; this is
+# trust on first use).
+pub fn operator_key_of(server: Text) -> Result[Bytes, StdError]:
+    let reply = http_reply("GET", server + "/v1/operator", "")?
+    if reply.status != 200:
+        return Err(client_error("the service does not publish an operator key: " + error_message(reply.body)))
+    let decoded = hex_decode(json_as_text(json_get(reply.body, "public_key")))
+    if not is_ok(decoded) or len(unwrap(decoded)) != 32:
+        return Err(client_error("the operator key the service published is not 32 bytes of hex"))
+    return Ok(unwrap(decoded))

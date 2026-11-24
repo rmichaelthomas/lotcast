@@ -116,13 +116,13 @@ fn repeated(value: Int, count: Int) -> Bytes:
 fn hx(text: Text) -> Bytes:
     return unwrap(hex_decode(text))
 
-fn request_a() -> Request:
+fn request_a() -> DrawRequest:
     let commit = question_commit("Should I go?", salt_01_to_20())
     let options: Map[Text, Text] = {}
-    return Request("iching", "yarrow", options, 1, commit, ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
+    return DrawRequest("iching", "yarrow", options, 1, commit, ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
 
-fn request_b(options: Map[Text, Text]) -> Request:
-    return Request("tarot", "rws", options, 0, bytes_from_ints([]), ["drand-quicknet"], 1795000000, repeated(9, 32), bytes_from_ints([]))
+fn request_b(options: Map[Text, Text]) -> DrawRequest:
+    return DrawRequest("tarot", "rws", options, 0, bytes_from_ints([]), ["drand-quicknet"], 1795000000, repeated(9, 32), bytes_from_ints([]))
 
 fn drand_only() -> List[SourceValue]:
     return [SourceValue("drand-quicknet", 1, repeated(170, 32)), SourceValue("nist-beacon-2", 2, bytes_from_ints([])), SourceValue("curby-rng", 2, bytes_from_ints([])), SourceValue("curby-q", 2, bytes_from_ints([]))]
@@ -437,14 +437,14 @@ fn fixture_round() -> DrandRound:
 fn fixture_t0() -> Int:
     return 1795497162
 
-fn tarot_request() -> Request:
+fn tarot_request() -> DrawRequest:
     let options: Map[Text, Text] = {"count": "3", "reversals": "true"}
-    return Request("tarot", "rws", options, 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(9, 32), bytes_from_ints([]))
+    return DrawRequest("tarot", "rws", options, 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(9, 32), bytes_from_ints([]))
 
-fn iching_request() -> Request:
-    return Request("iching", "coins", no_options(), 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
+fn iching_request() -> DrawRequest:
+    return DrawRequest("iching", "coins", no_options(), 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
 
-fn built(r: Request) -> Json:
+fn built(r: DrawRequest) -> Json:
     return unwrap(build_receipt(r, fixture_t0(), fixture_round()))
 
 fn nothing_checked_for(v: Verdict, steps: List[Int]) -> Bool:
@@ -539,7 +539,7 @@ fn test_garbage_receipt_is_invalid_not_a_crash() -> Unit:
 
 fn test_question_commit_is_checked_when_supplied() -> Unit:
     let commit = question_commit("Should I go?", salt_01_to_20())
-    let r = Request("iching", "coins", no_options(), 1, commit, ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
+    let r = DrawRequest("iching", "coins", no_options(), 1, commit, ["drand-quicknet"], 0, repeated(7, 32), bytes_from_ints([]))
     let receipt = built(r)
     let good = verify_receipt_with_question(receipt, "Should I go?", salt_01_to_20())
     assert(good.result == "verified-unanchored")
@@ -554,7 +554,7 @@ fn test_question_check_on_a_receipt_with_no_question_is_invalid_at_step_6() -> U
     assert(v.failed_step == 6)
 
 fn test_not_requested_drand_is_refused_at_build() -> Unit:
-    let r = Request("iching", "coins", no_options(), 0, bytes_from_ints([]), ["nist-beacon-2"], 0, repeated(7, 32), bytes_from_ints([]))
+    let r = DrawRequest("iching", "coins", no_options(), 0, bytes_from_ints([]), ["nist-beacon-2"], 0, repeated(7, 32), bytes_from_ints([]))
     assert(not is_ok(build_receipt(r, fixture_t0(), fixture_round())))
 
 # ---- Review fixes ----
@@ -582,7 +582,7 @@ fn test_reversal_flags_pair_with_cards_in_order() -> Unit:
 
 # F1: an unsigned subject key is refused by the builder and the verifier
 fn test_subject_key_is_refused_until_signatures_are_carried() -> Unit:
-    let r = Request("iching", "coins", no_options(), 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(7, 32), repeated(3, 32))
+    let r = DrawRequest("iching", "coins", no_options(), 0, bytes_from_ints([]), ["drand-quicknet"], 0, repeated(7, 32), repeated(3, 32))
     assert(not is_ok(build_receipt(r, fixture_t0(), fixture_round())))
     let receipt = built(iching_request())
     assert(step_of(set_in(receipt, ["request", "subject"], json_text(hex_encode(repeated(3, 32))))) == 1)
@@ -1070,7 +1070,7 @@ fn test_out_of_range_not_before_is_invalid_not_a_crash() -> Unit:
     let r = anchored()
     for bad in [-1, 4102444801, 18446744073709551615, 18446744073709551616, 99999999999999999999999]:
         assert_invalid_at(verdict_of(nested_set(r, "request", "not_before", json_int(bad))), 1)
-    let request = Request("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 18446744073709551616, bytes_from_ints([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]), bytes_from_ints([]))
+    let request = DrawRequest("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 18446744073709551616, bytes_from_ints([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]), bytes_from_ints([]))
     assert(not is_ok(entry_bytes(request)))
     assert(not is_ok(request_fields_ok(request, true)))
 
@@ -1171,3 +1171,61 @@ fn test_anchor_g_is_the_signed_deadline() -> Unit:
     let log = json_get(r, "log")
     let cp = unwrap(parse_checkpoint(unwrap(note_text(json_as_text(json_get(log, "checkpoint"))))))
     assert(json_as_int(json_get(json_get(r, "anchor"), "g")) == unwrap(parse_epoch(cp.extensions)).deadline)
+
+# ---------------------------------------------------------------- entry_parse (the inverse of entry_bytes)
+
+fn parse_sample(r: DrawRequest) -> DrawRequest:
+    return unwrap(entry_parse(unwrap(entry_bytes(r))))
+
+fn nonce32(n: Int) -> Bytes:
+    var raw: List[Int] = []
+    for i in range(0, 32):
+        set raw = list_push(raw, (n + i) % 256)
+    return bytes_from_ints(raw)
+
+fn test_entry_parse_round_trips_a_plain_request() -> Unit:
+    let r = DrawRequest("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 0, nonce32(1), bytes_from_ints([]))
+    let back = parse_sample(r)
+    assert(back.tradition == "iching" and back.method == "coins")
+    assert(len(back.options) == 0)
+    assert(back.sources == ["drand-quicknet"])
+    assert(back.client_nonce == nonce32(1))
+    assert(entry_bytes(back) == entry_bytes(r))
+
+fn test_entry_parse_round_trips_options_question_schedule_and_sources() -> Unit:
+    var opts: Map[Text, Text] = {}
+    set opts = map_set(opts, "count", "3")
+    set opts = map_set(opts, "reversals", "true")
+    var commit: List[Int] = []
+    for i in range(0, 64):
+        set commit = list_push(commit, i)
+    let r = DrawRequest("tarot", "rws", opts, 1, bytes_from_ints(commit), ["curby-rng", "drand-quicknet", "nist-beacon-2"], 4102444800, nonce32(9), bytes_from_ints([]))
+    let back = parse_sample(r)
+    assert(back.options["count"] == "3" and back.options["reversals"] == "true")
+    assert(back.question_mode == 1 and len(back.question_commit) == 64)
+    assert(back.sources == ["curby-rng", "drand-quicknet", "nist-beacon-2"])
+    assert(back.not_before == 4102444800)
+    assert(entry_bytes(back) == entry_bytes(r))
+
+fn test_entry_parse_refuses_malformed_entries() -> Unit:
+    let r = DrawRequest("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 0, nonce32(2), bytes_from_ints([]))
+    let good = unwrap(entry_bytes(r))
+    assert(not is_ok(entry_parse(bytes_from_ints([]))))
+    assert(not is_ok(entry_parse(bytes_slice(good, 0, len(good) - 1))))
+    assert(not is_ok(entry_parse(bytes_join([good, bytes_from_ints([0])]))))
+    let wrong_tag = bytes_join([bytes_from_text("lotcast/entry/v2"), bytes_slice(good, 16, len(good))])
+    assert(not is_ok(entry_parse(wrong_tag)))
+
+fn test_compute_outcome_matches_the_outcome_in_a_stored_receipt() -> Unit:
+    let receipt = unwrap(json_parse(unwrap(read_text("fixtures/anchored-receipt-drand-only.json"))))
+    let request = unwrap(parse_request(receipt))
+    let note = json_as_text(json_get(json_get(receipt, "log"), "checkpoint"))
+    let source = json_index_safe(json_get(receipt, "sources"), 0)
+    let d = unwrap(source)
+    let drand = DrandRound(json_as_int(json_get(d, "round")), unwrap(hex_decode(json_as_text(json_get(d, "randomness")))), unwrap(hex_decode(json_as_text(json_get(d, "signature")))))
+    var others: List[SourceResult] = []
+    for id in ["nist-beacon-2", "curby-rng", "curby-q"]:
+        set others = list_push(others, not_requested(id))
+    let computed = unwrap(compute_outcome(request, note, drand, others))
+    assert(hex_encode(computed.seed) == json_as_text(json_get(receipt, "seed")))
+    assert(json_stringify(computed.outcome) == json_stringify(json_get(receipt, "outcome")))

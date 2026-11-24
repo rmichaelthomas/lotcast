@@ -1,0 +1,58 @@
+import "std:types"
+import "std:text"
+
+# Command-line parsing shared by every `lotcast` subcommand: positional arguments, `--name value`
+# flags (which may repeat) and bare `--switch` flags.
+
+pub record Flags:
+    positional: List[Text]
+    names: List[Text]
+    values: List[Text]
+
+fn member(items: List[Text], name: Text) -> Bool:
+    for i in items:
+        if i == name:
+            return true
+    return false
+
+pub fn parse_flags(all: List[Text], with_value: List[Text], switches: List[Text]) -> Result[Flags, Text]:
+    var positional: List[Text] = []
+    var names: List[Text] = []
+    var values: List[Text] = []
+    var i = 0
+    while i < len(all):
+        let a = all[i]
+        if len(a) > 2 and text_slice(a, 0, 2) == "--":
+            if member(switches, a):
+                set names = list_push(names, a)
+                set values = list_push(values, "")
+                set i = i + 1
+            else:
+                if member(with_value, a):
+                    if i + 1 >= len(all):
+                        return Err(a + " needs a value")
+                    set names = list_push(names, a)
+                    set values = list_push(values, all[i + 1])
+                    set i = i + 2
+                else:
+                    return Err("unknown flag: " + a)
+        else:
+            set positional = list_push(positional, a)
+            set i = i + 1
+    return Ok(Flags(positional, names, values))
+
+pub fn flag_all(f: Flags, name: Text) -> List[Text]:
+    var out: List[Text] = []
+    for i in range(0, len(f.names)):
+        if f.names[i] == name:
+            set out = list_push(out, f.values[i])
+    return out
+
+pub fn flag_one(f: Flags, name: Text, fallback: Text) -> Text:
+    let found = flag_all(f, name)
+    if len(found) == 0:
+        return fallback
+    return found[len(found) - 1]
+
+pub fn flag_set(f: Flags, name: Text) -> Bool:
+    return len(flag_all(f, name)) > 0

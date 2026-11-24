@@ -11,7 +11,7 @@ import "encode.gu"
 #   0 hash      the production stream
 #   1 tape      serves primitive results from a list and records each call's modulus (enumeration)
 #   2 scripted  serves given words in order, then zeros (word-level enumeration of uniform)
-pub record Stream:
+pub record WordStream:
     seed: Bytes
     word_bits: Int
     block: Int
@@ -24,22 +24,22 @@ pub record Stream:
 
 pub record Word:
     value: Int
-    stream: Stream
+    stream: WordStream
 
-pub fn stream_new(seed: Bytes, word_bits: Int) -> Stream:
+pub fn stream_new(seed: Bytes, word_bits: Int) -> WordStream:
     assert(word_bits == 8 or word_bits == 16 or word_bits == 32 or word_bits == 64)
-    return Stream(seed, word_bits, 0, [], 0, 0, [], 0, [])
+    return WordStream(seed, word_bits, 0, [], 0, 0, [], 0, [])
 
 # Test-only: a stream that serves `words` (each below 2^word_bits) in order, then zeros.
-pub fn stream_scripted(words: List[Int], word_bits: Int) -> Stream:
-    return Stream(bytes_from_ints([]), word_bits, 0, words, 0, 2, [], 0, [])
+pub fn stream_scripted(words: List[Int], word_bits: Int) -> WordStream:
+    return WordStream(bytes_from_ints([]), word_bits, 0, words, 0, 2, [], 0, [])
 
 # Test-only: a stream whose primitive calls (uniform, weighted, shuffle) return `choices` in order,
 # then 0. `stream_trace` lists the modulus of every primitive call made.
-pub fn stream_tape(choices: List[Int]) -> Stream:
-    return Stream(bytes_from_ints([]), 64, 0, [], 0, 1, choices, 0, [])
+pub fn stream_tape(choices: List[Int]) -> WordStream:
+    return WordStream(bytes_from_ints([]), 64, 0, [], 0, 1, choices, 0, [])
 
-pub fn stream_trace(s: Stream) -> List[Int]:
+pub fn stream_trace(s: WordStream) -> List[Int]:
     return s.trace
 
 fn block_words(seed: Bytes, word_bits: Int, index: Int) -> List[Int]:
@@ -59,14 +59,14 @@ fn block_words(seed: Bytes, word_bits: Int, index: Int) -> List[Int]:
     return out
 
 # The next word. Modes 0 and 2 only; the primitives handle mode 1 themselves.
-pub fn next_word(s: Stream) -> Word:
+pub fn next_word(s: WordStream) -> Word:
     if s.mode == 2:
         var value = 0
         if s.pos < len(s.words):
             set value = s.words[s.pos]
-        return Word(value, Stream(s.seed, s.word_bits, s.block, s.words, s.pos + 1, 2, [], 0, []))
+        return Word(value, WordStream(s.seed, s.word_bits, s.block, s.words, s.pos + 1, 2, [], 0, []))
     assert(s.mode == 0)
     if s.pos >= len(s.words):
         let fresh = block_words(s.seed, s.word_bits, s.block)
-        return Word(fresh[0], Stream(s.seed, s.word_bits, s.block + 1, fresh, 1, 0, [], 0, []))
-    return Word(s.words[s.pos], Stream(s.seed, s.word_bits, s.block, s.words, s.pos + 1, 0, [], 0, []))
+        return Word(fresh[0], WordStream(s.seed, s.word_bits, s.block + 1, fresh, 1, 0, [], 0, []))
+    return Word(s.words[s.pos], WordStream(s.seed, s.word_bits, s.block, s.words, s.pos + 1, 0, [], 0, []))

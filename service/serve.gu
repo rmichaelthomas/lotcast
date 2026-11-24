@@ -1,0 +1,20 @@
+import "std:types"
+import "std:process"
+import "src/run.gu"
+
+# lotcast serve: the draw service.
+#
+#   guion run --allow-bind 127.0.0.1:8080 --allow-clock --file-root DATA \
+#       --allow-http-host api.drand.sh --allow-http-host drand.cloudflare.com \
+#       --allow-http-host beacon.nist.gov --allow-http-host random.colorado.edu \
+#       --allow-http-host timestamp.digicert.com --allow-http-host timestamp.sectigo.com \
+#       --allow-http-host freetsa.org serve.gu --data-dir DATA --key-file KEYFILE [flags]
+#
+# Flags: --host --port --data-dir --key-file --epoch-seconds --stamp-budget --origin --workers
+#        --trust-proxy --registry, and --new-key (create the key file when it is missing).
+# The operator's key is read from --key-file (64 hex characters) or from the LOTCAST_OPERATOR_KEY
+# environment variable, and is never printed; the public key goes to DATA/state/operator_key.hex
+# and to stderr.
+
+fn main() -> Int:
+    return serve_main(args())

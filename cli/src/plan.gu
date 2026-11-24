@@ -1,0 +1,116 @@
+import "std:types"
+import "std:encoding"
+import "std:json"
+import "std:text"
+import "pkg:lotcast-core/src/lib.gu"
+import "flags.gu"
+
+# `lotcast draw`: turning arguments into the request body that is posted, and the hash the service
+# must answer with. Randomness is passed in so this is a pure function.
+
+pub record DrawPlan:
+    server: Text
+    body: Text
+    entry_hash_hex: Text
+    has_question: Bool
+    question: Text
+    salt_hex: Text
+    wait_seconds: Int
+    operator_key_hex: Text
+    request_json: Text
+
+fn all_sources() -> List[Text]:
+    return ["curby-q", "curby-rng", "drand-quicknet", "nist-beacon-2"]
+
+# The default for the command line: the three beacons that publish a pulse every minute or so.
+# CURBy-Q has been idle since 2025-08-22, so a draw that includes it waits out its whole window
+# (about 32 minutes); ask for it with --sources.
+fn live_sources() -> List[Text]:
+    return ["curby-rng", "drand-quicknet", "nist-beacon-2"]
+
+fn known_source(id: Text) -> Bool:
+    for k in all_sources():
+        if k == id:
+            return true
+    return false
+
+fn split_option(arg: Text) -> List[Text]:
+    let at = text_find(arg, "=", 0)
+    let none: List[Text] = []
+    if at < 0:
+        return none
+    return [text_slice(arg, 0, at), text_slice(arg, at + 1, len(arg))]
+
+# Sources from "a,b": every id known, drand-quicknet always present, sorted and unique.
+fn parse_sources(arg: Text, given: Bool) -> Result[List[Text], Text]:
+    if not given:
+        return Ok(live_sources())
+    var ids: List[Text] = ["drand-quicknet"]
+    for id in text_split(arg, ","):
+        if not known_source(id):
+            return Err("unknown source: " + id)
+        var seen = false
+        for have in ids:
+            if have == id:
+                set seen = true
+        if not seen:
+            set ids = list_push(ids, id)
+    return Ok(sort(ids))
+
+pub fn plan_draw(all: List[Text], nonce: Bytes, salt: Bytes) -> Result[DrawPlan, Text]:
+    let f = parse_flags(all, ["--question", "--sources", "--not-before", "--wait", "--server", "--operator-key"], [])?
+    if len(f.positional) < 2:
+        return Err("usage: lotcast draw TRADITION METHOD [KEY=VALUE ...] [--question TEXT] [--sources a,b] [--not-before UNIX] [--wait SECONDS] [--server URL] [--operator-key HEX]")
+    var options: Map[Text, Text] = {}
+    for i in range(2, len(f.positional)):
+        let pair = split_option(f.positional[i])
+        if len(pair) != 2:
+            return Err("unrecognised argument: " + f.positional[i])
+        if map_has(options, pair[0]):
+            return Err("option given twice: " + pair[0])
+        set options = map_set(options, pair[0], pair[1])
+    let sources = parse_sources(flag_one(f, "--sources", ""), flag_set(f, "--sources"))?
+    var not_before = 0
+    if flag_set(f, "--not-before"):
+        let n = text_parse_int(flag_one(f, "--not-before", "0"))
+        if not is_ok(n) or unwrap(n) < 0 or unwrap(n) > 4102444800:
+            return Err("--not-before takes unix seconds from 0 to 4102444800")
+        set not_before = unwrap(n)
+    var wait = 180
+    if flag_set(f, "--wait"):
+        let n = text_parse_int(flag_one(f, "--wait", "180"))
+        if not is_ok(n) or unwrap(n) < 0 or unwrap(n) > 86400:
+            return Err("--wait takes seconds from 0 to 86400")
+        set wait = unwrap(n)
+    var mode = 0
+    var commit = bytes_from_ints([])
+    let asked = len(flag_all(f, "--question")) > 0
+    if len(flag_all(f, "--question")) > 1:
+        return Err("--question given twice")
+    if asked:
+        set mode = 1
+        set commit = question_commit(flag_one(f, "--question", ""), salt)
+    let request = DrawRequest(f.positional[0], f.positional[1], options, mode, commit, sources, not_before, nonce, bytes_from_ints([]))
+    let hash = entry_hash(request)
+    if not is_ok(hash):
+        return Err("the request cannot be encoded")
+    var opts = json_object()
+    for key in options:
+        set opts = json_set(opts, key, json_text(options[key]))
+    var listed = json_array()
+    for id in sources:
+        set listed = json_push(listed, json_text(id))
+    var body = json_object()
+    set body = json_set(body, "tradition", json_text(request.tradition))
+    set body = json_set(body, "method", json_text(request.method))
+    set body = json_set(body, "options", opts)
+    set body = json_set(body, "sources", listed)
+    if not_before != 0:
+        set body = json_set(body, "not_before", json_int(not_before))
+    set body = json_set(body, "nonce", json_text(hex_encode(nonce)))
+    if asked:
+        set body = json_set(body, "commitment", json_text(hex_encode(commit)))
+    var salt_hex = ""
+    if asked:
+        set salt_hex = hex_encode(salt)
+    return Ok(DrawPlan(flag_one(f, "--server", "http://127.0.0.1:8080"), json_stringify(body), hex_encode(unwrap(hash)), asked, flag_one(f, "--question", ""), salt_hex, wait, flag_one(f, "--operator-key", ""), json_stringify(request_to_json(request))))

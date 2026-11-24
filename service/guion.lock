@@ -1,0 +1,107 @@
+format_version = 2
+
+[native.beacons]
+entry = "src/lib.gu"
+exports = [
+    "src/lib.gu",
+    "src/multiformats.gu",
+    "src/drand.gu",
+    "src/twine.gu",
+    "src/curby.gu",
+    "src/nist.gu",
+]
+sha256 = "86e998107d8919988965ee06f2936c8aed161b7dd45676f7fde5e93463e30c08"
+source = "https://guion-registry.thomasbuild.workers.dev/objects/7dba151b9d59a7d7c79f42f7d262db8d39818907af308caa99d67a3f707e242f.tar"
+source_kind = "url"
+version = "0.3.0"
+
+[native.beacons.capabilities]
+clock = true
+network = [
+    "api.drand.sh",
+    "beacon.nist.gov",
+    "drand.cloudflare.com",
+    "random.colorado.edu",
+]
+
+[native.beacons.dependencies]
+
+[native.lotcast-core]
+entry = "src/lib.gu"
+exports = [
+    "src/lib.gu",
+    "src/encode.gu",
+    "src/stream.gu",
+    "src/primitives.gu",
+    "src/entry.gu",
+    "src/seed.gu",
+    "src/registry_data.gu",
+    "src/iching.gu",
+    "src/tarot.gu",
+    "src/catalogue.gu",
+    "src/window.gu",
+    "src/sources.gu",
+    "src/resolve.gu",
+    "src/receipt.gu",
+    "src/anchored.gu",
+]
+sha256 = "693fac076ecec69a711d888e1bcf058c09d2c524552d8dfb0427f3ba3465323f"
+source = "../packages/lotcast-core"
+source_kind = "path"
+version = "0.1.0"
+
+[native.lotcast-core.capabilities]
+clock = true
+network = ["beacon.nist.gov"]
+
+[native.lotcast-core.dependencies.beacons]
+version = "0.3.0"
+
+[native.lotcast-core.dependencies.lotcast-log]
+version = "0.1.0"
+
+[native.lotcast-log]
+entry = "src/lib.gu"
+exports = [
+    "src/lib.gu",
+    "src/encode.gu",
+    "src/merkle.gu",
+    "src/note.gu",
+    "src/tiles.gu",
+    "src/log.gu",
+    "src/tsa_pins.gu",
+    "src/anchor.gu",
+]
+sha256 = "37501a0a74fd0e92ae7e146c12a8a7105eef7bdd367a74fadc216ed40af5b76d"
+source = "../packages/lotcast-log"
+source_kind = "path"
+version = "0.1.0"
+
+[native.lotcast-log.dependencies]
+
+[native.web]
+entry = "src/lib.gu"
+exports = [
+    "src/lib.gu",
+    "src/router.gu",
+    "src/middleware.gu",
+    "src/serve.gu",
+    "src/session.gu",
+    "src/csrf.gu",
+    "src/html.gu",
+    "src/static.gu",
+]
+sha256 = "8f961472ad448adbeba8f027147a3be040d45a4830634c67c56549e708f0a817"
+source = "https://guion-registry.thomasbuild.workers.dev/objects/3eaf1653f4fd4aeec39a1a752608ae3a61032878826ea375db72209e830476a9.tar"
+source_kind = "url"
+version = "0.2.0"
+
+[native.web.capabilities]
+clock = true
+files = [
+    "read",
+    "write",
+]
+network = ["127.0.0.1"]
+
+[native.web.dependencies]

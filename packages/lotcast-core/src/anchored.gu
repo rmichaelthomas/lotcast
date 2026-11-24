@@ -168,7 +168,7 @@ pub fn stamped_in_time(proven: Int, deadline: Int) -> Bool:
 # Step 3: both timestamps prove the checkpoint existed by the deadline it carries; the receipt's g is
 # that deadline and t0 is the later of g and not_before. Nothing the tokens say can move g, so
 # re-stamping the checkpoint later, or presenting a later checkpoint, changes nothing.
-fn check_anchor(receipt: Json, log: Json, info: LogInfo, request: Request, pins: List[TsaPin]) -> Result[Int, Text]:
+fn check_anchor(receipt: Json, log: Json, info: LogInfo, request: DrawRequest, pins: List[TsaPin]) -> Result[Int, Text]:
     let proven = timestamps_proven_by(log, info.checkpoint, pins)?
     if not stamped_in_time(proven, info.deadline):
         return Err("a timestamp is later than the deadline the checkpoint signed: the checkpoint was stamped too late to anchor that time")
@@ -200,7 +200,7 @@ fn check_drand_source(source: Json, t0: Int) -> Result[Bytes, Text]:
         return Err("the drand round's signature or randomness does not verify")
     return Ok(randomness)
 
-fn wanted(request: Request, id: Text) -> Bool:
+fn wanted(request: DrawRequest, id: Text) -> Bool:
     for r in request.sources:
         if r == id:
             return true
@@ -212,7 +212,7 @@ fn known_source(id: Text) -> Bool:
             return true
     return false
 
-fn sources_listing_problem(request: Request) -> Text:
+fn sources_listing_problem(request: DrawRequest) -> Text:
     var previous = ""
     for id in request.sources:
         if not known_source(id):
@@ -229,7 +229,7 @@ pub record Checked:
     live: List[Text]
 
 # Step 4: every requested source proves its status; returns the seed inputs and the absent-live ids.
-fn check_sources(receipt: Json, request: Request, t0: Int) -> Result[Checked, Text]:
+fn check_sources(receipt: Json, request: DrawRequest, t0: Int) -> Result[Checked, Text]:
     let listed = field_json(receipt, "sources")?
     if not is_array(listed):
         return Err("sources is not a list")
@@ -380,10 +380,27 @@ pub fn verify_any(receipt: Json, operator_key: Bytes, pins: List[TsaPin], check_
         return verify_receipt(receipt)
     return verify_anchored_inner(receipt, operator_key, pins, check_question, question, salt)
 
+pub record Computed:
+    seed: Bytes
+    outcome: Json
+
+# The seed and the outcome a request, a checkpoint and the beacons' values fix (spec 4.3, 5): what
+# anyone can recompute from public data. `others` are the non-drand sources in seed order,
+# not-requested ones included.
+pub fn compute_outcome(request: DrawRequest, checkpoint_note: Text, drand: DrandRound, others: List[SourceResult]) -> Result[Computed, StdError]:
+    let hash = entry_hash(request)?
+    let checkpoint_text_value = note_text(checkpoint_note)?
+    var values: List[SourceValue] = [SourceValue("drand-quicknet", 1, drand.randomness)]
+    for r in others:
+        set values = list_push(values, source_value(r))
+    let s = seed(hash, crypto_sha512(text_bytes(checkpoint_text_value)), values)?
+    let outcome = run_method(stream_new(s, 64), request.tradition, request.method, request.options)?
+    return Ok(Computed(s, outcome))
+
 # Builds an anchored receipt from the pieces the draw flow produced and returns it only if the
 # verifier accepts it. `log_part` is {origin, index, entry_hash, checkpoint, inclusion, cosignatures,
 # timestamps}; `others` are the non-drand sources in seed order (not-requested ones included).
-pub fn build_anchored_receipt(request: Request, log_part: Json, promise: Text, drand: DrandRound, others: List[SourceResult], operator_key: Bytes, pins: List[TsaPin]) -> Result[Json, StdError]:
+pub fn build_anchored_receipt(request: DrawRequest, log_part: Json, promise: Text, drand: DrandRound, others: List[SourceResult], operator_key: Bytes, pins: List[TsaPin]) -> Result[Json, StdError]:
     let fields = request_fields_ok(request, true)?
     let listing = sources_listing_problem(request)
     if listing != "":
@@ -401,13 +418,9 @@ pub fn build_anchored_receipt(request: Request, log_part: Json, promise: Text, d
     var t0 = g
     if request.not_before > g:
         set t0 = request.not_before
-    let hash = entry_hash(request)?
-    let checkpoint_text_value = note_text(note)?
-    var values: List[SourceValue] = [SourceValue("drand-quicknet", 1, drand.randomness)]
-    for r in others:
-        set values = list_push(values, source_value(r))
-    let s = seed(hash, crypto_sha512(text_bytes(checkpoint_text_value)), values)?
-    let outcome = run_method(stream_new(s, 64), request.tradition, request.method, request.options)?
+    let computed = compute_outcome(request, note, drand, others)?
+    let s = computed.seed
+    let outcome = computed.outcome
     var drand_source = json_object()
     set drand_source = json_set(drand_source, "id", json_text("drand-quicknet"))
     set drand_source = json_set(drand_source, "status", json_text("present"))

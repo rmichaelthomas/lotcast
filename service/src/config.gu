@@ -1,0 +1,85 @@
+import "std:types"
+import "std:text"
+
+# Service configuration from command-line flags. The operator's key comes from a file (--key-file)
+# or from the LOTCAST_OPERATOR_KEY environment value, never from a flag value, so it cannot appear
+# in a process listing.
+
+pub record Config:
+    host: Text
+    port: Int
+    data_dir: Text
+    key_file: Text
+    epoch_seconds: Int
+    stamp_budget: Int
+    origin: Text
+    workers: Int
+    trust_proxy: Int
+    registry_file: Text
+
+fn config_error(message: Text) -> StdError:
+    return std_error("E_CONFIG", message)
+
+fn int_flag(name: Text, value: Text, low: Int, high: Int) -> Result[Int, StdError]:
+    let parsed = text_parse_int(value)
+    if not is_ok(parsed) or unwrap(parsed) < low or unwrap(parsed) > high:
+        return Err(config_error(name + " takes a whole number from " + int_to_text(low) + " to " + int_to_text(high)))
+    return Ok(unwrap(parsed))
+
+# `env_key` says LOTCAST_OPERATOR_KEY is set (the caller reads it; this function stays pure).
+pub fn config_from_args(args: List[Text], env_key: Bool) -> Result[Config, StdError]:
+    var host = "127.0.0.1"
+    var port = 8080
+    var data_dir = ""
+    var key_file = ""
+    var epoch_seconds = 5
+    var stamp_budget = 20
+    var origin = "lotcast.local/log"
+    var workers = 8
+    var trust_proxy = 0
+    var registry_file = "registry/lotcast-registry-v1.json"
+    var i = 0
+    while i < len(args):
+        let name = args[i]
+        if i + 1 >= len(args):
+            return Err(config_error(name + " needs a value"))
+        let value = args[i + 1]
+        if name == "--host":
+            set host = value
+        else:
+            if name == "--port":
+                set port = int_flag(name, value, 1, 65535)?
+            else:
+                if name == "--data-dir":
+                    set data_dir = value
+                else:
+                    if name == "--key-file":
+                        set key_file = value
+                    else:
+                        if name == "--epoch-seconds":
+                            set epoch_seconds = int_flag(name, value, 1, 600)?
+                        else:
+                            if name == "--stamp-budget":
+                                set stamp_budget = int_flag(name, value, 5, 600)?
+                            else:
+                                if name == "--origin":
+                                    set origin = value
+                                else:
+                                    if name == "--workers":
+                                        set workers = int_flag(name, value, 1, 64)?
+                                    else:
+                                        if name == "--trust-proxy":
+                                            set trust_proxy = int_flag(name, value, 0, 5)?
+                                        else:
+                                            if name == "--registry":
+                                                set registry_file = value
+                                            else:
+                                                return Err(config_error("unknown flag: " + name))
+        set i = i + 2
+    if data_dir == "":
+        return Err(config_error("--data-dir is required"))
+    if key_file != "" and env_key:
+        return Err(config_error("give the operator key by --key-file or by LOTCAST_OPERATOR_KEY, not both"))
+    if key_file == "" and not env_key:
+        return Err(config_error("the operator key is required: --key-file FILE or LOTCAST_OPERATOR_KEY"))
+    return Ok(Config(host, port, data_dir, key_file, epoch_seconds, stamp_budget, origin, workers, trust_proxy, registry_file))

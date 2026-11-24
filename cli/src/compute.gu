@@ -1,0 +1,144 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:json"
+import "std:text"
+import "pkg:beacons/src/lib.gu"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+import "mirror.gu"
+
+# `lotcast compute <log-index>`: the outcome of a logged request, computed from public data only.
+# It reads the entry from a mirror's tiles, finds the epoch checkpoint the entry was stamped under
+# (log/epoch/), takes the anchor time from the deadline in that checkpoint, reads the beacons after
+# it, and runs the same seed and sampler as the service. The service is not asked for the outcome.
+
+# The real proof of an anchor: both RFC 3161 tokens verified against the checkpoint and the pinned
+# authorities; returns the time they prove the checkpoint existed by.
+pub fn real_proof(anchor: Json, note: Text) -> Result[Int, Text]:
+    return timestamps_proven_by(anchor, note, tsa_pins())
+
+fn compute_error(message: Text) -> StdError:
+    return std_error("E_COMPUTE", message)
+
+fn prefix_of(hashes: List[Bytes], n: Int) -> List[Bytes]:
+    var out: List[Bytes] = []
+    for i in range(0, n):
+        set out = list_push(out, hashes[i])
+    return out
+
+fn wanted(request: DrawRequest, id: Text) -> Bool:
+    for s in request.sources:
+        if s == id:
+            return true
+    return false
+
+pub record Found:
+    note: Text
+    epoch: Int
+
+# The signed checkpoint of `epoch`, checked against the operator key and the mirror's own log.
+fn epoch_checkpoint(fetch: fn(Text, Text) -> Result[Bytes, StdError], view: MirrorView, operator_key: Bytes, epoch: Int) -> Result[Checkpoint, StdError]:
+    let note = mirror_epoch_note(fetch, view.base, epoch)?
+    let signed = verify_note(note, view.origin, operator_key)?
+    var text = ""
+    match signed:
+        Some(t):
+            set text = t
+        None:
+            return Err(compute_error("the checkpoint of epoch " + int_to_text(epoch) + " is not signed by the operator key"))
+    let cp = parse_checkpoint(text)?
+    if cp.size > view.size or root_of_hashes(prefix_of(view.hashes, cp.size)) != cp.root:
+        return Err(compute_error("the checkpoint of epoch " + int_to_text(epoch) + " is not a prefix of the log"))
+    let info = parse_epoch(cp.extensions)?
+    if info.epoch != epoch:
+        return Err(compute_error("the checkpoint filed under epoch " + int_to_text(epoch) + " is for epoch " + int_to_text(info.epoch)))
+    return Ok(cp)
+
+# The first epoch whose checkpoint holds `index` (epoch checkpoints only grow, so a binary search
+# finds it), with the signed note. The epoch list must be strictly increasing, and the epoch before
+# the one found must not hold the index.
+fn epoch_of_entry(fetch: fn(Text, Text) -> Result[Bytes, StdError], view: MirrorView, operator_key: Bytes, index: Int) -> Result[Found, StdError]:
+    let epochs = mirror_epochs(fetch, view.base)?
+    for i in range(1, len(epochs)):
+        if epochs[i] <= epochs[i - 1]:
+            return Err(compute_error("the mirror's epoch list is not in increasing order"))
+    if len(epochs) == 0:
+        return Err(std_error("E_LOTCAST_PENDING", "no epoch is closed yet"))
+    let last = epoch_checkpoint(fetch, view, operator_key, epochs[len(epochs) - 1])?
+    if last.size <= index:
+        return Err(std_error("E_LOTCAST_PENDING", "no closed epoch holds index " + int_to_text(index) + " yet"))
+    var lo = 0
+    var hi = len(epochs) - 1
+    while lo < hi:
+        let mid = (lo + hi) // 2
+        let cp = epoch_checkpoint(fetch, view, operator_key, epochs[mid])?
+        if cp.size > index:
+            set hi = mid
+        else:
+            set lo = mid + 1
+    if lo > 0:
+        let before = epoch_checkpoint(fetch, view, operator_key, epochs[lo - 1])?
+        if before.size > index:
+            return Err(compute_error("the epoch list is not consistent: epoch " + int_to_text(epochs[lo - 1]) + " already holds index " + int_to_text(index)))
+    return Ok(Found(mirror_epoch_note(fetch, view.base, epochs[lo])?, epochs[lo]))
+
+# The epoch's anchor: not void, and both timestamps prove the checkpoint existed by its deadline.
+fn check_anchor_of(fetch: fn(Text, Text) -> Result[Bytes, StdError], proof_fn: fn(Json, Text) -> Result[Int, Text], base: Text, found: Found, deadline: Int) -> Result[Bool, StdError]:
+    let raw = fetch(base, "anchor/" + int_to_text(found.epoch) + ".json")?
+    let text = encoding_utf8_decode(raw)
+    if not is_ok(text):
+        return Err(compute_error("the anchor file is not UTF-8"))
+    let parsed = json_parse(unwrap(text))
+    if not is_ok(parsed):
+        return Err(compute_error("the anchor file is not JSON"))
+    let anchor = unwrap(parsed)
+    let void = json_get_safe(anchor, "void")
+    if not is_ok(void) or json_as_bool(unwrap(void)):
+        return Err(compute_error("epoch " + int_to_text(found.epoch) + " is void: its timestamps did not arrive in time, so this entry has no receipt and no outcome"))
+    match proof_fn(anchor, found.note):
+        Err(why):
+            return Err(compute_error("the timestamps of epoch " + int_to_text(found.epoch) + " do not hold: " + why))
+        Ok(proven):
+            if not stamped_in_time(proven, deadline):
+                return Err(compute_error("the timestamps of epoch " + int_to_text(found.epoch) + " prove existence after its deadline"))
+    return Ok(true)
+
+pub fn compute_index(fetch: fn(Text, Text) -> Result[Bytes, StdError], proof_fn: fn(Json, Text) -> Result[Int, Text], base: Text, operator_key: Bytes, index: Int, drand_fn: fn(Int) -> Result[DrandRound, StdError], source_fn: fn(Text, Int) -> Result[SourceResult, StdError]) -> Result[Json, StdError]:
+    let view = mirror_view(fetch, base, operator_key)?
+    if index >= view.size:
+        return Err(std_error("E_LOTCAST_PENDING", "the mirror holds " + int_to_text(view.size) + " entries; index " + int_to_text(index) + " is not in the log yet"))
+    let entry = mirror_entry(fetch, view, index)?
+    let request = entry_parse(entry)?
+    let found = epoch_of_entry(fetch, view, operator_key, index)?
+    let note = found.note
+    let cp = parse_checkpoint(note_text(note)?)?
+    let info = parse_epoch(cp.extensions)?
+    let anchored = check_anchor_of(fetch, proof_fn, view.base, found, info.deadline)?
+    var t0 = info.deadline
+    if request.not_before > t0:
+        set t0 = request.not_before
+    let chain = drand_quicknet()
+    let drand = drand_fn(drand_round_at(chain, t0) + 1)?
+    var others: List[SourceResult] = []
+    for id in ["nist-beacon-2", "curby-rng", "curby-q"]:
+        if wanted(request, id):
+            set others = list_push(others, source_fn(id, t0)?)
+        else:
+            set others = list_push(others, not_requested(id))
+    let computed = compute_outcome(request, note, drand, others)?
+    var statuses = json_array()
+    set statuses = json_push(statuses, json_set(json_set(json_object(), "id", json_text("drand-quicknet")), "status", json_text("present")))
+    for r in others:
+        if r.status != "not-requested":
+            set statuses = json_push(statuses, json_set(json_set(json_object(), "id", json_text(r.id)), "status", json_text(r.status)))
+    var out = json_object()
+    set out = json_set(out, "index", json_int(index))
+    set out = json_set(out, "epoch", json_int(info.epoch))
+    set out = json_set(out, "deadline", json_int(info.deadline))
+    set out = json_set(out, "t0", json_int(t0))
+    set out = json_set(out, "entry_hash", json_text(hex_encode(unwrap(entry_hash(request)))))
+    set out = json_set(out, "sources", statuses)
+    set out = json_set(out, "seed", json_text(hex_encode(computed.seed)))
+    set out = json_set(out, "outcome", computed.outcome)
+    return Ok(out)

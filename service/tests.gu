@@ -1,0 +1,961 @@
+import "std:types"
+import "std:crypto"
+import "std:text"
+import "std:json"
+import "std:encoding"
+import "std:fs"
+import "pkg:beacons/src/lib.gu"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+import "src/lib.gu"
+
+fn main() -> Int:
+    return 0
+
+fn test_config_defaults() -> Unit:
+    let c = unwrap(config_from_args(["--data-dir", "/data", "--key-file", "/k"], false))
+    assert(c.host == "127.0.0.1")
+    assert(c.port == 8080)
+    assert(c.data_dir == "/data")
+    assert(c.key_file == "/k")
+    assert(c.epoch_seconds == 5)
+    assert(c.stamp_budget == 20)
+    assert(c.workers == 8)
+    assert(c.trust_proxy == 0)
+    assert(c.origin == "lotcast.local/log")
+
+fn test_config_needs_data_dir() -> Unit:
+    assert(not is_ok(config_from_args(["--key-file", "/k"], false)))
+
+fn test_config_needs_a_key_source() -> Unit:
+    assert(not is_ok(config_from_args(["--data-dir", "/d"], false)))
+    assert(is_ok(config_from_args(["--data-dir", "/d"], true)))
+
+fn test_config_refuses_both_key_sources() -> Unit:
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k"], true)))
+
+fn test_config_bad_values() -> Unit:
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--port", "70000"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--port", "x"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--epoch-seconds", "0"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--trust-proxy", "6"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--workers", "0"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--nope", "1"], false)))
+    assert(not is_ok(config_from_args(["--data-dir", "/d", "--key-file"], false)))
+
+fn test_config_bounds_are_accepted() -> Unit:
+    let c = unwrap(config_from_args(["--data-dir", "/d", "--key-file", "/k", "--port", "1", "--epoch-seconds", "1", "--trust-proxy", "5", "--workers", "64"], false))
+    assert(c.port == 1 and c.epoch_seconds == 1 and c.trust_proxy == 5 and c.workers == 64)
+
+# ---------------------------------------------------------------- request validation
+
+fn nonce_hex() -> Text:
+    return "0101010101010101010101010101010101010101010101010101010101010101"
+
+fn body_of(extra: Text) -> Bytes:
+    return text_bytes("{\"tradition\":\"iching\",\"method\":\"coins\",\"nonce\":\"" + nonce_hex() + "\"" + extra + "}")
+
+fn code_of(r: Result[DrawRequest, ApiError]) -> Text:
+    match r:
+        Err(problem):
+            return problem.code
+        Ok(ignored):
+            return "ok"
+
+fn status_of(r: Result[DrawRequest, ApiError]) -> Int:
+    match r:
+        Err(problem):
+            return problem.status
+        Ok(ignored):
+            return 0
+
+fn test_request_minimal_is_accepted_with_all_four_sources() -> Unit:
+    let r = unwrap(parse_draw_request(body_of(""), 1000))
+    assert(r.tradition == "iching" and r.method == "coins")
+    assert(r.sources == ["curby-q", "curby-rng", "drand-quicknet", "nist-beacon-2"])
+    assert(r.not_before == 0 and r.question_mode == 0)
+
+fn test_request_unknown_method_is_e_request() -> Unit:
+    let r = parse_draw_request(text_bytes("{\"tradition\":\"iching\",\"method\":\"tea\",\"nonce\":\"" + nonce_hex() + "\"}"), 1000)
+    assert(code_of(r) == "E_REQUEST" and status_of(r) == 400)
+
+fn test_request_unknown_option_is_e_request() -> Unit:
+    assert(code_of(parse_draw_request(body_of(",\"options\":{\"count\":\"2\"}"), 1000)) == "E_REQUEST")
+
+fn test_request_count_above_deck_is_e_count() -> Unit:
+    let b = text_bytes("{\"tradition\":\"tarot\",\"method\":\"rws\",\"options\":{\"count\":\"79\"},\"nonce\":\"" + nonce_hex() + "\"}")
+    assert(code_of(parse_draw_request(b, 1000)) == "E_COUNT")
+    let ok = text_bytes("{\"tradition\":\"tarot\",\"method\":\"rws\",\"options\":{\"count\":\"78\"},\"nonce\":\"" + nonce_hex() + "\"}")
+    assert(code_of(parse_draw_request(ok, 1000)) == "ok")
+
+fn test_request_sources_without_drand_is_e_sources() -> Unit:
+    assert(code_of(parse_draw_request(body_of(",\"sources\":[\"nist-beacon-2\"]"), 1000)) == "E_SOURCES")
+    assert(code_of(parse_draw_request(body_of(",\"sources\":[\"drand-quicknet\",\"moon\"]"), 1000)) == "E_SOURCES")
+    assert(code_of(parse_draw_request(body_of(",\"sources\":[\"nist-beacon-2\",\"drand-quicknet\"]"), 1000)) == "E_SOURCES")
+    assert(code_of(parse_draw_request(body_of(",\"sources\":[\"drand-quicknet\"]"), 1000)) == "ok")
+
+fn test_request_pending_audit_method_is_e_method_pending() -> Unit:
+    let b = text_bytes("{\"tradition\":\"tarot\",\"method\":\"marseille\",\"nonce\":\"" + nonce_hex() + "\"}")
+    assert(code_of(parse_draw_request(b, 1000)) == "E_METHOD_PENDING")
+    let t = text_bytes("{\"tradition\":\"tarot\",\"method\":\"thoth\",\"nonce\":\"" + nonce_hex() + "\"}")
+    assert(code_of(parse_draw_request(t, 1000)) == "E_METHOD_PENDING")
+
+fn test_request_not_before_bounds() -> Unit:
+    let now = 1795556000
+    assert(code_of(parse_draw_request(body_of(",\"not_before\":" + int_to_text(now + 400 * 86400)), now)) == "ok")
+    assert(code_of(parse_draw_request(body_of(",\"not_before\":" + int_to_text(now + 400 * 86400 + 1)), now)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(body_of(",\"not_before\":-1"), now)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(body_of(",\"not_before\":5"), now)) == "ok")
+
+fn test_request_body_size_limit() -> Unit:
+    var pad = ""
+    for i in range(0, 100):
+        set pad = pad + "0123456789"
+    let base = body_of("")
+    let room = 65536 - len(base) - len(",\"x\":\"\"")
+    var filler = ""
+    while len(filler) < room:
+        set filler = filler + pad
+    let exact = text_bytes("{\"tradition\":\"iching\",\"method\":\"coins\",\"nonce\":\"" + nonce_hex() + "\",\"x\":\"" + text_slice(filler, 0, room) + "\"}")
+    assert(len(exact) == 65536)
+    # exactly 65536 bytes is not refused for its size (it is refused for the unknown key x)
+    assert(status_of(parse_draw_request(exact, 1000)) == 400)
+    let over = text_bytes("{\"tradition\":\"iching\",\"method\":\"coins\",\"nonce\":\"" + nonce_hex() + "\",\"x\":\"" + text_slice(filler, 0, room + 1) + "\"}")
+    assert(len(over) == 65537)
+    assert(code_of(parse_draw_request(over, 1000)) == "E_TOO_LARGE")
+    assert(status_of(parse_draw_request(over, 1000)) == 413)
+
+fn test_request_refuses_question_text_and_identity_keys() -> Unit:
+    assert(code_of(parse_draw_request(body_of(",\"question\":\"will it rain\""), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(body_of(",\"ip\":\"1.2.3.4\""), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(body_of(",\"account\":\"a\""), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(body_of(",\"timelock\":\"x\""), 1000)) == "E_TLOCK_UNSUPPORTED")
+    assert(code_of(parse_draw_request(body_of(",\"subject\":\"x\""), 1000)) == "E_REQUEST")
+
+fn test_request_nonce_and_commitment_shape() -> Unit:
+    assert(code_of(parse_draw_request(text_bytes("{\"tradition\":\"iching\",\"method\":\"coins\"}"), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(text_bytes("{\"tradition\":\"iching\",\"method\":\"coins\",\"nonce\":\"abcd\"}"), 1000)) == "E_REQUEST")
+    var commit = ""
+    for i in range(0, 64):
+        set commit = commit + "ab"
+    let r = unwrap(parse_draw_request(body_of(",\"commitment\":\"" + commit + "\""), 1000))
+    assert(r.question_mode == 1 and len(r.question_commit) == 64)
+    assert(code_of(parse_draw_request(body_of(",\"commitment\":\"abcd\""), 1000)) == "E_REQUEST")
+
+fn test_request_not_json_or_not_an_object() -> Unit:
+    assert(code_of(parse_draw_request(text_bytes("not json"), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(text_bytes("[1]"), 1000)) == "E_REQUEST")
+    assert(code_of(parse_draw_request(text_bytes("{\"tradition\":1,\"method\":\"coins\",\"nonce\":\"" + nonce_hex() + "\"}"), 1000)) == "E_REQUEST")
+
+fn test_object_keys_reads_only_top_level() -> Unit:
+    let j = unwrap(json_parse("{\"a\":1,\"b\":{\"c\":2,\"d\":[{\"e\":3}]},\"f\":\"x,\\\"g\\\":1\"}"))
+    assert(object_keys(j) == ["a", "b", "f"])
+
+# ---------------------------------------------------------------- store
+
+fn temp_root() -> Text:
+    return unwrap(fs_temp_dir("lotcast-store"))
+
+fn sample_draw(id: Text, index: Int) -> Json:
+    return draw_record(id, index, "ab" + id, "promise-text", 7, 99, json_set(json_object(), "tradition", json_text("iching")))
+
+fn test_store_put_get_round_trip() -> Unit:
+    let root = temp_root()
+    let store = unwrap(store_open(root))
+    let first = unwrap(store_put_draw(store, "aaaa", sample_draw("aaaa", 3)))
+    assert(json_as_int(json_get(first, "index")) == 3)
+    let got = unwrap(store_get_draw(store, "aaaa"))
+    assert(json_as_text(json_get(got, "promise")) == "promise-text")
+    assert(not is_ok(store_get_draw(store, "bbbb")))
+
+fn test_store_second_put_returns_the_first_draw() -> Unit:
+    let store = unwrap(store_open(temp_root()))
+    let a = unwrap(store_put_draw(store, "cccc", sample_draw("cccc", 1)))
+    let b = unwrap(store_put_draw(store, "cccc", sample_draw("cccc", 9)))
+    assert(json_as_int(json_get(b, "index")) == 1)
+    assert(json_as_int(json_get(a, "index")) == 1)
+
+fn test_store_open_reports_a_corrupt_draw_file() -> Unit:
+    let root = temp_root()
+    let store = unwrap(store_open(root))
+    let wrote = write_text_atomic(root + "/draws/dddd.json", "{not json")
+    assert(not is_ok(store_open(root)))
+
+fn test_store_open_ignores_an_interrupted_write() -> Unit:
+    let root = temp_root()
+    let store = unwrap(store_open(root))
+    let put = unwrap(store_put_draw(store, "eeee", sample_draw("eeee", 2)))
+    let leftover = write_text_atomic(root + "/draws/ffff.json.tmp", "{half")
+    let again = unwrap(store_open(root))
+    assert(store_draw_ids(again) == ["eeee"])
+
+fn test_store_inbox_lists_and_removes() -> Unit:
+    let store = unwrap(store_open(temp_root()))
+    let a = unwrap(store_put_inbox(store, "1111", json_set(json_object(), "x", json_int(1))))
+    let b = unwrap(store_put_inbox(store, "2222", json_set(json_object(), "x", json_int(2))))
+    assert(store_inbox_ids(store) == ["1111", "2222"])
+    let gone = store_remove_inbox(store, "1111")
+    assert(store_inbox_ids(store) == ["2222"])
+
+fn test_draw_id_is_the_first_32_hex_of_the_entry_hash() -> Unit:
+    let h = unwrap(hex_decode("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"))
+    assert(draw_id(h) == "00112233445566778899aabbccddeeff")
+
+# ---------------------------------------------------------------- epoch loop
+
+fn seed_bytes() -> Bytes:
+    return bytes_from_ints([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32])
+
+fn cfg_for(root: Text) -> Config:
+    return Config("127.0.0.1", 8080, root, "", 5, 20, "lotcast.test/log", 2, 0, "registry.json")
+
+fn request_n(n: Int) -> DrawRequest:
+    var raw: List[Int] = []
+    for i in range(0, 32):
+        set raw = list_push(raw, (n + i) % 256)
+    return DrawRequest("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 0, bytes_from_ints(raw), bytes_from_ints([]))
+
+fn queue(store: Store, n: Int) -> Text:
+    let r = request_n(n)
+    let id = draw_id(unwrap(entry_hash(r)))
+    let put = unwrap(store_put_inbox(store, id, request_to_json(r)))
+    return id
+
+fn new_writer(root: Text) -> Writer:
+    let store = unwrap(store_open(root))
+    return unwrap(writer_open(store, cfg_for(root), seed_bytes()))
+
+fn t_now() -> Int:
+    return 1795556000
+
+
+fn test_the_promise_names_the_checkpoint_epoch_and_is_signed() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 3)
+    set w = unwrap(writer_tick(w, t_now()))
+    let d = unwrap(store_get_draw(w.store, a))
+    assert(json_as_text(json_get(d, "promise")) != "")
+    assert(json_as_int(json_get(d, "epoch")) == 359111200)
+
+
+fn test_an_empty_epoch_writes_no_checkpoint_and_no_epoch_file() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, t_now() + 30))
+    assert(w.state.size == 0)
+    assert(not store_has(w.store, "epochs/359111200.json"))
+
+fn test_closing_an_epoch_stores_the_checkpoint_and_valid_inclusion_proofs() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 5)
+    let b = queue(w.store, 6)
+    let c = queue(w.store, 7)
+    set w = unwrap(writer_tick(w, t_now()))
+    assert(not store_has(w.store, "epochs/359111200.json"))
+    set w = unwrap(writer_tick(w, 1795556005))
+    assert(store_has(w.store, "epochs/359111200.json"))
+    let closed = unwrap(store_get_json(w.store, "epochs/359111200.json"))
+    assert(json_as_int(json_get(closed, "deadline")) == 1795556025)
+    assert(json_as_int(json_get(closed, "size")) == 3)
+    let cp = unwrap(parse_checkpoint(unwrap(note_text(json_as_text(json_get(closed, "checkpoint"))))))
+    let entries = json_get(closed, "entries")
+    assert(json_len(entries) == 3)
+    for i in range(0, 3):
+        let e = unwrap(json_index_safe(entries, i))
+        let index = json_as_int(json_get(e, "index"))
+        var proof: List[Bytes] = []
+        let listed = json_get(e, "inclusion")
+        for j in range(0, json_len(listed)):
+            set proof = list_push(proof, unwrap(hex_decode(json_as_text(unwrap(json_index_safe(listed, j))))))
+        assert(verify_inclusion(w.state.entries[index], index, cp.size, proof, cp.root))
+    assert(not store_has(w.store, "state/open.json"))
+
+
+fn reopen(root: Text) -> Writer:
+    return new_writer(root)
+
+
+
+
+
+
+# ---------------------------------------------------------------- stamper
+
+fn deadline_in(note: Text) -> Int:
+    let cp = unwrap(parse_checkpoint(unwrap(note_text(note))))
+    return unwrap(parse_epoch(cp.extensions)).deadline
+
+fn pair_json(ids: List[Text], proven: Int) -> Json:
+    var stamps = json_array()
+    for id in ids:
+        set stamps = json_push(stamps, json_set(json_set(json_object(), "tsa", json_text(id)), "token", json_text("AA==")))
+    return json_set(json_set(json_object(), "timestamps", stamps), "proven_by", json_int(proven))
+
+fn probe_up(id: Text) -> Bool:
+    return true
+
+fn probe_down(id: Text) -> Bool:
+    return false
+
+fn stamp_in_time(note: Text, ids: List[Text]) -> Result[Json, StdError]:
+    return Ok(pair_json(ids, deadline_in(note) - 1))
+
+fn stamp_late(note: Text, ids: List[Text]) -> Result[Json, StdError]:
+    return Ok(pair_json(ids, deadline_in(note) + 4))
+
+fn stamp_fails(note: Text, ids: List[Text]) -> Result[Json, StdError]:
+    return Err(std_error("E_ANCHOR", "sectigo: no answer"))
+
+fn stamp_digicert_down(note: Text, ids: List[Text]) -> Result[Json, StdError]:
+    for id in ids:
+        if id == "digicert":
+            return Err(std_error("E_ANCHOR", "digicert: no answer"))
+    return Ok(pair_json(ids, deadline_in(note) - 1))
+
+fn closed_store() -> Store:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 21)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    return w.store
+
+fn test_stamper_anchors_an_epoch_when_both_tokens_prove_by_the_deadline() -> Unit:
+    let store = closed_store()
+    let after = unwrap(stamper_tick(store, {}, 1795556006, stamp_in_time, probe_up, 0))
+    let anchor = unwrap(store_get_json(store, "anchors/359111200.json"))
+    assert(json_as_bool(json_get(anchor, "void")) == false)
+    assert(json_as_int(json_get(anchor, "proven_by")) == 1795556024)
+    assert(json_len(json_get(anchor, "timestamps")) == 2)
+
+fn test_stamper_voids_an_epoch_whose_tokens_prove_after_the_deadline() -> Unit:
+    let store = closed_store()
+    let after = unwrap(stamper_tick(store, {}, 1795556006, stamp_late, probe_up, 0))
+    let anchor = unwrap(store_get_json(store, "anchors/359111200.json"))
+    assert(json_as_bool(json_get(anchor, "void")) == true)
+
+fn test_stamper_retries_until_the_deadline_then_voids() -> Unit:
+    let store = closed_store()
+    let first = unwrap(stamper_tick(store, {}, 1795556006, stamp_fails, probe_up, 0))
+    assert(not store_has(store, "anchors/359111200.json"))
+    let last = unwrap(stamper_tick(store, first, 1795556024, stamp_fails, probe_up, 0))
+    assert(not store_has(store, "anchors/359111200.json"))
+    let over = unwrap(stamper_tick(store, last, 1795556026, stamp_fails, probe_up, 0))
+    let anchor = unwrap(store_get_json(store, "anchors/359111200.json"))
+    assert(json_as_bool(json_get(anchor, "void")) == true)
+
+fn test_stamper_switches_to_freetsa_after_ten_minutes_of_one_authority_down() -> Unit:
+    let store = closed_store()
+    var down: Map[Text, Int] = {}
+    set down = map_set(down, "digicert", 1795556006 - 601)
+    let after = unwrap(stamper_tick(store, down, 1795556006, stamp_digicert_down, probe_up, 0))
+    let anchor = unwrap(store_get_json(store, "anchors/359111200.json"))
+    assert(json_as_bool(json_get(anchor, "void")) == false)
+    let first = json_get(unwrap(json_index_safe(json_get(anchor, "timestamps"), 0)), "tsa")
+    let second = json_get(unwrap(json_index_safe(json_get(anchor, "timestamps"), 1)), "tsa")
+    assert(json_as_text(first) == "sectigo" and json_as_text(second) == "freetsa")
+
+fn test_stamper_ignores_epochs_already_anchored() -> Unit:
+    let store = closed_store()
+    let a = unwrap(stamper_tick(store, {}, 1795556006, stamp_in_time, probe_up, 0))
+    let b = unwrap(stamper_tick(store, a, 1795556007, stamp_fails, probe_up, 0))
+    let anchor = unwrap(store_get_json(store, "anchors/359111200.json"))
+    assert(json_as_bool(json_get(anchor, "void")) == false)
+
+# ---------------------------------------------------------------- watcher
+
+fn fake_drand(round: Int) -> Result[DrandRound, StdError]:
+    return Ok(DrandRound(round, bytes_from_ints([1, 2]), bytes_from_ints([3, 4])))
+
+fn fake_source(id: Text, t0: Int) -> Result[SourceResult, StdError]:
+    return Ok(SourceResult(id, "present", bytes_from_ints([9]), json_set(json_object(), "id", json_text(id))))
+
+fn fake_absent(id: Text, t0: Int) -> Result[SourceResult, StdError]:
+    return Ok(SourceResult(id, "absent-proven", bytes_from_ints([]), json_set(json_object(), "id", json_text(id))))
+
+fn fake_open_window(id: Text, t0: Int) -> Result[SourceResult, StdError]:
+    return Err(std_error("E_LOTCAST_PENDING", id + " has no pulse after t0 yet; the window closes at unix time 1795558000"))
+
+fn fake_build(request: DrawRequest, log_part: Json, promise: Text, drand: DrandRound, others: List[SourceResult], key: Bytes) -> Result[Json, StdError]:
+    var r = json_object()
+    set r = json_set(r, "round", json_int(drand.round))
+    set r = json_set(r, "promise", json_text(promise))
+    set r = json_set(r, "index", json_get(log_part, "index"))
+    set r = json_set(r, "others", json_int(len(others)))
+    return Ok(r)
+
+fn fake_build_fails(request: DrawRequest, log_part: Json, promise: Text, drand: DrandRound, others: List[SourceResult], key: Bytes) -> Result[Json, StdError]:
+    return Err(std_error("E_LOTCAST_SELFCHECK", "step 3 failed"))
+
+fn queue_request(store: Store, r: DrawRequest) -> Text:
+    let id = draw_id(unwrap(entry_hash(r)))
+    let put = unwrap(store_put_inbox(store, id, request_to_json(r)))
+    return id
+
+fn anchored_store(r: DrawRequest) -> Writer:
+    let root = temp_root()
+    var w = new_writer(root)
+    let id = queue_request(w.store, r)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let failing = unwrap(stamper_tick(w.store, {}, 1795556006, stamp_in_time, probe_up, 0))
+    return w
+
+fn scheduled(n: Int, not_before: Int) -> DrawRequest:
+    let base = request_n(n)
+    return DrawRequest(base.tradition, base.method, base.options, 0, bytes_from_ints([]), ["drand-quicknet"], not_before, base.client_nonce, bytes_from_ints([]))
+
+fn status_of_draw(store: Store, id: Text) -> Text:
+    return json_as_text(json_get(unwrap(store_get_json(store, "status/" + id + ".json")), "status"))
+
+fn test_watcher_completes_a_drand_only_draw_once_the_round_exists() -> Unit:
+    let r = request_n(31)
+    let w = anchored_store(r)
+    let id = draw_id(unwrap(entry_hash(r)))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_source, fake_build))
+    assert(n == 1)
+    assert(store_has(w.store, "receipts/" + id + ".json"))
+    assert(status_of_draw(w.store, id) == "complete")
+    let receipt = unwrap(store_get_json(w.store, "receipts/" + id + ".json"))
+    assert(json_as_int(json_get(receipt, "others")) == 3)
+
+fn test_watcher_waits_for_a_future_not_before() -> Unit:
+    let r = scheduled(32, 1795561000)
+    let w = anchored_store(r)
+    let id = draw_id(unwrap(entry_hash(r)))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_source, fake_build))
+    assert(n == 0)
+    assert(status_of_draw(w.store, id) == "pending")
+    let waiting = json_get(unwrap(store_get_json(w.store, "status/" + id + ".json")), "waiting_on")
+    assert(json_as_text(json_get(unwrap(json_index_safe(waiting, 0)), "source")) == "not-before")
+    assert(not store_has(w.store, "receipts/" + id + ".json"))
+    let later = unwrap(watch_once(w.store, w.origin, w.public, 1795561100, fake_drand, fake_source, fake_build))
+    assert(later == 1)
+
+fn test_watcher_names_the_source_whose_window_is_open() -> Unit:
+    let base = request_n(33)
+    let r = DrawRequest(base.tradition, base.method, base.options, 0, bytes_from_ints([]), ["curby-rng", "drand-quicknet"], 0, base.client_nonce, bytes_from_ints([]))
+    let w = anchored_store(r)
+    let id = draw_id(unwrap(entry_hash(r)))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_open_window, fake_build))
+    assert(n == 0)
+    let waiting = json_get(unwrap(store_get_json(w.store, "status/" + id + ".json")), "waiting_on")
+    assert(json_as_text(json_get(unwrap(json_index_safe(waiting, 0)), "source")) == "curby-rng")
+    assert(json_as_int(json_get(unwrap(store_get_json(w.store, "status/" + id + ".json")), "next_check")) == 1795556050)
+
+fn test_watcher_completes_when_a_source_had_no_pulse_in_its_window() -> Unit:
+    let base = request_n(34)
+    let r = DrawRequest(base.tradition, base.method, base.options, 0, bytes_from_ints([]), ["curby-rng", "drand-quicknet"], 0, base.client_nonce, bytes_from_ints([]))
+    let w = anchored_store(r)
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_absent, fake_build))
+    assert(n == 1)
+
+fn test_watcher_does_not_serve_a_receipt_that_fails_its_own_check() -> Unit:
+    let r = request_n(35)
+    let w = anchored_store(r)
+    let id = draw_id(unwrap(entry_hash(r)))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_source, fake_build_fails))
+    assert(n == 0)
+    assert(not store_has(w.store, "receipts/" + id + ".json"))
+    let waiting = json_get(unwrap(store_get_json(w.store, "status/" + id + ".json")), "waiting_on")
+    assert(json_as_text(json_get(unwrap(json_index_safe(waiting, 0)), "source")) == "internal-check")
+
+fn test_watcher_reports_a_void_epoch_as_anchor_failed() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let r = request_n(36)
+    let id = queue_request(w.store, r)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let failing = unwrap(stamper_tick(w.store, {}, 1795556006, stamp_late, probe_up, 0))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_source, fake_build))
+    assert(n == 0)
+    assert(status_of_draw(w.store, id) == "anchor-failed")
+
+fn test_watcher_says_anchor_while_the_epoch_is_not_stamped() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let r = request_n(37)
+    let id = queue_request(w.store, r)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556006, fake_drand, fake_source, fake_build))
+    let waiting = json_get(unwrap(store_get_json(w.store, "status/" + id + ".json")), "waiting_on")
+    assert(json_as_text(json_get(unwrap(json_index_safe(waiting, 0)), "source")) == "anchor")
+
+fn test_a_restarted_watcher_resumes_pending_draws_without_relogging() -> Unit:
+    let r = scheduled(38, 1795561000)
+    let w = anchored_store(r)
+    let first = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, fake_source, fake_build))
+    let size = w.state.size
+    let store = unwrap(store_open(w.store.root))
+    let again = unwrap(watch_once(store, w.origin, w.public, 1795561100, fake_drand, fake_source, fake_build))
+    assert(again == 1)
+    assert(w.state.size == size)
+
+fn counting_source(id: Text, t0: Int) -> Result[SourceResult, StdError]:
+    let before = read_text("fetch-count.txt")
+    var seen = ""
+    if is_ok(before):
+        set seen = unwrap(before)
+    let wrote = write_text_atomic("fetch-count.txt", seen + "x")
+    return Ok(SourceResult(id, "present", bytes_from_ints([9]), json_set(json_object(), "id", json_text(id))))
+
+fn test_many_draws_with_the_same_anchor_time_cause_one_fetch_per_source() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    for n in range(40, 50):
+        let base = request_n(n)
+        let r = DrawRequest(base.tradition, base.method, base.options, 0, bytes_from_ints([]), ["curby-rng", "drand-quicknet"], 0, base.client_nonce, bytes_from_ints([]))
+        let id = queue_request(w.store, r)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let failing = unwrap(stamper_tick(w.store, {}, 1795556006, stamp_in_time, probe_up, 0))
+    let wrote = write_text_atomic("fetch-count.txt", "")
+    let n = unwrap(watch_once(w.store, w.origin, w.public, 1795556040, fake_drand, counting_source, fake_build))
+    assert(n == 10)
+    assert(unwrap(read_text("fetch-count.txt")) == "x")
+    let gone = fs_remove("fetch-count.txt")
+
+# ---------------------------------------------------------------- api
+
+fn good_body(n: Int) -> Bytes:
+    var hex = ""
+    for i in range(0, 32):
+        set hex = hex + "0" + text_slice("0123456789abcdef", (n + i) % 16, (n + i) % 16 + 1)
+    return text_bytes("{\"tradition\":\"iching\",\"method\":\"coins\",\"sources\":[\"drand-quicknet\"],\"nonce\":\"" + hex + "\"}")
+
+fn api_err_code(r: Result[Json, ApiError]) -> Text:
+    match r:
+        Err(problem):
+            return problem.code
+        Ok(ignored):
+            return "ok"
+
+fn api_err_status(r: Result[Json, ApiError]) -> Int:
+    match r:
+        Err(problem):
+            return problem.status
+        Ok(ignored):
+            return 0
+
+fn test_api_submit_start_queues_the_request_under_its_entry_hash() -> Unit:
+    let store = unwrap(store_open(temp_root()))
+    let started = unwrap(api_submit_start(store, good_body(1), t_now()))
+    assert(len(started) == 32)
+    assert(store_has(store, "inbox/" + started + ".json"))
+    let again = unwrap(api_submit_start(store, good_body(1), t_now()))
+    assert(again == started)
+    assert(len(store_inbox_ids(store)) == 1)
+
+fn test_api_submit_start_rejects_what_validation_rejects() -> Unit:
+    let store = unwrap(store_open(temp_root()))
+    match api_submit_start(store, text_bytes("{}"), t_now()):
+        Err(problem):
+            assert(problem.code == "E_REQUEST")
+        Ok(ignored):
+            assert(false)
+    assert(len(store_inbox_ids(store)) == 0)
+
+fn test_api_draw_shows_the_promise_and_what_it_waits_on() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let id = unwrap(api_submit_start(w.store, good_body(2), t_now()))
+    set w = unwrap(writer_tick(w, t_now()))
+    let view = unwrap(api_draw(w.store, id))
+    assert(json_as_text(json_get(view, "id")) == id)
+    assert(json_as_text(json_get(view, "status")) == "pending")
+    assert(json_as_text(json_get(view, "promise")) != "")
+    assert(json_as_int(json_get(view, "index")) == 0)
+    assert(json_len(json_get(view, "waiting_on")) == 1)
+    assert(json_as_int(json_get(view, "poll_after_ms")) > 0)
+
+fn test_api_wait_returns_the_draw_when_the_writer_has_made_it() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let id = unwrap(api_submit_start(w.store, good_body(3), t_now()))
+    assert(api_err_code(api_wait_draw(w.store, id, 0)) == "E_BUSY")
+    set w = unwrap(writer_tick(w, t_now()))
+    assert(api_err_code(api_wait_draw(w.store, id, 0)) == "ok")
+
+fn test_api_draw_unknown_or_malformed_id_is_not_found() -> Unit:
+    let store = unwrap(store_open(temp_root()))
+    assert(api_err_code(api_draw(store, "00000000000000000000000000000000")) == "E_NOT_FOUND")
+    assert(api_err_status(api_draw(store, "../../etc/passwd")) == 404)
+    assert(api_err_code(api_draw(store, "short")) == "E_NOT_FOUND")
+
+fn test_api_complete_draw_carries_its_receipt() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let id = unwrap(api_submit_start(w.store, good_body(4), t_now()))
+    set w = unwrap(writer_tick(w, t_now()))
+    assert(api_err_code(api_receipt(w.store, id)) == "E_NOT_FOUND")
+    let put = unwrap(store_put_json(w.store, "receipts/" + id + ".json", json_set(json_object(), "outcome", json_int(7))))
+    let marked = unwrap(store_put_json(w.store, "status/" + id + ".json", json_set(json_set(json_object(), "status", json_text("complete")), "waiting_on", json_array())))
+    let view = unwrap(api_draw(w.store, id))
+    assert(json_as_text(json_get(view, "status")) == "complete")
+    assert(json_as_int(json_get(json_get(view, "receipt"), "outcome")) == 7)
+    assert(json_as_int(json_get(unwrap(api_receipt(w.store, id)), "outcome")) == 7)
+
+fn test_api_void_epoch_shows_anchor_failed_with_its_code() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let id = unwrap(api_submit_start(w.store, good_body(5), t_now()))
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let failing = unwrap(stamper_tick(w.store, {}, 1795556006, stamp_late, probe_up, 0))
+    let view = unwrap(api_draw(w.store, id))
+    assert(json_as_text(json_get(view, "status")) == "anchor-failed")
+    assert(json_as_text(json_get(json_get(view, "error"), "code")) == "E_ANCHOR_FAILED")
+
+fn test_api_verify_refuses_junk_and_says_it_was_the_service() -> Unit:
+    assert(api_err_code(api_verify(text_bytes("not json"), bytes_from_ints([1]))) == "E_REQUEST")
+    assert(api_err_code(api_verify(text_bytes("{}"), bytes_from_ints([1]))) == "E_REQUEST")
+    let out = unwrap(api_verify(text_bytes("{\"receipt\":{}}"), bytes_from_ints([1])))
+    assert(json_as_text(json_get(out, "verdict")) == "invalid")
+    assert(json_as_text(json_get(out, "verified_by")) == "service")
+
+fn test_api_traditions_lists_methods_with_their_options_and_audit_state() -> Unit:
+    let t = api_traditions()
+    var found_coins = false
+    var found_marseille = false
+    let methods = json_get(t, "methods")
+    for i in range(0, json_len(methods)):
+        let m = unwrap(json_index_safe(methods, i))
+        if json_as_text(json_get(m, "method")) == "coins":
+            set found_coins = json_as_text(json_get(m, "status")) == "ready"
+        if json_as_text(json_get(m, "method")) == "marseille":
+            set found_marseille = json_as_text(json_get(m, "status")) == "audit-pending"
+    assert(found_coins and found_marseille)
+
+fn test_api_registry_and_sources_read_their_files() -> Unit:
+    let root = temp_root()
+    let store = unwrap(store_open(root))
+    assert(api_err_code(api_registry(root + "/missing.json")) == "E_NOT_FOUND")
+    let wrote = write_text_atomic(root + "/registry.json", "{\"registry\":\"x\"}")
+    assert(json_as_text(json_get(unwrap(api_registry(root + "/registry.json")), "registry")) == "x")
+    assert(json_len(json_get(api_sources(store), "sources")) == 0)
+    let put = unwrap(store_put_json(store, "state/sources.json", json_set(json_object(), "sources", json_push(json_array(), json_text("a")))))
+    assert(json_len(json_get(api_sources(store), "sources")) == 1)
+
+fn test_error_body_has_the_documented_shape() -> Unit:
+    let body = api_error_json(ApiError(404, "E_NOT_FOUND", "nothing here"))
+    assert(json_as_text(json_get(json_get(body, "error"), "code")) == "E_NOT_FOUND")
+    assert(json_as_text(json_get(json_get(body, "error"), "message")) == "nothing here")
+
+# ---------------------------------------------------------------- limits
+
+fn test_rate_check_allows_sixty_and_refuses_the_sixty_first() -> Unit:
+    var stamps: List[Int] = []
+    for i in range(0, 60):
+        let r = rate_check(stamps, 1000 + i // 10, 60)
+        assert(r.allowed)
+        set stamps = r.kept
+    assert(len(stamps) == 60)
+    assert(not rate_check(stamps, 1006, 60).allowed)
+    assert(rate_check(stamps, 1000 + 60 + 5, 60).allowed)
+
+fn test_rate_window_slides() -> Unit:
+    assert(rate_check([100, 101], 159, 2).allowed == false)
+    assert(rate_check([100, 101], 160, 2).allowed)
+
+fn test_client_key_ignores_what_the_client_claims() -> Unit:
+    assert(client_key("9.9.9.9, 1.1.1.1, 2.2.2.2", 1) == "2.2.2.2")
+    assert(client_key("9.9.9.9, 1.1.1.1, 2.2.2.2", 2) == "1.1.1.1")
+    assert(client_key("", 1) == "unknown")
+    assert(client_key("1.1.1.1", 2) == "unknown")
+    assert(client_key("1.1.1.1, 2.2.2.2", 0) == "shared")
+
+fn test_rate_hit_is_kept_per_client_in_files() -> Unit:
+    let store = unwrap(store_open(temp_root()))
+    assert(rate_hit(store, "a", 1000, 2))
+    assert(rate_hit(store, "a", 1001, 2))
+    assert(not rate_hit(store, "a", 1002, 2))
+    assert(rate_hit(store, "b", 1002, 2))
+    assert(rate_hit(store, "a", 1062, 2))
+
+fn test_the_receipt_the_running_service_made_verifies_offline() -> Unit:
+    let receipt = unwrap(json_parse(unwrap(read_text("fixtures/service-receipt.json"))))
+    let key = unwrap(hex_decode(text_trim(unwrap(read_text("fixtures/service-operator-key.hex")))))
+    let verdict = verify_any(receipt, key, tsa_pins(), false, "", bytes_from_ints([]))
+    assert(verdict.result == "verified")
+
+# ---------------------------------------------------------------- public epoch files
+
+fn test_closing_an_epoch_publishes_its_checkpoint_and_the_epoch_index_in_the_log() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 61)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let closed = unwrap(store_get_json(w.store, "epochs/359111200.json"))
+    let published = unwrap(read_text(root + "/log/epoch/359111200"))
+    assert(published == json_as_text(json_get(closed, "checkpoint")))
+    assert(unwrap(read_text(root + "/log/epoch/index")) == "359111200\n")
+    let b = queue(w.store, 62)
+    set w = unwrap(writer_tick(w, 1795556010))
+    set w = unwrap(writer_tick(w, 1795556016))
+    assert(unwrap(read_text(root + "/log/epoch/index")) == "359111200\n359111202\n")
+
+fn test_the_anchor_is_published_beside_the_checkpoint() -> Unit:
+    let store = closed_store()
+    let after = unwrap(stamper_tick(store, {}, 1795556006, stamp_in_time, probe_up, 0))
+    let public = unwrap(json_parse(unwrap(read_text(store.root + "/log/anchor/359111200.json"))))
+    assert(json_as_bool(json_get(public, "void")) == false)
+    assert(json_len(json_get(public, "timestamps")) == 2)
+
+# ---------------------------------------------------------------- pin report
+
+fn test_a_pin_expiring_in_29_days_is_flagged_and_one_in_31_is_not() -> Unit:
+    assert(classify_pin(29) == "expiring")
+    assert(classify_pin(30) == "ok")
+    assert(classify_pin(31) == "ok")
+    assert(classify_pin(0) == "expiring")
+    assert(classify_pin(-1) == "expired")
+
+fn test_pin_report_lists_every_pinned_certificate_with_its_days_left() -> Unit:
+    let report = pin_report(1795556000)
+    let pins = json_get(report, "pins")
+    assert(json_len(pins) >= 6)
+    for i in range(0, json_len(pins)):
+        let p = unwrap(json_index_safe(pins, i))
+        assert(json_as_text(json_get(p, "status")) == "ok")
+        assert(json_as_int(json_get(p, "days_left")) > 30)
+    assert(json_as_bool(json_get(report, "all_ok")))
+
+fn test_pin_report_fails_when_a_pin_has_expired() -> Unit:
+    let report = pin_report(2300000000)
+    assert(json_as_bool(json_get(report, "all_ok")) == false)
+    var expired = 0
+    let pins = json_get(report, "pins")
+    for i in range(0, json_len(pins)):
+        if json_as_text(json_get(unwrap(json_index_safe(pins, i)), "status")) == "expired":
+            set expired = expired + 1
+    assert(expired > 0)
+
+fn test_pin_entry_reports_a_certificate_that_cannot_be_read() -> Unit:
+    let e = pin_entry("broken", bytes_from_ints([1, 2, 3]), 1795556000)
+    assert(json_as_text(json_get(e, "status")) == "unreadable")
+
+# ---------------------------------------------------------------- writer: promises first, one batch per epoch
+
+fn intent_for(ids: List[Text], base: Int) -> Json:
+    var listed = json_array()
+    for id in ids:
+        set listed = json_push(listed, json_text(id))
+    return json_set(json_set(json_set(json_set(json_object(), "epoch", json_int(359111200)), "deadline", json_int(1795556025)), "base", json_int(base)), "ids", listed)
+
+fn test_drain_promises_each_request_an_index_without_touching_the_log() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 1)
+    let b = queue(w.store, 2)
+    set w = unwrap(writer_tick(w, t_now()))
+    assert(w.state.size == 0)
+    let da = unwrap(store_get_draw(w.store, a))
+    let db = unwrap(store_get_draw(w.store, b))
+    assert(json_as_int(json_get(da, "index")) + json_as_int(json_get(db, "index")) == 1)
+    assert(json_as_int(json_get(da, "epoch")) == 359111200)
+    assert(json_as_int(json_get(da, "deadline")) == 1795556025)
+    assert(json_as_text(json_get(da, "promise")) != "")
+    assert(len(store_inbox_ids(w.store)) == 0)
+    assert(store_has(w.store, "state/open.json"))
+
+fn test_the_log_gets_one_checkpoint_per_epoch_in_one_batch() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 3)
+    set w = unwrap(writer_tick(w, t_now()))
+    let b = queue(w.store, 4)
+    set w = unwrap(writer_tick(w, t_now() + 2))
+    assert(w.state.size == 0)
+    assert(json_as_int(json_get(unwrap(store_get_draw(w.store, b)), "index")) == 1)
+    set w = unwrap(writer_tick(w, 1795556005))
+    assert(w.state.size == 2)
+    assert(unwrap(read_text(root + "/log/epoch/index")) == "359111200\n")
+    let cp = unwrap(parse_checkpoint(unwrap(note_text(w.state.checkpoint))))
+    assert(unwrap(parse_epoch(cp.extensions)).epoch == 359111200)
+    assert(unwrap(parse_epoch(cp.extensions)).deadline == 1795556025)
+
+fn test_a_request_already_drawn_is_not_queued_again() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 5)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let again = queue(w.store, 5)
+    assert(again == a)
+    set w = unwrap(writer_tick(w, 1795556006))
+    assert(w.state.size == 1)
+    assert(len(store_inbox_ids(w.store)) == 0)
+    assert(not store_has(w.store, "state/open.json"))
+
+fn test_a_later_epoch_gets_its_own_checkpoint_and_the_old_epoch_stays_closed() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 6)
+    set w = unwrap(writer_tick(w, t_now()))
+    let b = queue(w.store, 7)
+    set w = unwrap(writer_tick(w, 1795556006))
+    assert(store_has(w.store, "epochs/359111200.json"))
+    assert(w.state.size == 1)
+    let db = unwrap(store_get_draw(w.store, b))
+    assert(json_as_int(json_get(db, "epoch")) == 359111201)
+    assert(json_as_int(json_get(db, "index")) == 1)
+    set w = unwrap(writer_tick(w, 1795556011))
+    assert(store_has(w.store, "epochs/359111201.json"))
+    assert(w.state.size == 2)
+
+fn test_restart_after_a_drain_closes_the_epoch_with_one_checkpoint() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 8)
+    set w = unwrap(writer_tick(w, t_now()))
+    var again = new_writer(root)
+    set again = unwrap(writer_tick(again, 1795556010))
+    assert(again.state.size == 1)
+    assert(store_has(again.store, "epochs/359111200.json"))
+    assert(unwrap(read_text(root + "/log/epoch/index")) == "359111200\n")
+
+fn test_crash_between_the_intent_and_the_draw_records_is_repaired_in_the_same_epoch() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 9)
+    let intent = unwrap(store_put_json(w.store, "state/open.json", intent_for([a], 0)))
+    set w = new_writer(root)
+    set w = unwrap(writer_tick(w, t_now() + 1))
+    let d = unwrap(store_get_draw(w.store, a))
+    assert(json_as_int(json_get(d, "index")) == 0 and json_as_int(json_get(d, "epoch")) == 359111200)
+    assert(len(store_inbox_ids(w.store)) == 0)
+
+fn test_the_same_crash_found_long_after_the_deadline_still_closes_the_epoch_so_it_voids() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 10)
+    let intent = unwrap(store_put_json(w.store, "state/open.json", intent_for([a], 0)))
+    set w = new_writer(root)
+    set w = unwrap(writer_tick(w, 1795556100))
+    assert(store_has(w.store, "epochs/359111200.json"))
+    assert(w.state.size == 1)
+    assert(json_as_int(json_get(unwrap(store_get_draw(w.store, a)), "index")) == 0)
+    let failing = unwrap(stamper_tick(w.store, {}, 1795556100, stamp_in_time, probe_up, 0))
+    assert(json_as_bool(json_get(unwrap(store_get_json(w.store, "anchors/359111200.json")), "void")))
+
+fn test_a_crash_after_the_append_is_recognised_and_the_append_is_not_repeated() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let r = request_n(11)
+    let a = queue(w.store, 11)
+    set w = unwrap(writer_tick(w, t_now()))
+    let appended = unwrap(log_append_many(w.state, [unwrap(entry_bytes(r))], w.origin, w.seed, [epoch_extension(359111200, 1795556025)]))
+    let before = appended.state.checkpoint
+    set w = new_writer(root)
+    set w = unwrap(writer_tick(w, 1795556100))
+    assert(w.state.checkpoint == before)
+    assert(w.state.size == 1)
+    assert(store_has(w.store, "epochs/359111200.json"))
+
+fn test_a_clock_that_steps_back_into_a_closed_epoch_does_not_reopen_it() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 12)
+    set w = unwrap(writer_tick(w, t_now()))
+    set w = unwrap(writer_tick(w, 1795556005))
+    let c = queue(w.store, 13)
+    set w = unwrap(writer_tick(w, t_now() + 1))
+    assert(store_inbox_ids(w.store) == [c])
+    assert(not store_has(w.store, "state/open.json"))
+    set w = unwrap(writer_tick(w, 1795556010))
+    assert(store_has(w.store, "draws/" + c + ".json"))
+
+# ---------------------------------------------------------------- stamper: outages, probes, backlog
+
+fn test_after_both_authorities_were_down_ten_minutes_stamping_is_tried_again_anyway() -> Unit:
+    let store = closed_store()
+    var down: Map[Text, Int] = {}
+    set down = map_set(down, "digicert", 1795556006 - 700)
+    set down = map_set(down, "sectigo", 1795556006 - 700)
+    let after = unwrap(stamper_tick(store, down, 1795556006, stamp_in_time, probe_up, 0))
+    let anchor = unwrap(store_get_json(store, "anchors/359111200.json"))
+    assert(json_as_bool(json_get(anchor, "void")) == false)
+    assert(not map_has(after, "digicert") and not map_has(after, "sectigo"))
+
+fn test_an_idle_stamper_probes_a_failing_authority_and_clears_it_when_it_answers() -> Unit:
+    let root = temp_root()
+    let store = unwrap(store_open(root))
+    var down: Map[Text, Int] = {}
+    set down = map_set(down, "digicert", 1795556000)
+    let up = unwrap(stamper_tick(store, down, 1795556100, stamp_in_time, probe_up, 0))
+    assert(not map_has(up, "digicert"))
+    let still = unwrap(stamper_tick(store, down, 1795556100, stamp_in_time, probe_down, 0))
+    assert(map_has(still, "digicert"))
+
+fn test_probes_are_spaced_a_minute_apart() -> Unit:
+    let store = unwrap(store_open(temp_root()))
+    var down: Map[Text, Int] = {}
+    set down = map_set(down, "digicert", 1795556000)
+    let first = unwrap(stamper_tick(store, down, 1795556100, stamp_in_time, probe_down, 0))
+    assert(first["probe"] == 1795556100)
+    let second = unwrap(stamper_tick(store, first, 1795556130, stamp_in_time, probe_up, 0))
+    assert(map_has(second, "digicert"))
+    let third = unwrap(stamper_tick(store, first, 1795556161, stamp_in_time, probe_up, 0))
+    assert(not map_has(third, "digicert"))
+
+fn test_an_epoch_whose_deadline_passed_is_void_without_asking_an_authority() -> Unit:
+    let store = closed_store()
+    let after = unwrap(stamper_tick(store, {}, 1795556100, stamp_in_time, probe_up, 0))
+    assert(json_as_bool(json_get(unwrap(store_get_json(store, "anchors/359111200.json")), "void")))
+    assert(len(after) == 0)
+
+fn test_a_limit_of_one_stamps_one_epoch_per_pass() -> Unit:
+    let root = temp_root()
+    var w = new_writer(root)
+    let a = queue(w.store, 71)
+    set w = unwrap(writer_tick(w, t_now()))
+    let b = queue(w.store, 72)
+    set w = unwrap(writer_tick(w, 1795556006))
+    set w = unwrap(writer_tick(w, 1795556011))
+    let first = unwrap(stamper_tick(w.store, {}, 1795556012, stamp_in_time, probe_up, 1))
+    assert(store_has(w.store, "anchors/359111200.json"))
+    assert(not store_has(w.store, "anchors/359111201.json"))
+    let second = unwrap(stamper_tick(w.store, first, 1795556013, stamp_in_time, probe_up, 1))
+    assert(store_has(w.store, "anchors/359111201.json"))
+
+fn test_the_public_anchor_is_written_before_the_private_one() -> Unit:
+    let store = closed_store()
+    let after = unwrap(stamper_tick(store, {}, 1795556006, stamp_in_time, probe_up, 0))
+    assert(store_has(store, "log/anchor/359111200.json"))
+    assert(store_has(store, "anchors/359111200.json"))
+
+fn bucket_files(root: Text) -> List[Text]:
+    let listed = fs_list_dir(root + "/state/rate")
+    if not is_ok(listed):
+        let none: List[Text] = []
+        return none
+    return unwrap(listed)
+
+fn test_rate_bucket_names_cannot_be_reversed_to_an_address() -> Unit:
+    let root = temp_root()
+    let store = unwrap(store_open(root))
+    let hit = rate_hit(store, "203.0.113.9", 1795556000, 5)
+    let plain = hex_encode(crypto_sha256(bytes_from_text("203.0.113.9")))
+    let names = bucket_files(root)
+    assert(len(names) == 1)
+    assert(text_find(names[0], text_slice(plain, 0, 32), 0) < 0)
+    let other = unwrap(store_open(temp_root()))
+    let again = rate_hit(other, "203.0.113.9", 1795556000, 5)
+    assert(bucket_files(other.root)[0] != names[0])
+
+fn test_rate_sweep_deletes_buckets_older_than_the_window_and_keeps_recent_ones() -> Unit:
+    let root = temp_root()
+    let store = unwrap(store_open(root))
+    let a = rate_hit(store, "old", 1795556000, 5)
+    let b = rate_hit(store, "new", 1795556050, 5)
+    assert(len(bucket_files(root)) == 2)
+    assert(rate_sweep(store, 1795556061) == 1)
+    assert(len(bucket_files(root)) == 1)
+    assert(rate_sweep(store, 1795556200) == 1)
+    assert(len(bucket_files(root)) == 0)

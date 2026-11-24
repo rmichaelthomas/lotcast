@@ -1,0 +1,46 @@
+import "std:types"
+import "std:fs"
+import "std:crypto"
+import "std:json"
+import "std:process"
+import "std:text"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+import "src/lib.gu"
+
+# Live check of the epoch loop and stamper against the real DigiCert and Sectigo authorities.
+#
+#   guion run --allow-clock --allow-http-host timestamp.digicert.com --allow-http-host timestamp.sectigo.com \
+#       --file-root /tmp/lotcast-live tests_live.gu        (the directory must exist)
+
+fn stamp_live(note: Text, ids: List[Text]) -> Result[Json, StdError]:
+    return anchor_checkpoint(note, ids)
+
+fn probe_live(id: Text) -> Bool:
+    return true
+
+fn main() -> Int:
+    let root = "live-store"
+    let store = unwrap(store_open(root))
+    let cfg = Config("127.0.0.1", 8080, root, "", 5, 30, "lotcast.live/log", 2, 0, "registry.json")
+    let seed = unwrap(crypto_random_bytes(32))
+    var w = unwrap(writer_open(store, cfg, seed))
+    let nonce = unwrap(crypto_random_bytes(32))
+    let request = DrawRequest("iching", "coins", {}, 0, bytes_from_ints([]), ["drand-quicknet"], 0, nonce, bytes_from_ints([]))
+    let id = draw_id(unwrap(entry_hash(request)))
+    let queued = unwrap(store_put_inbox(store, id, request_to_json(request)))
+    set w = unwrap(writer_tick(w, unix_time_ms() // 1000))
+    var waited = 0
+    while not store_has(store, "epochs/" + int_to_text(json_as_int(json_get(unwrap(store_get_draw(store, id)), "epoch"))) + ".json") and waited < 15:
+        sleep_ms(1000)
+        set waited = waited + 1
+        set w = unwrap(writer_tick(w, unix_time_ms() // 1000))
+    let epoch = json_as_int(json_get(unwrap(store_get_draw(store, id)), "epoch"))
+    var failing: Map[Text, Int] = {}
+    set failing = unwrap(stamper_tick(store, failing, unix_time_ms() // 1000, stamp_live, probe_live, 0))
+    let anchor = unwrap(store_get_json(store, "anchors/" + int_to_text(epoch) + ".json"))
+    print(json_stringify(anchor))
+    if json_as_bool(json_get(anchor, "void")):
+        eprint("the epoch was void")
+        return 1
+    return 0

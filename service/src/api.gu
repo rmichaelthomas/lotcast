@@ -1,0 +1,182 @@
+import "std:types"
+import "std:encoding"
+import "std:json"
+import "std:process"
+import "std:text"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+import "request.gu"
+import "store.gu"
+
+# The service's operations as functions on the store: HTTP-free, so routes.gu only has to translate.
+# Nothing here names the web package, so core's `Request` (a draw request) never meets the HTTP one.
+
+# A whole receipt (with its timestamp tokens and pulse evidence) can be larger than a draw request.
+pub fn max_verify_bytes() -> Int:
+    return 262144
+
+fn not_found(message: Text) -> ApiError:
+    return ApiError(404, "E_NOT_FOUND", message)
+
+pub fn api_error_json(e: ApiError) -> Json:
+    return json_set(json_object(), "error", json_set(json_set(json_object(), "code", json_text(e.code)), "message", json_text(e.message)))
+
+fn is_draw_id(id: Text) -> Bool:
+    if len(id) != 32:
+        return false
+    for c in text_chars(id):
+        if text_find("0123456789abcdef", c, 0) < 0:
+            return false
+    return true
+
+# Validates a POST body and queues it for the writer, which will give it its index, epoch and
+# promise. Returns the draw id (the first 32 hex characters of the entry hash). A request that is
+# already queued or drawn is not queued again.
+pub fn api_submit_start(store: Store, body: Bytes, now: Int) -> Result[Text, ApiError]:
+    let request = parse_draw_request(body, now)?
+    let hash = entry_hash(request)
+    let encoded = entry_bytes(request)
+    if not is_ok(hash) or not is_ok(encoded):
+        return Err(ApiError(400, "E_REQUEST", "the request cannot be encoded"))
+    let id = draw_id(unwrap(hash))
+    if store_has(store, "draws/" + id + ".json") or store_has(store, "inbox/" + id + ".json"):
+        return Ok(id)
+    let queued = store_put_inbox(store, id, request_to_json(request))
+    if not is_ok(queued):
+        return Err(ApiError(500, "E_INTERNAL", "the request could not be queued"))
+    return Ok(id)
+
+fn status_view(store: Store, id: Text, draw: Json) -> Json:
+    var view = json_set(json_object(), "id", json_text(id))
+    set view = json_set(view, "index", json_get(draw, "index"))
+    set view = json_set(view, "entry_hash", json_get(draw, "entry_hash"))
+    set view = json_set(view, "promise", json_get(draw, "promise"))
+    set view = json_set(view, "epoch", json_get(draw, "epoch"))
+    set view = json_set(view, "poll_after_ms", json_int(2000))
+    if store_has(store, "receipts/" + id + ".json"):
+        let receipt = store_get_json(store, "receipts/" + id + ".json")
+        if is_ok(receipt):
+            set view = json_set(view, "status", json_text("complete"))
+            set view = json_set(view, "waiting_on", json_array())
+            return json_set(view, "receipt", unwrap(receipt))
+    var status = "pending"
+    var waiting = json_push(json_array(), json_set(json_set(json_object(), "source", json_text("anchor")), "detail", json_text("the epoch is not stamped yet")))
+    if store_has(store, "status/" + id + ".json"):
+        let s = store_get_json(store, "status/" + id + ".json")
+        if is_ok(s):
+            set status = json_as_text(json_get(unwrap(s), "status"))
+            set waiting = json_get(unwrap(s), "waiting_on")
+    let anchor_path = "anchors/" + int_to_text(json_as_int(json_get(draw, "epoch"))) + ".json"
+    if store_has(store, anchor_path):
+        let anchor = store_get_json(store, anchor_path)
+        if is_ok(anchor) and json_as_bool(json_get(unwrap(anchor), "void")):
+            set status = "anchor-failed"
+            set waiting = json_array()
+    set view = json_set(view, "status", json_text(status))
+    set view = json_set(view, "waiting_on", waiting)
+    if status == "anchor-failed":
+        set view = json_set(view, "error", json_get(api_error_json(ApiError(200, "E_ANCHOR_FAILED", "the epoch's timestamps did not arrive in time; resubmit with a new nonce")), "error"))
+    return view
+
+# The draw as the API shows it (spec 8.1): `pending` or `complete` (or `anchor-failed` for a void epoch).
+pub fn api_draw(store: Store, id: Text) -> Result[Json, ApiError]:
+    if not is_draw_id(id):
+        return Err(not_found("no such draw"))
+    if store_has(store, "draws/" + id + ".json"):
+        let draw = store_get_draw(store, id)
+        if not is_ok(draw):
+            return Err(ApiError(500, "E_INTERNAL", "the draw record cannot be read"))
+        return Ok(status_view(store, id, unwrap(draw)))
+    if store_has(store, "inbox/" + id + ".json"):
+        var view = json_set(json_set(json_object(), "id", json_text(id)), "status", json_text("pending"))
+        set view = json_set(view, "waiting_on", json_push(json_array(), json_set(json_set(json_object(), "source", json_text("log")), "detail", json_text("the request is queued for the log"))))
+        return Ok(json_set(view, "poll_after_ms", json_int(500)))
+    return Err(not_found("no such draw"))
+
+# Waits up to `wait_ms` for the writer to log the request and return its promise.
+pub fn api_wait_draw(store: Store, id: Text, wait_ms: Int) -> Result[Json, ApiError]:
+    var waited = 0
+    while not store_has(store, "draws/" + id + ".json") and waited < wait_ms:
+        sleep_ms(50)
+        set waited = waited + 50
+    if not store_has(store, "draws/" + id + ".json"):
+        return Err(ApiError(503, "E_BUSY", "the service has not logged the request yet; poll GET /v1/draws/" + id))
+    return api_draw(store, id)
+
+pub fn api_receipt(store: Store, id: Text) -> Result[Json, ApiError]:
+    if not is_draw_id(id) or not store_has(store, "receipts/" + id + ".json"):
+        return Err(not_found("no receipt for this draw (yet)"))
+    let receipt = store_get_json(store, "receipts/" + id + ".json")
+    if not is_ok(receipt):
+        return Err(ApiError(500, "E_INTERNAL", "the receipt cannot be read"))
+    return Ok(unwrap(receipt))
+
+# Server-side verification of a posted receipt: {receipt, operator_key?, question?, salt?}. A
+# convenience only; the answer says the service did the checking.
+pub fn api_verify(body: Bytes, service_key: Bytes) -> Result[Json, ApiError]:
+    if len(body) > max_verify_bytes():
+        return Err(ApiError(413, "E_TOO_LARGE", "a verify request is limited to 262144 bytes"))
+    let text = encoding_utf8_decode(body)
+    if not is_ok(text):
+        return Err(ApiError(400, "E_REQUEST", "the body is not UTF-8"))
+    let parsed = json_parse(unwrap(text))
+    if not is_ok(parsed) or not json_has(unwrap(parsed), "receipt"):
+        return Err(ApiError(400, "E_REQUEST", "post {\"receipt\": ...}"))
+    let receipt = json_get(unwrap(parsed), "receipt")
+    var key = service_key
+    if json_has(unwrap(parsed), "operator_key"):
+        let given = json_get_text_safe(unwrap(parsed), "operator_key")
+        if not is_ok(given) or not is_ok(hex_decode(unwrap(given))):
+            return Err(ApiError(400, "E_REQUEST", "operator_key must be hex"))
+        set key = unwrap(hex_decode(unwrap(given)))
+    var check = false
+    var question = ""
+    var salt = bytes_from_ints([])
+    if json_has(unwrap(parsed), "question") or json_has(unwrap(parsed), "salt"):
+        let q = json_get_text_safe(unwrap(parsed), "question")
+        let s = json_get_text_safe(unwrap(parsed), "salt")
+        if not is_ok(q) or not is_ok(s) or not is_ok(hex_decode(unwrap(s))):
+            return Err(ApiError(400, "E_REQUEST", "question and salt (hex) go together"))
+        set check = true
+        set question = unwrap(q)
+        set salt = unwrap(hex_decode(unwrap(s)))
+    let verdict = verify_any(receipt, key, tsa_pins(), check, question, salt)
+    var out = json_set(json_object(), "verdict", json_text(verdict.result))
+    set out = json_set(out, "failed_step", json_int(verdict.failed_step))
+    set out = json_set(out, "detail", json_text(verdict.detail))
+    var skipped = json_array()
+    for step in verdict.not_checked:
+        set skipped = json_push(skipped, json_int(step))
+    set out = json_set(out, "not_checked", skipped)
+    return Ok(json_set(out, "verified_by", json_text("service")))
+
+pub fn api_traditions() -> Json:
+    var methods = json_array()
+    for m in catalogue():
+        var names = json_array()
+        for name in option_names(m.tradition, m.method):
+            set names = json_push(names, json_text(name))
+        var item = json_set(json_object(), "tradition", json_text(m.tradition))
+        set item = json_set(item, "method", json_text(m.method))
+        set item = json_set(item, "status", json_text(m.status))
+        set item = json_set(item, "audit", json_text(m.audit))
+        set item = json_set(item, "odds", json_text(m.odds))
+        set item = json_set(item, "options", names)
+        set methods = json_push(methods, item)
+    return json_set(json_object(), "methods", methods)
+
+pub fn api_registry(path: Text) -> Result[Json, ApiError]:
+    let body = read_text(path)
+    if not is_ok(body):
+        return Err(not_found("the registry file is not installed"))
+    let parsed = json_parse(unwrap(body))
+    if not is_ok(parsed):
+        return Err(ApiError(500, "E_INTERNAL", "the registry file is not JSON"))
+    return Ok(unwrap(parsed))
+
+pub fn api_sources(store: Store) -> Json:
+    if store_has(store, "state/sources.json"):
+        let s = store_get_json(store, "state/sources.json")
+        if is_ok(s):
+            return unwrap(s)
+    return json_set(json_set(json_object(), "sources", json_array()), "checked_at", json_null())

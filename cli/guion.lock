@@ -82,7 +82,7 @@ version = "0.1.0"
 [native.lotcast-service]
 entry = "src/lib.gu"
 exports = ["src/lib.gu"]
-sha256 = "6637264848d54697586c10266d659fe09d3887ae0472f77b64ea605db95c4618"
+sha256 = "074d3307024584de56dfca930a321562b3d576bed9713a1957b754f8127c03d8"
 source = "../service"
 source_kind = "path"
 version = "0.1.0"

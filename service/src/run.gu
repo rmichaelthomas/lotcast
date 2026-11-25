@@ -112,6 +112,10 @@ pub fn serve_main(all: List[Text]) -> Int:
             Ok(ignored):
                 eprint("cannot open the data directory")
         return 2
+    # Polling for signals once, before any job starts, is what makes TERM, INT and HUP a request to stop
+    # (`process_stop_requested`) instead of an instant kill: the HTTP workers finish the request they are
+    # handling and `serve` returns Ok, and `signal_loop` stops the other jobs.
+    let polled = process_signal_poll()
     let saved = vfs_write_text(unwrap(cfg).data_dir + "/state/operator_key.hex", hex_encode(unwrap(public)) + "\n")
     let cleared = vfs_remove(unwrap(cfg).data_dir + "/state/stop")
     eprint("operator_key=" + hex_encode(unwrap(public)))

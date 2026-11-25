@@ -147,9 +147,10 @@ fn test_request_not_json_or_not_an_object() -> Unit:
     assert(code_of(parse_draw_request(text_bytes("[1]"), 1000)) == "E_REQUEST")
     assert(code_of(parse_draw_request(text_bytes("{\"tradition\":1,\"method\":\"coins\",\"nonce\":\"" + nonce_hex() + "\"}"), 1000)) == "E_REQUEST")
 
-fn test_object_keys_reads_only_top_level() -> Unit:
+fn test_json_keys_reads_only_top_level() -> Unit:
     let j = unwrap(json_parse("{\"a\":1,\"b\":{\"c\":2,\"d\":[{\"e\":3}]},\"f\":\"x,\\\"g\\\":1\"}"))
-    assert(object_keys(j) == ["a", "b", "f"])
+    assert(unwrap(json_keys(j)) == ["a", "b", "f"])
+    assert(not is_ok(json_keys(json_array())))
 
 # ---------------------------------------------------------------- store
 
@@ -663,11 +664,24 @@ fn test_rate_window_slides() -> Unit:
     assert(rate_check([100, 101], 160, 2).allowed)
 
 fn test_client_key_ignores_what_the_client_claims() -> Unit:
-    assert(client_key("9.9.9.9, 1.1.1.1, 2.2.2.2", 1) == "2.2.2.2")
-    assert(client_key("9.9.9.9, 1.1.1.1, 2.2.2.2", 2) == "1.1.1.1")
-    assert(client_key("", 1) == "unknown")
-    assert(client_key("1.1.1.1", 2) == "unknown")
-    assert(client_key("1.1.1.1, 2.2.2.2", 0) == "shared")
+    assert(client_key("9.9.9.9, 1.1.1.1, 2.2.2.2", 1, "10.0.0.1:5000") == "2.2.2.2")
+    assert(client_key("9.9.9.9, 1.1.1.1, 2.2.2.2", 2, "10.0.0.1:5000") == "1.1.1.1")
+    assert(client_key("", 1, "10.0.0.1:5000") == "unknown")
+    assert(client_key("1.1.1.1", 2, "10.0.0.1:5000") == "unknown")
+
+fn test_without_a_proxy_the_client_is_the_peer_host_and_forwarded_for_is_ignored() -> Unit:
+    assert(client_key("1.1.1.1, 2.2.2.2", 0, "203.0.113.7:41000") == "203.0.113.7")
+    assert(client_key("1.1.1.1, 2.2.2.2", 0, "203.0.113.7:52000") == "203.0.113.7")
+    assert(client_key("", 0, "[2001:db8::1]:41000") == "2001:db8::1")
+    assert(client_key("1.1.1.1", 0, "") == "unknown")
+
+fn test_peer_host_strips_the_port_and_the_ipv6_brackets() -> Unit:
+    assert(peer_host("1.2.3.4:80") == "1.2.3.4")
+    assert(peer_host("[::1]:4000") == "::1")
+    assert(peer_host("[2001:db8::7]:1") == "2001:db8::7")
+    assert(peer_host("") == "")
+    assert(peer_host("1.2.3.4") == "")
+    assert(peer_host("[::1") == "")
 
 fn test_rate_hit_is_kept_per_client_in_files() -> Unit:
     let store = unwrap(store_open(temp_root()))
@@ -960,11 +974,11 @@ fn test_rate_sweep_deletes_buckets_older_than_the_window_and_keeps_recent_ones()
     assert(rate_sweep(store, 1795556200) == 1)
     assert(len(bucket_files(root)) == 0)
 
-# ---- shutdown: SIGTERM and Ctrl-C stop the loops between steps; a hang-up does not
-fn test_term_and_int_ask_the_service_to_stop_and_nothing_else_does() -> Unit:
+# ---- shutdown: TERM, INT and HUP stop the loops between steps, as they stop the HTTP server
+fn test_term_int_and_hup_ask_the_service_to_stop_and_nothing_else_does() -> Unit:
     assert(signal_requests_stop("TERM"))
     assert(signal_requests_stop("INT"))
-    assert(not signal_requests_stop("HUP"))
+    assert(signal_requests_stop("HUP"))
     assert(not signal_requests_stop(""))
     assert(not signal_requests_stop("USR1"))
 

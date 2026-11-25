@@ -23,3 +23,17 @@ node tools/serve.mjs                        # preview at http://127.0.0.1:8787, 
 - `allhere.json`: for each AllHereHTML id the page uses, its `element`, `interaction` and `fallback`, copied from `instruments/registry/behaviors.json` at the commit it records. AllHereHTML is never edited from this repository.
 - `public/verify.gub` is git-ignored: rebuild it with the command above before serving or deploying.
 - `qa/RESULTS.md` records the live runs and their screenshots.
+
+## The share image
+
+`public/social.png` (1200 x 630) is what link previews show for the page. It is a screenshot of `tools/social.html`, which uses the page's own fonts. To regenerate it after a change to the look:
+
+```
+cd verify-web && python3 -m http.server 8899 --bind 127.0.0.1     # in one terminal
+playwright-cli open http://127.0.0.1:8899/tools/social.html       # in another
+playwright-cli resize 1200 630 && playwright-cli screenshot --filename=public/social.png
+```
+
+A test checks that it is a 1200 x 630 PNG under 300 KB. Also in `public/` for search and sharing: `robots.txt`, `sitemap.xml`, and the `<head>` tags in `index.html` (canonical URL, Open Graph, Twitter card, JSON-LD). If the address ever changes, change it in all of them; `discoverability.test.mjs` pins the current one.
+
+GitHub's own social preview for the repository cannot be set from the command line: upload `public/social.png` at Settings, General, Social preview.

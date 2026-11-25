@@ -31,7 +31,10 @@ test('allhere.json names the AllHere commit it was copied from', () => {
 });
 
 test('nothing points to another origin; fonts are local', () => {
-  assert.doesNotMatch(html, /\b(?:src|href|action)="(?:https?:)?\/\//i);
+  // Plain links to other sites are fine (they load nothing). Everything the page loads must be local:
+  // no src or action pointing out, and no <link> pointing out except the canonical URL.
+  assert.doesNotMatch(html, /\b(?:src|action)="(?:https?:)?\/\//i);
+  assert.doesNotMatch(html.replace(/<link rel="canonical"[^>]*>/, ''), /<link\b[^>]*\bhref="(?:https?:)?\/\//i);
   assert.doesNotMatch(css, /url\(\s*['"]?(?:https?:)?\/\//i);
   assert.doesNotMatch(html, /@import|fonts\.googleapis|<link[^>]+rel="preconnect"/i);
   assert.match(css, /url\(['"]?\/?fonts\/Geist-Variable\.woff2/);

@@ -1,0 +1,42 @@
+<!doctype html>
+<!-- The share image (public/social.png, 1200x630). Regenerate: see "The share image" in ../build.md. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lotcast share image</title>
+<style>
+@font-face { font-family: Geist; src: url(../public/fonts/Geist-Variable.woff2) format("woff2"); font-weight: 100 900; }
+@font-face { font-family: "Geist Mono"; src: url(../public/fonts/GeistMono-Variable.woff2) format("woff2"); font-weight: 100 900; }
+html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+body { background: #12102a; color: #f2ead9; font-family: Geist, sans-serif; position: relative; }
+.brand { position: absolute; left: 72px; top: 56px; display: flex; align-items: center; gap: 16px; font: 650 34px/1 Geist; letter-spacing: -.02em; }
+.brand svg { width: 46px; height: 46px; }
+h1 { position: absolute; left: 72px; top: 170px; margin: 0; font: 600 112px/0.96 Geist; letter-spacing: -.055em; }
+h1 span { color: #d9b36c; }
+.url { position: absolute; left: 72px; bottom: 56px; font: 700 22px/1 "Geist Mono"; letter-spacing: .06em; color: #b9b4d9; }
+.slip { position: absolute; right: 72px; top: 96px; width: 300px; height: 330px; background: #f2ead9; border-radius: 8px; box-sizing: border-box; padding: 46px 42px; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 30px 50px rgba(0,0,0,.45); }
+.slip .l { height: 24px; display: flex; justify-content: space-between; }
+.slip .l i { display: block; background: #16142e; height: 24px; }
+.slip .l.full i { width: 100%; }
+.slip .l.split i { width: 44%; }
+.slip .l.chg i { background: #a62a16; }
+.seal { position: absolute; right: 72px; top: 462px; display: flex; align-items: center; gap: 18px; }
+.seal b { width: 64px; height: 64px; border-radius: 50%; background: #c8361f; display: grid; place-items: center; box-shadow: 0 0 0 4px #12102a, 0 0 0 6px #c8361f; }
+.seal span { font: 700 26px/1.2 Geist; letter-spacing: -.01em; }
+</style>
+</head>
+<body>
+<div class="brand"><svg viewBox="0 0 34 34" fill="none" stroke="#d9b36c" stroke-width="1.6"><circle cx="17" cy="17" r="15"/><circle cx="17" cy="17" r="15" stroke-dasharray="1 4.9" stroke-width="5" opacity=".7"/><path d="M10 12h14M10 17h5M19 17h5M10 22h14"/></svg>Lotcast</div>
+<h1>Ask.<br>Draw.<br><span>Know it's fair.</span></h1>
+<div class="url">LOTCAST.THOMASBUILD.WORKERS.DEV</div>
+<div class="slip" aria-hidden="true">
+  <div class="l split"><i></i><i></i></div>
+  <div class="l full"><i></i></div>
+  <div class="l split"><i></i><i></i></div>
+  <div class="l full chg"><i></i></div>
+  <div class="l split"><i></i><i></i></div>
+  <div class="l full"><i></i></div>
+</div>
+<div class="seal"><b><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#f2ead9" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg></b><span>Verified.<br>Not re-rolled.</span></div>
+</body>
+</html>

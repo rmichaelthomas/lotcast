@@ -68,7 +68,9 @@ path = "../packages/lotcast-log"
 version = "0.1.0"
 
 [dependencies.web]
-path = "../../guion/packages/web"
+registry = "^0.3.0"
+sha256 = "24ca27c80c1e4753595b657f85191ea7ac49c0edd86ce2bdcf28f12fe8166b35"
+url = "https://guion-registry.thomasbuild.workers.dev/objects/24ca27c80c1e4753595b657f85191ea7ac49c0edd86ce2bdcf28f12fe8166b35.tar"
 version = "0.3.0"
 
 [environment]

@@ -45,7 +45,7 @@ exports = [
     "src/receipt.gu",
     "src/anchored.gu",
 ]
-sha256 = "0bb7a4d908bf67b9cd3c06ba5a937ced87c1de4d0e4cd8ff3c2bd66cdc2e39d9"
+sha256 = "0bfa1be16b239ddb4da2cd1c20628977a84dfeb09c4fce872c088937d0a5cc3b"
 source = "../packages/lotcast-core"
 source_kind = "path"
 version = "0.1.0"
@@ -72,7 +72,7 @@ exports = [
     "src/tsa_pins.gu",
     "src/anchor.gu",
 ]
-sha256 = "9b0492db1b6069175167265634e0262a733c5649ba365234759e57d2ea916e92"
+sha256 = "fd14b2b55e9c88efc272598ea7e6972d3e081eacfcfd2ee145b3bfe26f43a85e"
 source = "../packages/lotcast-log"
 source_kind = "path"
 version = "0.1.0"
@@ -91,9 +91,9 @@ exports = [
     "src/html.gu",
     "src/static.gu",
 ]
-sha256 = "c8ef503a78baa6560cefb8aa19968d6a74d8d013de273ccd19fd41e74b1a9804"
-source = "../../guion/packages/web"
-source_kind = "path"
+sha256 = "110011f8e0233071265330d511514047dbd15696225e6381f0a9a2b85d0729ad"
+source = "https://guion-registry.thomasbuild.workers.dev/objects/24ca27c80c1e4753595b657f85191ea7ac49c0edd86ce2bdcf28f12fe8166b35.tar"
+source_kind = "url"
 version = "0.3.0"
 
 [native.web.capabilities]

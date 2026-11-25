@@ -80,3 +80,27 @@ test('text that is not JSON gives a clear answer, not a crash', () => {
   assert.equal(a.verdict, 'unreadable');
   assert.match(a.detail, /JSON/);
 });
+
+function call(entry, args) {
+  const out = run(modules, artifact, { steps: STEPS, allowRaisedSteps: true }, { entry, arguments: args });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  return { value: out.value, steps: out.steps };
+}
+
+test('a draw is planned in the browser VM: the question is sealed and never sent', () => {
+  const a = call('draw_plan', ['tarot', 'rws', '{"count":"3","reversals":"true"}', 'Will it rain?', '000102030405060708090a0b0c0d0e0f', '11'.repeat(32)]);
+  const plan = JSON.parse(a.value);
+  assert.match(plan.body, /"commitment"/);
+  assert.doesNotMatch(plan.body, /Will it rain\?/);
+  assert.equal(plan.entry_hash.length, 128);
+  assert.equal(plan.asked, true);
+  assert.ok(a.steps < STEPS / 10, `${a.steps} steps`);
+});
+
+test('the service\'s view is checked against the request in the browser VM', async () => {
+  const view = await readFile('fixtures/view-complete.json', 'utf8');
+  const parsed = JSON.parse(view);
+  const a = call('check_view', [view, key, JSON.stringify(parsed.receipt.request), parsed.entry_hash]);
+  assert.equal(a.value, '');
+  assert.ok(a.steps < STEPS / 10, `${a.steps} steps`);
+});

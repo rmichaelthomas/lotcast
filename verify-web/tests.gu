@@ -77,3 +77,75 @@ fn test_a_step_outside_1_to_6_is_not_named_as_a_step() -> Unit:
     let s = failure_sentence(0, "something odd")
     assert(text_find(s, "step", 0) < 0)
     assert(text_find(s, "something odd", 0) >= 0)
+
+# ---------------------------------------------------------------- the draw entry points
+
+fn repeat(piece: Text, n: Int) -> Text:
+    var out = ""
+    for i in range(0, n):
+        set out = out + piece
+    return out
+
+fn nonce_hex() -> Text:
+    return "000102030405060708090a0b0c0d0e0f"
+
+fn salt_hex() -> Text:
+    return repeat("11", 32)
+
+fn plan_of(question: Text) -> Json:
+    return unwrap(json_parse(draw_plan("tarot", "rws", "{\"count\":\"3\",\"reversals\":\"true\"}", question, nonce_hex(), salt_hex())))
+
+fn test_draw_plan_seals_the_question_and_never_sends_it() -> Unit:
+    let p = plan_of("Will it rain?")
+    let body = json_as_text(json_get(p, "body"))
+    assert(text_find(body, "\"commitment\"", 0) >= 0)
+    assert(text_find(body, "Will it rain?", 0) < 0)
+    assert(len(json_as_text(json_get(p, "entry_hash"))) == 128)
+    assert(json_as_bool(json_get(p, "asked")))
+
+# Made once with the command line: plan_draw(["tarot","rws","count=3","reversals=true","--question","Will it rain?"],
+# nonce 00..0f, salt 32 bytes of 0x11).entry_hash_hex
+fn cli_entry_hash() -> Text:
+    return "305763565102c08a7051219fc466bd759553ebaa0c5b3dd96fe43d82f2e8807bd0c21bb1e930c5b616c50af2aba0a0480d6d567c39463bce06a9f329e82be311"
+
+fn test_draw_plan_matches_the_cli() -> Unit:
+    assert(json_as_text(json_get(plan_of("Will it rain?"), "entry_hash")) == cli_entry_hash())
+
+fn test_a_blank_question_is_no_question() -> Unit:
+    let p = plan_of("   ")
+    assert(not json_as_bool(json_get(p, "asked")))
+    assert(text_find(json_as_text(json_get(p, "body")), "commitment", 0) < 0)
+
+fn test_a_long_emoji_question_is_sealed() -> Unit:
+    let p = plan_of(repeat("🌙", 5000))
+    assert(json_as_bool(json_get(p, "asked")))
+    assert(not is_ok(json_get_safe(p, "error")))
+
+fn test_a_malformed_options_object_is_an_error_sentence() -> Unit:
+    let p = unwrap(json_parse(draw_plan("tarot", "rws", "[1]", "", nonce_hex(), salt_hex())))
+    assert(is_ok(json_get_safe(p, "error")))
+
+fn view_text() -> Text:
+    return receipt("view-complete.json")
+
+fn view_request() -> Text:
+    return json_stringify(json_get(json_get(unwrap(json_parse(view_text())), "receipt"), "request"))
+
+fn view_hash() -> Text:
+    return json_as_text(json_get(unwrap(json_parse(view_text())), "entry_hash"))
+
+fn test_check_view_accepts_the_fixture() -> Unit:
+    assert(check_view(view_text(), key("anchored-operator-key.hex"), view_request(), view_hash()) == "")
+
+fn test_check_view_rejects_a_changed_entry_hash() -> Unit:
+    let changed = text_replace(view_text(), "\"entry_hash\":\"" + text_slice(view_hash(), 0, 1), "\"entry_hash\":\"" + "0")
+    assert(changed != view_text())
+    assert(check_view(changed, key("anchored-operator-key.hex"), view_request(), view_hash()) != "")
+
+fn test_verify_draw_checks_the_question() -> Unit:
+    let r = receipt("anchored-receipt.json")
+    let a = unwrap(json_parse(verify_draw(r, key("anchored-operator-key.hex"), "Will it rain?", salt_hex())))
+    assert(verdict_of(a) == "invalid")
+    assert(json_as_int(json_get(a, "failed_step")) == 6)
+    let b = unwrap(json_parse(verify_draw(r, key("anchored-operator-key.hex"), "  ", salt_hex())))
+    assert(verdict_of(b) == "verified")

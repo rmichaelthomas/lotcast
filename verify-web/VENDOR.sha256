@@ -1,2 +1,2 @@
 bd690a7409523b5083f0561545bd19e0c0f0507a35195c022db974c8971bb0b0  loader.mjs
-vendored from rmichaelthomas/guion main at 5d021ac (site/src/playground/loader.mjs; site/public/playground/guion_vm.wasm, wasm.build.json)
+vendored from rmichaelthomas/guion at 5724494 (Release 0.9.0: site/src/playground/loader.mjs; site/public/playground/guion_vm.wasm, wasm.build.json). The VM must be 0.9.0 because the checker is built by guion 0.9 (artifact format 90).

@@ -10,6 +10,7 @@ import "std:text"
 import "std:encoding"
 import "pkg:lotcast-log/src/lib.gu"
 import "pkg:lotcast-core/src/lib.gu"
+import "draw.gu"
 
 fn main() -> Int:
     return 0
@@ -51,7 +52,7 @@ pub fn failure_sentence(step: Int, detail: Text) -> Text:
         return "It does not check out: " + detail
     return "It failed at step " + int_to_text(step) + ", " + name + ": " + detail
 
-pub fn verify_page(receipt: Text, operator_key_hex: Text) -> Text:
+fn check_receipt(receipt: Text, operator_key_hex: Text, check_question: Bool, question: Text, salt: Bytes) -> Text:
     let parsed = json_parse(receipt)
     if not is_ok(parsed):
         return unreadable("That is not JSON. Paste the whole receipt file, from the first { to the last }.")
@@ -61,7 +62,26 @@ pub fn verify_page(receipt: Text, operator_key_hex: Text) -> Text:
     let decoded = hex_decode(text_trim(operator_key_hex))
     if not is_ok(decoded) or len(unwrap(decoded)) != 32:
         return unreadable("The operator key must be 64 hex characters (32 bytes).")
-    let verdict = verify_any(doc, unwrap(decoded), tsa_pins(), false, "", bytes_from_ints([]))
+    let verdict = verify_any(doc, unwrap(decoded), tsa_pins(), check_question, question, salt)
     if verdict.result == "invalid":
         return answer("invalid", failure_sentence(verdict.failed_step, verdict.detail), verdict.failed_step, verdict.not_checked)
     return answer(verdict.result, verdict.detail, 0, verdict.not_checked)
+
+pub fn verify_page(receipt: Text, operator_key_hex: Text) -> Text:
+    return check_receipt(receipt, operator_key_hex, false, "", bytes_from_ints([]))
+
+# The draw page's three entry points. Every argument and result is Text.
+pub fn draw_plan(tradition: Text, method: Text, options_json: Text, question: Text, nonce_hex: Text, salt_hex: Text) -> Text:
+    return plan_for_draw(tradition, method, options_json, question, nonce_hex, salt_hex)
+
+pub fn check_view(view_json: Text, operator_key_hex: Text, request_json: Text, entry_hash_hex: Text) -> Text:
+    return problem_with_view(view_json, operator_key_hex, request_json, entry_hash_hex)
+
+# Like verify_page, and also checks the question when one was asked.
+pub fn verify_draw(receipt: Text, operator_key_hex: Text, question: Text, salt_hex: Text) -> Text:
+    if text_trim(question) == "":
+        return verify_page(receipt, operator_key_hex)
+    let salt = hex_decode(salt_hex)
+    if not is_ok(salt):
+        return unreadable("The salt must be hex.")
+    return check_receipt(receipt, operator_key_hex, true, question, unwrap(salt))

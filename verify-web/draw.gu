@@ -1,0 +1,69 @@
+# What the draw page needs from Guion beyond checking a receipt: building the request (sealing the
+# question on the device), and checking what the service answers against what was sent. These are the
+# same functions the command line uses, from lotcast-core.
+import "std:types"
+import "std:json"
+import "std:text"
+import "std:encoding"
+import "pkg:lotcast-core/src/lib.gu"
+
+# The command line's default: the three beacons that publish a pulse every minute or so.
+fn live_sources() -> List[Text]:
+    return ["curby-rng", "drand-quicknet", "nist-beacon-2"]
+
+fn plan_error(sentence: Text) -> Text:
+    return json_stringify(json_set(json_object(), "error", json_text(sentence)))
+
+fn options_of(options_json: Text) -> Result[Map[Text, Text], Text]:
+    let parsed = json_parse(options_json)
+    if not is_ok(parsed) or not is_object(unwrap(parsed)):
+        return Err("the options are not a JSON object of text values")
+    var options: Map[Text, Text] = {}
+    for key in unwrap(json_keys(unwrap(parsed))):
+        let value = json_get_text_safe(unwrap(parsed), key)
+        if not is_ok(value):
+            return Err("the options are not a JSON object of text values")
+        set options = map_set(options, key, unwrap(value))
+    return Ok(options)
+
+# The request for a draw as the page sends it. A question that is only spaces is no question; any
+# other question is sealed exactly as typed.
+pub fn plan_for_draw(tradition: Text, method: Text, options_json: Text, question: Text, nonce_hex: Text, salt_hex: Text) -> Text:
+    let nonce = hex_decode(nonce_hex)
+    let salt = hex_decode(salt_hex)
+    if not is_ok(nonce) or len(unwrap(nonce)) != 16:
+        return plan_error("the nonce must be 32 hex characters")
+    if not is_ok(salt) or len(unwrap(salt)) != 32:
+        return plan_error("the salt must be 64 hex characters")
+    let options = options_of(options_json)
+    if not is_ok(options):
+        return plan_error("the options are not a JSON object of text values")
+    let asked = text_trim(question) != ""
+    var mode = 0
+    var commit = bytes_from_ints([])
+    if asked:
+        set mode = 1
+        set commit = question_commit(question, unwrap(salt))
+    let request = DrawRequest(tradition, method, unwrap(options), mode, commit, live_sources(), 0, unwrap(nonce), bytes_from_ints([]))
+    let hash = entry_hash(request)
+    if not is_ok(hash):
+        return plan_error("the request cannot be encoded")
+    var out = json_object()
+    set out = json_set(out, "body", json_text(json_stringify(draw_request_body(request))))
+    set out = json_set(out, "request_json", json_text(json_stringify(request_to_json(request))))
+    set out = json_set(out, "entry_hash", json_text(hex_encode(unwrap(hash))))
+    set out = json_set(out, "asked", json_bool(asked))
+    return json_stringify(out)
+
+# "" when the service's view is well formed and is the one for the request sent; otherwise the problem.
+pub fn problem_with_view(view_json: Text, operator_key_hex: Text, request_json: Text, entry_hash_hex: Text) -> Text:
+    let parsed = json_parse(view_json)
+    if not is_ok(parsed):
+        return "the service's answer is not JSON"
+    let wrong = view_problem(unwrap(parsed))
+    if wrong != "":
+        return wrong
+    let key = hex_decode(text_trim(operator_key_hex))
+    if not is_ok(key) or len(unwrap(key)) != 32:
+        return "the operator key must be 64 hex characters (32 bytes)"
+    return binding_problem(unwrap(parsed), unwrap(key), request_json, entry_hash_hex, text_slice(entry_hash_hex, 0, 32))

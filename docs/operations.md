@@ -99,8 +99,15 @@ Docker on the machine that deploys.
   scheduled export. Keep the operator seed somewhere safe as well (see above).
 - **Idle.** The Durable Object checks on every alarm (every few minutes while the container runs) and stops
   the container after 30 minutes (`IDLE_MINUTES`) without an outside request, but not while `GET /v1/status`
-  reports a pending draw. `GET /internal/diag` (bearer token, as for the store) shows `lastSeen`, `lastAlarm`
-  and `lastCheck`. A draw that was cut off anyway is finished on the next wake.
+  reports a pending draw. If the service cannot be asked, the container is kept (it is stopped only after five
+  checks in a row fail). While it is being stopped, new requests wait and then meet a fresh container, so no
+  draw is accepted by a container about to go. If the container exits with draws pending, the Durable Object
+  starts it again. `GET /internal/diag` (bearer token, as for the store) shows `lastSeen`, `lastAlarm`,
+  `lastCheck` and `outcome` (what the last check decided).
+- **Log origin.** The log's origin line is `lotcast.local/log`. A C2SP origin is only a unique name, not an
+  address, and it is inside every signed checkpoint, so changing it would break the existing log; leave it.
+- **Store outages.** A server error from the store is retried for up to ten minutes, and an existence check
+  waits until the store gives a real answer, so a redeploy cannot make the service believe a record is missing. A draw that was cut off anyway is finished on the next wake.
 - **Logs.** `npx wrangler tail` shows the Worker. The container's own output is in the dashboard under
   the Worker's container.
 - **Try it locally** (needs Docker): `deploy/cloudflare/README.md`.

@@ -118,5 +118,12 @@ pub fn store_active_ids(store: Store) -> List[Text]:
         return none
     return unwrap(names)
 
+# Requests waiting to be logged plus logged draws not yet complete, or an error when either list cannot
+# be read: "cannot tell" must never be reported as "none".
+pub fn store_pending_count(store: Store) -> Result[Int, StdError]:
+    let inbox = store_names(store, "inbox")?
+    let active = store_names(store, "active")?
+    return Ok(len(inbox) + len(active))
+
 pub fn store_clear_active(store: Store, id: Text) -> Bool:
     return vfs_remove(store.root + "/active/" + id + ".json")

@@ -16,4 +16,4 @@ npx wrangler dev --port 8787
 lotcast draw iching coins --sources drand-quicknet --server http://127.0.0.1:8787
 ```
 
-`SLEEP_AFTER=20s` in `.dev.vars` shortens the idle timer for testing. Deploying is in `docs/operations.md`.
+`IDLE_MINUTES=1` in `.dev.vars` shortens the idle time for testing (the default is 30). `npm test` runs the Worker's decision tests. Deploying is in `docs/operations.md`.

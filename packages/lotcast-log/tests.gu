@@ -507,3 +507,34 @@ fn test_vfs_store_key_accepts_plain_paths_and_refuses_the_rest() -> Unit:
     assert(not is_ok(vfs_store_url("http://store.do", "/f", "a b")))
     assert(not is_ok(vfs_store_url("http://store.do", "/f", "a?b")))
     assert(not is_ok(vfs_store_url("http://store.do", "/f", "")))
+
+# ---- vfs in store mode: what an answer from the store means (a failed call is never "absent")
+fn verdict_word(status: Int) -> Text:
+    match vfs_exists_verdict(status):
+        Some(there):
+            if there:
+                return "yes"
+            return "no"
+        None:
+            return "undecided"
+
+fn test_store_exists_answer_200_is_yes_404_is_no_and_anything_else_is_undecided() -> Unit:
+    assert(verdict_word(200) == "yes")
+    assert(verdict_word(404) == "no")
+    assert(verdict_word(500) == "undecided")
+    assert(verdict_word(503) == "undecided")
+    assert(verdict_word(403) == "undecided")
+
+fn test_store_retries_server_errors_but_not_answers_that_are_final() -> Unit:
+    assert(vfs_retryable(500))
+    assert(vfs_retryable(502))
+    assert(vfs_retryable(503))
+    assert(not vfs_retryable(200))
+    assert(not vfs_retryable(404))
+    assert(not vfs_retryable(412))
+    assert(not vfs_retryable(403))
+
+fn test_store_lock_marker_that_holds_our_nonce_means_we_took_the_lock() -> Unit:
+    assert(vfs_lock_is_ours("abc123", "abc123"))
+    assert(not vfs_lock_is_ours("abc123", "zzz999"))
+    assert(not vfs_lock_is_ours("abc123", ""))

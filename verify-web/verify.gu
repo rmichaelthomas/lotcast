@@ -29,6 +29,28 @@ fn unreadable(detail: Text) -> Text:
     let none: List[Int] = []
     return answer("unreadable", detail, 0, none)
 
+fn step_name(step: Int) -> Text:
+    if step == 1:
+        return "the entry and the operator's promise"
+    if step == 2:
+        return "the log's checkpoint and proof"
+    if step == 3:
+        return "the time-stamps"
+    if step == 4:
+        return "the beacon pulses"
+    if step == 5:
+        return "the outcome"
+    if step == 6:
+        return "the question"
+    return ""
+
+# The sentence the page shows for an invalid receipt. A step number outside 1 to 6 is not named.
+pub fn failure_sentence(step: Int, detail: Text) -> Text:
+    let name = step_name(step)
+    if name == "":
+        return "It does not check out: " + detail
+    return "It failed at step " + int_to_text(step) + ", " + name + ": " + detail
+
 pub fn verify_page(receipt: Text, operator_key_hex: Text) -> Text:
     let parsed = json_parse(receipt)
     if not is_ok(parsed):
@@ -41,5 +63,5 @@ pub fn verify_page(receipt: Text, operator_key_hex: Text) -> Text:
         return unreadable("The operator key must be 64 hex characters (32 bytes).")
     let verdict = verify_any(doc, unwrap(decoded), tsa_pins(), false, "", bytes_from_ints([]))
     if verdict.result == "invalid":
-        return answer("invalid", verdict.detail, verdict.failed_step, verdict.not_checked)
+        return answer("invalid", failure_sentence(verdict.failed_step, verdict.detail), verdict.failed_step, verdict.not_checked)
     return answer(verdict.result, verdict.detail, 0, verdict.not_checked)

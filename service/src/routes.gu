@@ -152,8 +152,10 @@ fn h_status(request: Request) -> Result[Response, HttpFailure]:
     if not is_ok(opened):
         return Ok(error_response(ApiError(500, "E_INTERNAL", "the data directory cannot be opened")))
     let store = unwrap(opened)
-    let count = len(store_inbox_ids(store)) + len(store_active_ids(store))
-    return Ok(json_response(200, json_set(json_object(), "pending", json_int(count))))
+    let counted = store_pending_count(store)
+    if not is_ok(counted):
+        return Ok(error_response(ApiError(503, "E_INTERNAL", "cannot tell how many draws are pending")))
+    return Ok(json_response(200, json_set(json_object(), "pending", json_int(unwrap(counted)))))
 
 fn h_operator(request: Request) -> Result[Response, HttpFailure]:
     let key = text_trim(operator_key_hex(request))

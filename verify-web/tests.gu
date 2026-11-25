@@ -59,3 +59,21 @@ fn test_a_bad_operator_key_is_unreadable_and_says_so() -> Unit:
 
 fn test_an_empty_receipt_is_unreadable() -> Unit:
     assert(verdict_of(answer("", key("anchored-operator-key.hex"))) == "unreadable")
+
+fn test_an_invalid_answer_always_names_a_step_from_1_to_6() -> Unit:
+    let a = answer("{}", key("anchored-operator-key.hex"))
+    if verdict_of(a) == "invalid":
+        let step = json_as_int(json_get(a, "failed_step"))
+        assert(step >= 1 and step <= 6)
+    else:
+        assert(verdict_of(a) == "unreadable")
+
+fn test_the_failure_sentence_names_the_step_and_what_it_checks() -> Unit:
+    let s = failure_sentence(5, "the outcome differs")
+    assert(text_find(s, "step 5", 0) >= 0)
+    assert(text_find(s, "the outcome", 0) >= 0)
+
+fn test_a_step_outside_1_to_6_is_not_named_as_a_step() -> Unit:
+    let s = failure_sentence(0, "something odd")
+    assert(text_find(s, "step", 0) < 0)
+    assert(text_find(s, "something odd", 0) >= 0)

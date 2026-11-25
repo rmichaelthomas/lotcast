@@ -58,6 +58,15 @@ test('a changed outcome is invalid at step 5', async () => {
   const a = check(changed);
   assert.equal(a.verdict, 'invalid');
   assert.equal(a.failed_step, 5);
+  assert.match(a.detail, /^It failed at step 5, the outcome: /);
+});
+
+test('the page never headlines a receipt with a live check owed as verified', async () => {
+  const page = await readFile('public/index.html', 'utf8');
+  const headline = /'verified-pending-live': \['pending', '([^']*)'\]/.exec(page);
+  assert.ok(headline, 'the pending-live headline is in the page');
+  assert.doesNotMatch(headline[1], /^verified/i);
+  assert.match(headline[1], /not fully checked/i);
 });
 
 test('the wrong operator key is invalid at step 1', async () => {

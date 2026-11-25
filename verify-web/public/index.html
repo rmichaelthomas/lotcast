@@ -102,13 +102,12 @@ const show = (state, headline, detail, owed) => {
 
 const HEADLINES = {
   verified: ['verified', 'Verified.'],
-  'verified-pending-live': ['pending', 'Verified except for a live check.'],
+  'verified-pending-live': ['pending', 'Not fully checked: one live check is still owed.'],
   'verified-unanchored': ['pending', 'Partly verified: the result follows from a real random number, but nothing shows the request came first.'],
   invalid: ['invalid', 'This receipt does not check out.'],
   unreadable: ['unreadable', 'This could not be read.'],
 };
 
-const STEP_NAMES = { 1: 'the entry and the operator’s promise', 2: 'the log’s checkpoint and proof', 3: 'the time-stamps', 4: 'the beacon pulses', 5: 'the outcome', 6: 'the question' };
 
 async function check() {
   const receipt = $('receipt').value.trim();
@@ -130,7 +129,6 @@ async function check() {
     const answer = JSON.parse(out.value);
     const [state, headline] = HEADLINES[answer.verdict] ?? ['unreadable', 'Unexpected answer.'];
     let detail = answer.detail;
-    if (answer.verdict === 'invalid') detail = `It failed at step ${answer.failed_step}, ${STEP_NAMES[answer.failed_step] ?? 'a check'}: ${answer.detail}`;
     const owed = answer.verdict === 'verified-pending-live'
       ? `lotcast verify RECEIPT.json --operator-key ${key} --live`
       : '';

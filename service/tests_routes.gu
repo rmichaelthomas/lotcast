@@ -71,6 +71,15 @@ fn test_unknown_route_is_404_and_wrong_method_is_405() -> Unit:
     assert(call(app, "GET", "/v1/nothing", "").status == 404)
     assert(call(app, "DELETE", "/v1/traditions", "").status == 405)
 
+fn test_status_is_unavailable_when_the_pending_lists_cannot_be_read() -> Unit:
+    let root = temp_root()
+    let app = make_app(root, 0)
+    assert(call(app, "GET", "/v1/status", "").status == 200)
+    assert(is_ok(fs_remove(root + "/active")))
+    assert(is_ok(write_text(root + "/active", "not a directory")))
+    let broken = call(app, "GET", "/v1/status", "")
+    assert(broken.status == 503)
+
 fn test_status_counts_pending_draws() -> Unit:
     let root = temp_root()
     let app = make_app(root, 0)

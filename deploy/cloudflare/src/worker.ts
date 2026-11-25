@@ -3,6 +3,7 @@
 // it with the caller's address, and keeps the container awake while a draw is still waiting on a beacon.
 // The checking page is static (see `assets` in wrangler.jsonc) and is served before this code runs.
 import { Container, getContainer } from '@cloudflare/containers';
+import { decideIdle, forwardedHeaders, storeRoute, tooLarge } from './policy.ts';
 
 export { ContainerProxy } from '@cloudflare/containers';
 
@@ -44,9 +45,23 @@ export class Lotcast extends Container<Env> {
     return (Number.isFinite(minutes) && minutes > 0 ? minutes : 30) * 60 * 1000;
   }
 
+  // Set while the idle check is stopping the container: a request that arrives then waits for the stop to
+  // finish and meets a fresh container, instead of a draw being accepted by one that is about to be killed.
+  private stopping: Promise<void> | null = null;
+
   async fetch(request: Request): Promise<Response> {
     this.ctx.storage.kv.put('lastSeen', Date.now());
+    while (this.stopping) await this.stopping;
     return super.fetch(request);
+  }
+
+  // The container exited. If draws were waiting when the idle check last looked, start it again so they
+  // finish on time (the service recovers them from the log); an idle stop clears that note first.
+  async onStop(): Promise<void> {
+    if ((this.ctx.storage.kv.get<number>('lastPending') ?? 0) > 0) {
+      this.ctx.storage.kv.put('outcome', 'restarted: draws were pending');
+      await this.startAndWaitForPorts();
+    }
   }
 
   // What the idle logic last saw, for the operator (see docs/operations.md).
@@ -75,54 +90,70 @@ export class Lotcast extends Container<Env> {
     return super.alarm(alarmProps);
   }
 
+  private async pendingDraws(): Promise<number | null> {
+    try {
+      const asked = this.ctx.container!.getTcpPort(this.defaultPort).fetch('http://container/v1/status', {
+        signal: AbortSignal.timeout(10_000),
+      });
+      const status = await asked;
+      if (!status.ok) return null;
+      const pending = ((await status.json()) as { pending?: number }).pending;
+      return typeof pending === 'number' ? pending : null;
+    } catch {
+      return null;
+    }
+  }
+
   async checkIdle(): Promise<void> {
     const kv = this.ctx.storage.kv;
     const last = kv.get<{ at: number }>('lastCheck');
     if (last && Date.now() - last.at < 30_000) return;
     kv.put('lastCheck', { at: Date.now(), running: this.ctx.container?.running ?? false });
     if (!this.ctx.container?.running) return;
-    const quiet = Date.now() - (kv.get<number>('lastSeen') ?? 0);
-    if (quiet <= this.idleMs()) return;
-    let pending = 1;
+    const seen = kv.get<number>('lastSeen') ?? 0;
+    const quiet = Date.now() - seen;
+    const pending = await this.pendingDraws();
+    const failed = pending === null ? (kv.get<number>('statusFailures') ?? 0) + 1 : 0;
+    kv.put('statusFailures', failed);
+    kv.put('lastPending', pending ?? 0);
+    kv.put('outcome', `quiet ${Math.round(quiet / 1000)}s, pending ${pending ?? 'unknown'}`);
+    if (kv.get<number>('lastSeen') !== seen) return; // a request arrived while we were asking
+    if (decideIdle({ quietMs: quiet, idleMs: this.idleMs(), pending, failedChecks: failed }) !== 'stop') return;
+    // From here to the end no request is let through (fetch waits on this.stopping), so nothing can be
+    // accepted by a container that is about to go.
+    let done!: () => void;
+    this.stopping = new Promise<void>((resolve) => (done = resolve));
     try {
-      const status = await this.ctx.container.getTcpPort(this.defaultPort).fetch('http://container/v1/status');
-      pending = ((await status.json()) as { pending?: number }).pending ?? 1;
+      kv.put('lastPending', 0);
+      await this.stop();
+      // The service is process 1 in its container, which ignores SIGTERM unless it handles it: give it
+      // ten seconds, then kill it. Nothing is lost: no draw is pending and the log lives in this object.
+      for (let i = 0; i < 10 && this.ctx.container?.running; i++) await new Promise((r) => setTimeout(r, 1000));
+      const killed = this.ctx.container?.running ?? false;
+      if (killed) await this.destroy();
+      kv.put('outcome', `${killed ? 'killed' : 'stopped'} after quiet ${Math.round(quiet / 1000)}s`);
     } catch (e) {
-      kv.put('outcome', `status failed: ${String(e)}`);
-      pending = 0; // cannot be asked: do not keep a broken container alive
-    }
-    console.log(`idle check: quiet ${Math.round(quiet / 1000)}s, pending draws ${pending}`);
-    kv.put('outcome', `quiet ${Math.round(quiet / 1000)}s, pending ${pending}`);
-    if (pending === 0) {
-      console.log('stopping the container');
-      try {
-        await this.stop();
-        // The service is process 1 in its container, which ignores SIGTERM unless it handles it: give it
-        // ten seconds, then kill it. Nothing is lost: no draw is pending and the log lives in this object.
-        for (let i = 0; i < 10 && this.ctx.container?.running; i++) await new Promise((r) => setTimeout(r, 1000));
-        const killed = this.ctx.container?.running ?? false;
-        if (killed) await this.destroy();
-        kv.put('outcome', `${killed ? 'killed' : 'stopped'} after quiet ${Math.round(quiet / 1000)}s`);
-      } catch (e) {
-        kv.put('outcome', `stop failed: ${String(e)}`);
-        throw e;
-      }
+      kv.put('outcome', `stop failed: ${String(e)}`);
+      throw e;
+    } finally {
+      this.stopping = null;
+      done();
     }
   }
 
   async store(request: Request): Promise<Response> {
     const sql = this.ctx.storage.sql;
     const url = new URL(request.url);
-    const route = url.pathname.slice(0, 2); // /f /e /l
-    const path = decodeURIComponent(url.pathname.slice(3));
-    if (path === '' || path.includes('..') || path.includes('//') || !/^[A-Za-z0-9._\-\/]+$/.test(path)) {
-      return new Response('bad path', { status: 400 });
-    }
+    const parsed = storeRoute(url.pathname);
+    if (!parsed) return new Response('bad path', { status: 400 });
+    const route = `/${parsed.route}`;
+    const path = parsed.path;
     const exists = (key: string) => sql.exec('SELECT 1 FROM files WHERE path = ?', key).toArray().length > 0;
     const below = (dir: string) =>
       sql.exec('SELECT path FROM files WHERE path >= ? AND path < ?', `${dir}/`, `${dir}0`).toArray().map((r) => r.path as string);
     if (route === '/f' && request.method === 'PUT') {
       const data = await request.arrayBuffer();
+      if (tooLarge(data.byteLength)) return new Response('file too large for the store', { status: 413 });
       if (request.headers.get('if-none-match') === '*') {
         // The check and the write happen together, so only one caller can create the lock.
         return this.ctx.storage.transactionSync(() => {
@@ -160,23 +191,9 @@ export class Lotcast extends Container<Env> {
     return new Response('not found', { status: 404 });
   }
 
-  // The idle timer ran out. Sleep only if no draw is waiting: a draw cut off by sleep would resume
-  // on the next wake (the service recovers), but staying up lets it finish on time.
+  // The library's own timer is only a backstop (24 hours): the idle check above decides when to sleep.
   async onActivityExpired(): Promise<void> {
-    try {
-      // The raw port, not containerFetch: containerFetch counts as activity and would keep it awake forever.
-      const status = await this.ctx.container!.getTcpPort(this.defaultPort).fetch('http://container/v1/status');
-      const body = (await status.json()) as { pending?: number };
-      console.log(`idle timer expired; pending draws: ${body.pending}`);
-      if (typeof body.pending === 'number' && body.pending > 0) {
-        this.renewActivityTimeout();
-        return;
-      }
-    } catch {
-      // If the service cannot be asked, do not keep a broken container alive forever.
-    }
-    console.log('stopping the container');
-    await this.stop();
+    this.renewActivityTimeout();
   }
 }
 
@@ -208,9 +225,7 @@ export default {
     }
     if (!url.pathname.startsWith('/v1/')) return new Response('not found', { status: 404 });
     // One name, one Durable Object, one container: only one writer ever touches the log.
-    const headers = new Headers(request.headers);
-    const caller = request.headers.get('CF-Connecting-IP');
-    if (caller) headers.set('X-Forwarded-For', caller); // replaces anything the client sent
+    const headers = forwardedHeaders(request.headers); // the address Cloudflare saw replaces anything the client sent
     return getContainer(env.LOTCAST, 'lotcast').fetch(new Request(request, { headers }));
   },
 };

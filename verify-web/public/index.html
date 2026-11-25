@@ -3,166 +3,430 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lotcast: check a receipt</title>
+<title>Lotcast: a draw you can check</title>
+<meta name="description" content="Draw a hexagram or tarot cards. Each draw comes with a receipt proving nobody re-rolled it, and your browser checks it.">
 <style>
-  :root { color-scheme: light dark; --ink: #1b1b1f; --paper: #fbfaf7; --line: #cfcabd; --ok: #1d6b3a; --warn: #8a5a00; --bad: #a3231f; }
-  @media (prefers-color-scheme: dark) { :root { --ink: #ecebe6; --paper: #17171a; --line: #3a3a40; --ok: #62c283; --warn: #e0b04a; --bad: #ff8b84; } }
-  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.55 system-ui, sans-serif; }
-  main { max-width: 46rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
-  h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
-  p.lede { margin-top: 0; }
-  label { display: block; font-weight: 600; margin: 1.25rem 0 .35rem; }
-  textarea, input[type=text] { width: 100%; box-sizing: border-box; font: 13px/1.4 ui-monospace, monospace; background: transparent; color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: .6rem; }
-  textarea { min-height: 11rem; }
-  button { font: inherit; padding: .55rem 1.1rem; border-radius: 6px; border: 1px solid var(--ink); background: var(--ink); color: var(--paper); cursor: pointer; margin-top: 1rem; }
-  button:disabled { opacity: .5; cursor: progress; }
-  #result { margin-top: 1.75rem; border-left: 5px solid var(--line); padding: .25rem 0 .25rem 1rem; }
-  #result[data-state=verified] { border-color: var(--ok); }
-  #result[data-state=pending] { border-color: var(--warn); }
-  #result[data-state=invalid], #result[data-state=unreadable] { border-color: var(--bad); }
-  #headline { font-size: 1.25rem; font-weight: 700; margin: 0; }
-  code, pre { font-family: ui-monospace, monospace; font-size: .85rem; }
-  pre { white-space: pre-wrap; border: 1px solid var(--line); border-radius: 6px; padding: .6rem; }
-  details { margin-top: 2rem; border-top: 1px solid var(--line); padding-top: 1rem; }
-  ol li { margin: .25rem 0; }
-  small { color: color-mix(in srgb, var(--ink) 65%, transparent); }
+@font-face { font-family: Geist; src: url(/fonts/Geist-Variable.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url(/fonts/GeistMono-Variable.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
+
+:root {
+  --ground: #12102a; --panel: #17153a; --panel-2: #1c1940; --rule: #3a3566;
+  --muted: #b9b4d9; --faint: #8a85b0; --bone: #f2ead9; --ink: #16142e; --brass: #d9b36c;
+  --seal: #c8361f; --changing: #a62a16;
+  --sans: Geist, ui-sans-serif, system-ui, sans-serif;
+  --mono: "Geist Mono", ui-monospace, monospace;
+  --gutter: clamp(20px, 5vw, 40px);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--ground); color: var(--bone); font: 17px/1.6 var(--sans); min-height: 100vh; overflow-x: hidden; }
+a { color: var(--brass); }
+a:hover { color: var(--bone); }
+:focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+[hidden] { display: none !important; }
+.wrap { max-width: 1200px; margin: 0 auto; padding-left: var(--gutter); padding-right: var(--gutter); }
+.eyebrow { margin: 0 0 18px; color: var(--brass); font: 700 13px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; }
+
+/* header */
+.site-header { border-bottom: 1px solid var(--rule); }
+.site-header .wrap { padding-top: 18px; padding-bottom: 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.brand { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; color: var(--bone); font: 600 26px/1 var(--sans); letter-spacing: -.02em; }
+.site-header nav { display: flex; gap: 28px; font-size: 15px; font-weight: 600; flex-wrap: wrap; }
+.site-header nav a { text-decoration: none; color: var(--muted); }
+.site-header nav a:first-child { color: var(--bone); }
+
+/* the draw */
+#draw .wrap, #draw.wrap { padding-top: 72px; padding-bottom: 104px; display: flex; flex-wrap: wrap; gap: 48px; align-items: center; }
+.hero { flex: 1 1 440px; min-width: 0; }
+.hero h1 { margin: 0 0 28px; font: 600 clamp(52px, 9vw, 104px)/.94 var(--sans); letter-spacing: -.055em; }
+.hero h1 span { display: block; animation: lc-rise .8s both; }
+.hero h1 span:nth-child(2) { animation-delay: .25s; }
+.hero h1 span:nth-child(3) { animation-delay: .5s; color: var(--brass); }
+.hero .lede { margin: 0; font-size: 20px; color: var(--muted); max-width: 28em; }
+.stage { flex: 1 1 440px; min-width: 0; position: relative; display: grid; place-items: center; padding: 40px 0; }
+.dial { position: absolute; margin: 0; max-width: 120%; pointer-events: none; animation: lc-turn 240s linear infinite; }
+.dial svg { display: block; max-width: 100%; height: auto; }
+.slip { position: relative; width: 100%; max-width: 420px; background: var(--bone); color: var(--ink); border-radius: 6px; padding: 0 0 28px; box-shadow: 0 30px 60px rgba(0,0,0,.45); }
+.tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid #cfc3a8; }
+.tabs input { position: absolute; opacity: 0; pointer-events: none; }
+.tabs label { font: 600 18px/1 var(--sans); padding: 20px 12px; min-height: 64px; display: grid; place-items: center; background: #e6dcc6; color: #5b5576; cursor: pointer; border-bottom: 3px solid transparent; }
+.tabs label:first-of-type { border-radius: 6px 0 0 0; }
+.tabs input:checked + label { background: var(--bone); color: var(--ink); font-weight: 700; border-bottom-color: var(--brass); }
+.tabs input:focus-visible + label { outline: 2px solid var(--ink); outline-offset: -4px; }
+.panel { padding: 24px 28px 0; display: flex; flex-direction: column; gap: 20px; }
+.panel p { margin: 0; font-size: 15px; color: #4a4566; }
+.slip:has(#t-iching:checked) .panel-tarot, .slip:has(#t-tarot:checked) .panel-iching { display: none; }
+.options { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+.slip label.field { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; min-height: 44px; }
+.slip label.stack { display: flex; flex-direction: column; gap: 8px; font-weight: 600; font-size: 15px; }
+.slip select, .slip textarea { font: inherit; color: var(--ink); padding: 8px 12px; border: 1.5px solid var(--ink); border-radius: 6px; background: #fbf7ee; }
+.slip select { min-height: 44px; }
+.slip textarea { font-size: 17px; line-height: 1.5; padding: 12px 14px; resize: vertical; width: 100%; }
+.slip input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--ink); }
+.help { font-weight: 400; font-size: 14px; color: #4a4566; }
+.draw-btn { font: 600 22px/1 var(--sans); background: var(--seal); color: var(--bone); border: 0; border-radius: 999px; padding: 20px 28px; min-height: 60px; cursor: pointer; box-shadow: inset 0 -3px 0 rgba(0,0,0,.2); }
+.draw-btn:disabled { opacity: .6; cursor: progress; }
+.time-note { margin: -6px 0 0; text-align: center; font-size: 14px; color: #4a4566; }
+.note { margin: 0; padding: 12px 14px; border-radius: 6px; background: #f6dfd8; color: #5a1a10; font-size: 15px; font-weight: 600; }
+.note:empty { display: none; }
+
+/* waiting */
+#waiting { text-align: center; padding-top: 56px; padding-bottom: 96px; }
+.stage-art { position: relative; height: 380px; display: grid; place-items: center; margin: 0; }
+.stage-art .dial { width: 380px; animation-duration: 40s; }
+.backs { position: relative; display: flex; gap: 14px; }
+.back { width: 88px; height: 142px; border-radius: 5px; background: #2a2560; border: 1.5px solid var(--brass); display: grid; place-items: center; animation: lc-breathe 3s ease-in-out infinite; }
+.back:nth-child(2) { animation-delay: .4s; } .back:nth-child(3) { animation-delay: .8s; }
+#waiting h1 { margin: 24px 0 10px; font: 600 clamp(34px, 6vw, 52px)/1.05 var(--sans); letter-spacing: -.045em; }
+#waiting h1 em { font-style: normal; color: var(--brass); }
+#waiting .sub { margin: 0 auto 48px; font-size: 19px; color: var(--muted); max-width: 34em; }
+.handoff { border: 0; padding: 0; margin: 0; }
+.handoff > summary { list-style: none; }
+.ribbon { text-align: left; }
+.ribbon ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.ribbon li { border-top: 2px dashed #5b5590; position: relative; padding: 24px 16px 0 0; }
+.ribbon li::before { content: ""; position: absolute; top: -8px; left: 0; width: 14px; height: 14px; border-radius: 50%; border: 2px solid #5b5590; background: var(--ground); }
+.ribbon li p { margin: 4px 0 0; font-size: 14px; color: var(--faint); }
+.ribbon li strong { display: block; font: 600 18px/1.2 var(--sans); color: var(--faint); }
+.ribbon li[data-done] { border-top: 2px solid var(--brass); }
+.ribbon li[data-done]::before { background: var(--brass); border-color: var(--brass); }
+.ribbon li[data-done] strong { color: var(--bone); }
+.ribbon li[data-done] p { color: var(--muted); }
+.ribbon li[data-now] strong { color: var(--brass); }
+.ribbon li[data-now]::before { top: -9px; width: 16px; height: 16px; border-color: var(--brass); animation: lc-pulse 1.8s ease-in-out infinite; }
+.ribbon li[data-now] p { color: var(--muted); }
+#clock { margin: 48px 0 0; font: 700 15px/1 var(--mono); color: var(--muted); }
+#waiting .leave { margin: 12px auto 0; font-size: 15px; color: var(--faint); max-width: 32em; }
+#wait-note { margin: 18px auto 0; max-width: 34em; color: var(--brass); font-weight: 600; }
+
+/* the result */
+#result { padding-top: 56px; padding-bottom: 96px; }
+#result-iching { display: flex; flex-wrap: wrap; gap: 64px; align-items: flex-start; }
+.hex-wrap { flex: 0 1 460px; min-width: 0; }
+.hexagram { margin: 0; background: var(--bone); color: var(--ink); border-radius: 6px; padding: 48px 56px 40px; box-shadow: 0 30px 60px rgba(0,0,0,.45); display: flex; flex-direction: column; gap: 16px; align-items: center; }
+.hex-lines { display: flex; flex-direction: column-reverse; gap: 16px; width: 300px; max-width: 100%; }
+.line { display: flex; justify-content: space-between; height: 26px; }
+.line span { height: 26px; background: var(--ink); animation: lc-draw .5s both; }
+.line.yang span:nth-child(2) { display: none; }
+.line.yang span:first-child { width: 100%; transform-origin: left; }
+.line.yin span { width: 44%; }
+.line.yin span:first-child { transform-origin: left; }
+.line.yin span:last-child { transform-origin: right; }
+.line.changing span { background: var(--changing); }
+.hexagram figcaption { margin-top: 14px; display: flex; justify-content: space-between; gap: 12px; width: 300px; max-width: 100%; font: 500 13px/1.4 var(--mono); color: #4a4566; }
+.hexagram figcaption .chg { color: var(--changing); }
+.hex-side { flex: 1 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 28px; }
+.hex-side h1 { margin: 0; font: 600 clamp(64px, 12vw, 112px)/.92 var(--sans); letter-spacing: -.055em; }
+.bridge { display: flex; align-items: center; gap: 18px; padding: 20px 22px; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); flex-wrap: wrap; }
+.bridge p { margin: 0; flex: 1 1 140px; color: var(--muted); font-size: 16px; }
+.bridge .to-name { margin: 0; flex: none; font: 500 26px/1 var(--sans); }
+.bridge .to-name small { display: block; font: 700 12px/1 var(--mono); color: var(--brass); margin-bottom: 6px; }
+.mini { display: flex; flex-direction: column-reverse; gap: 4px; width: 44px; }
+.mini .line { height: 5px; }
+.mini .line span { height: 5px; background: var(--bone); animation: none; }
+#result-tarot h1 { margin: 0 0 48px; font: 600 clamp(38px, 7vw, 60px)/1.04 var(--sans); letter-spacing: -.045em; }
+#result-tarot h1 span { color: var(--brass); }
+.cards { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 48px; }
+.cards li { display: flex; flex-direction: column; gap: 18px; animation: lc-flip .7s both; }
+.flip { border: 0; padding: 0; margin: 0; }
+.flip > summary { list-style: none; cursor: default; }
+.face { width: 220px; height: 360px; max-width: 100%; background: var(--bone); color: var(--ink); border-radius: 8px; padding: 10px; box-shadow: 0 30px 50px rgba(0,0,0,.5); }
+.face[data-reversed] { transform: rotate(180deg); }
+.face > div { height: 100%; border: 1.5px solid #b08d4a; border-radius: 4px; display: flex; flex-direction: column; justify-content: space-between; align-items: center; padding: 22px 12px; text-align: center; }
+.face .num { font: 600 30px/1 var(--sans); min-height: 30px; }
+.face .nm { font: 650 19px/1.1 var(--sans); letter-spacing: -.01em; }
+.face .pips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 22px; }
+.tag { border-top: 1px solid var(--brass); padding-top: 10px; width: 220px; max-width: 100%; }
+.tag .pos { margin: 0; font: 700 12px/1 var(--mono); color: var(--brass); }
+.tag .nm2 { margin: 6px 0 0; font: 500 22px/1.2 var(--sans); }
+.tag .way { margin: 2px 0 0; font-size: 15px; color: var(--muted); }
+.tag .way[data-reversed] { color: #f08a74; font-weight: 600; }
+.after { margin-top: 48px; max-width: 760px; display: flex; flex-direction: column; gap: 22px; }
+.seal-row { margin: 0; display: flex; gap: 18px; align-items: center; padding: 16px 18px; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); }
+.seal { flex: none; width: 52px; height: 52px; border-radius: 50%; background: var(--seal); display: grid; place-items: center; box-shadow: 0 0 0 3px var(--panel), 0 0 0 4.5px var(--seal); animation: lc-stamp .5s 2s both; }
+.seal-row[data-state=pending] .seal, .seal-row[data-state=partial] .seal { background: transparent; box-shadow: none; border: 2px dashed var(--brass); animation: none; }
+.seal-row:not([data-state=verified]) .seal svg { display: none; }
+.seal-row figcaption { margin: 0; font-size: 15px; color: var(--muted); }
+.seal-row figcaption strong { color: var(--bone); font-size: 18px; }
+.actions { display: flex; gap: 12px; flex-wrap: wrap; }
+.btn { font: 600 17px/1 var(--sans); background: transparent; color: var(--bone); border: 1.5px solid var(--brass); border-radius: 999px; padding: 15px 24px; min-height: 50px; cursor: pointer; }
+.btn.solid { background: var(--brass); color: var(--ink); border-color: var(--brass); }
+.btn.quiet { border: 0; padding: 15px 12px; text-decoration: underline; text-underline-offset: 5px; }
+.more { border-top: 1px solid var(--rule); padding-top: 16px; }
+.more summary { cursor: pointer; font-size: 15px; color: var(--muted); }
+.more p { margin: 10px 0 0; font: 500 14px/1.7 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+
+/* why it's fair */
+#fair { background: var(--panel-2); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+#fair .wrap { padding-top: 88px; padding-bottom: 88px; }
+#fair h2 { margin: 0 0 56px; font: 600 clamp(34px, 5.5vw, 56px)/1.04 var(--sans); letter-spacing: -.045em; max-width: 15em; }
+#fair h2 span { color: var(--brass); }
+.trail { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.trail li { padding: 0 20px 0 0; border-top: 1.5px solid var(--brass); position: relative; }
+.trail li::before { content: ""; position: absolute; top: -8px; left: 0; width: 14px; height: 14px; border-radius: 50%; background: var(--brass); }
+.trail li:last-child::before { background: var(--panel-2); border: 2px solid var(--brass); }
+.trail h3 { margin: 26px 0 6px; font: 600 22px/1.15 var(--sans); }
+.trail p { margin: 0 0 28px; font-size: 15px; color: var(--muted); }
+.promise { margin: 24px 0 0; font: 500 21px/1.45 var(--sans); max-width: 34em; }
+
+/* check a receipt */
+#check .wrap { padding-top: 80px; padding-bottom: 80px; }
+.checker { border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); }
+.checker > summary { cursor: pointer; padding: 24px 28px; font: 500 clamp(22px, 3.5vw, 30px)/1.2 var(--sans); list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.checker > summary::after { content: "+"; color: var(--brass); font-size: 26px; }
+.checker[open] > summary::after { content: "\2212"; }
+.checker-body { padding: 0 28px 28px; display: flex; flex-direction: column; gap: 14px; max-width: 760px; }
+.checker-body p { margin: 0; color: var(--muted); }
+.checker-body label { display: flex; flex-direction: column; gap: 8px; font-weight: 600; font-size: 15px; }
+.checker-body textarea, .checker-body input[type=text] { font: 500 14px/1.6 var(--mono); padding: 14px; border: 1px solid var(--rule); border-radius: 6px; background: #0d0b20; color: var(--bone); width: 100%; }
+.checker-body textarea { min-height: 8rem; }
+.checker-body .btn { align-self: flex-start; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.key-fold summary { cursor: pointer; font-size: 14px; color: var(--muted); }
+.key-fold .help { color: var(--faint); margin-top: 8px; display: block; }
+#check-result { border-left: 5px solid var(--rule); padding: .25rem 0 .25rem 1rem; }
+#check-result[data-state=verified] { border-color: #62c283; }
+#check-result[data-state=pending] { border-color: #e0b04a; }
+#check-result[data-state=invalid], #check-result[data-state=unreadable] { border-color: #ff8b84; }
+#check-headline { font: 700 20px/1.3 var(--sans); color: var(--bone) !important; }
+#check-result pre { white-space: pre-wrap; border: 1px solid var(--rule); border-radius: 6px; padding: .6rem; font: 13px/1.5 var(--mono); }
+.steps { color: var(--muted); }
+.steps li { margin: .25rem 0; }
+
+/* footer */
+.site-footer { border-top: 1px solid var(--rule); }
+.site-footer .wrap { padding-top: 40px; padding-bottom: 56px; display: flex; flex-wrap: wrap; gap: 24px; justify-content: space-between; align-items: center; font-size: 15px; color: var(--muted); }
+.site-footer p { margin: 0; }
+.site-footer .made { display: flex; align-items: center; gap: 10px; }
+.gmark { width: 22px; height: 22px; background: #2148e8; color: #fff; border-radius: 7px 7px 7px 2px; display: inline-grid; place-items: center; font: italic 400 15px/1 Georgia, serif; transform: rotate(-4deg); }
+
+@keyframes lc-turn { to { transform: rotate(360deg); } }
+@keyframes lc-rise { from { opacity: 0; transform: translateY(.4em); } to { opacity: 1; transform: none; } }
+@keyframes lc-breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@keyframes lc-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(217,179,108,.6); } 50% { box-shadow: 0 0 0 10px rgba(217,179,108,0); } }
+@keyframes lc-draw { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes lc-flip { from { transform: perspective(900px) rotateY(90deg); } to { transform: perspective(900px) rotateY(0); } }
+@keyframes lc-stamp { 0% { opacity: 0; transform: scale(1.5); } 70% { opacity: 1; transform: scale(.94); } 100% { opacity: 1; transform: scale(1); } }
+
+@media (max-width: 640px) {
+  .ribbon ol { grid-template-columns: 1fr; gap: 20px; }
+  .ribbon li { padding-bottom: 4px; }
+  .hexagram { padding: 36px 24px 32px; }
+  .stage-art { height: 300px; }
+  .stage-art .dial { width: 300px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; }
+}
 </style>
 </head>
-<body>
-<main>
-  <h1>Check a Lotcast receipt</h1>
-  <p class="lede">A receipt is the file Lotcast gave you with your draw. Paste it here to see whether it holds up. The check runs in this page, on your device: the receipt is not sent anywhere.</p>
+<body data-state="draw">
+<a class="visually-hidden" href="#draw">Skip to the draw</a>
+<header class="site-header">
+<div class="wrap">
+<a class="brand" href="#top">
+<svg aria-hidden="true" width="34" height="34" viewBox="0 0 34 34" fill="none" stroke="#d9b36c" stroke-width="1.6"><circle cx="17" cy="17" r="15"></circle><circle cx="17" cy="17" r="15" stroke-dasharray="1 4.9" stroke-width="5" opacity=".7"></circle><path d="M10 12h14M10 17h5M19 17h5M10 22h14"></path></svg>
+Lotcast</a>
+<nav aria-label="Main">
+<a href="#draw">Draw</a>
+<a href="#fair">Why it's fair</a>
+<a href="#check">Check a receipt</a>
+<a href="#dev">Developers</a>
+</nav>
+</div>
+</header>
 
-  <label for="receipt">Receipt (the whole file, or drop the file on the box)</label>
-  <textarea id="receipt" spellcheck="false" placeholder='{"anchor": { ... }, "log": { ... }, ...}'></textarea>
+<main id="top">
 
-  <label for="key">Operator key <small>(64 hex characters; the key the service's log is signed with)</small></label>
-  <input type="text" id="key" spellcheck="false" autocomplete="off">
-  <small id="key-note"></small>
+<section id="draw" class="wrap" aria-labelledby="draw-title">
+<section class="hero" data-ahi="ahi.motion-time.typographic-entrance">
+<p class="eyebrow">I Ching · Tarot · A receipt for every draw</p>
+<h1 id="draw-title"><span>Ask.</span> <span>Draw.</span> <span>Know it's fair.</span></h1>
+<p class="lede">Draw a hexagram or tarot cards. Each draw comes with a receipt proving nobody re-rolled it to get a different answer. Not even us.</p>
+</section>
 
-  <button id="check" type="button" disabled>Check this receipt</button>
+<div class="stage">
+<figure class="dial" data-ahi="ahi.visual-art-media.procedural-ornament" aria-hidden="true">
+<svg width="560" height="560" viewBox="0 0 560 560" fill="none"><circle cx="280" cy="280" r="272" stroke="#3a3566"></circle><circle cx="280" cy="280" r="260" stroke="#d9b36c" stroke-width="10" stroke-dasharray="1.5 24" opacity=".8"></circle><circle cx="280" cy="280" r="244" stroke="#d9b36c" stroke-width=".8" opacity=".6"></circle></svg>
+</figure>
 
-  <section id="result" hidden aria-live="polite">
-    <p id="headline"></p>
-    <p id="detail"></p>
-    <div id="owed" hidden></div>
-  </section>
+<form id="draw-form" aria-label="Make a draw" style="width:100%;display:grid;place-items:center">
+<section class="slip" data-ahi="ahi.reveals-discoveries.tabbed-scene">
+<div class="tabs" role="radiogroup" aria-label="What to draw">
+<input type="radio" name="tradition" id="t-iching" value="iching">
+<label for="t-iching">I Ching</label>
+<input type="radio" name="tradition" id="t-tarot" value="tarot" checked>
+<label for="t-tarot">Tarot</label>
+</div>
+<div class="panel panel-iching">
+<p>Six lines, built from coin tosses nobody controls. You get a hexagram, and the one it changes to.</p>
+<label class="stack">Your question, if you have one
+<textarea id="q-iching" rows="3" placeholder="Hold it in mind, or write it here."></textarea>
+<span class="help">It never leaves this device. Only a sealed fingerprint is sent.</span></label>
+</div>
+<div class="panel panel-tarot">
+<p>Cards from the Rider–Waite–Smith deck, shuffled by chance nobody controls.</p>
+<div class="options">
+<label class="field" id="count-field">Cards
+<select id="count" name="count"><option>1</option><option selected>3</option><option>5</option><option>10</option></select></label>
+<label class="field" id="reversals-field"><input type="checkbox" id="reversals" checked>Some may be reversed</label>
+</div>
+<label class="stack">Your question, if you have one
+<textarea id="q-tarot" rows="3" placeholder="Hold it in mind, or write it here."></textarea>
+<span class="help">It never leaves this device. Only a sealed fingerprint is sent.</span></label>
+</div>
+<div class="panel" style="padding-top:20px">
+<p id="draw-note" class="note" role="alert"></p>
+<button type="submit" id="draw-btn" class="draw-btn">Draw</button>
+<p class="time-note">Takes one to three minutes.</p>
+</div>
+</section>
+</form>
+</div>
+</section>
 
-  <details>
-    <summary>What does the check look at?</summary>
-    <p>Six steps, in order. The first one that fails is named.</p>
-    <ol>
-      <li><b>Entry and promise.</b> Your request is the one that went into the log, and the operator signed a promise to answer it in a named time slot.</li>
-      <li><b>Log.</b> The log's signed checkpoint contains that entry.</li>
-      <li><b>Timestamps.</b> Two independent time-stamp authorities stamped that checkpoint, so it existed before the random numbers did.</li>
-      <li><b>Sources.</b> Each public randomness beacon pulse in the receipt is genuine, and is the first one after the deadline.</li>
-      <li><b>Outcome.</b> The result follows from the request, the checkpoint and those numbers by a fixed method anyone can re-run.</li>
-      <li><b>Question.</b> If you asked a question, the receipt holds only a commitment to it; this page does not check it, because the question stays on your device. <code>lotcast verify</code> does.</li>
-    </ol>
-    <p>This page checks the offline half only. It cannot ask a beacon whether it has since published a pulse for your draw, so a receipt that depends on an idle source is marked "verified except for a live check".</p>
-  </details>
+<section id="waiting" class="wrap" aria-labelledby="waiting-title" hidden>
+<figure class="stage-art" data-ahi="ahi.computational-experiences.generative-artwork" aria-hidden="true">
+<svg class="dial" viewBox="0 0 560 560" fill="none"><circle cx="280" cy="280" r="272" stroke="#3a3566"></circle><circle cx="280" cy="280" r="260" stroke="#d9b36c" stroke-width="10" stroke-dasharray="1.5 24" opacity=".8"></circle><circle cx="280" cy="280" r="244" stroke="#d9b36c" stroke-width=".8" opacity=".6"></circle></svg>
+<div class="backs">
+<div class="back"><svg width="46" height="46" viewBox="0 0 34 34" fill="none" stroke="#d9b36c" stroke-width="1.4"><circle cx="17" cy="17" r="14"></circle><path d="M10 12h14M10 17h5M19 17h5M10 22h14"></path></svg></div>
+<div class="back"><svg width="46" height="46" viewBox="0 0 34 34" fill="none" stroke="#d9b36c" stroke-width="1.4"><circle cx="17" cy="17" r="14"></circle><path d="M10 12h14M10 17h5M19 17h5M10 22h14"></path></svg></div>
+<div class="back"><svg width="46" height="46" viewBox="0 0 34 34" fill="none" stroke="#d9b36c" stroke-width="1.4"><circle cx="17" cy="17" r="14"></circle><path d="M10 12h14M10 17h5M19 17h5M10 22h14"></path></svg></div>
+</div>
+</figure>
+<h1 id="waiting-title">Your request is sealed. <em>Now we wait for chance.</em></h1>
+<p class="sub">Lotcast is waiting for public random numbers that didn't exist when you pressed Draw. Usually one to three minutes.</p>
+<details class="handoff" open data-ahi="ahi.motion-time.state-transition">
+<summary class="visually-hidden">Where your draw is</summary>
+<section class="ribbon" data-ahi="ahi.motion-time.time-ribbon" aria-label="Progress">
+<ol id="ribbon" aria-live="polite">
+<li id="step-log"><strong>Logged</strong><p>In the public log</p></li>
+<li id="step-stamp"><strong>Time-stamped</strong><p>By outside services</p></li>
+<li id="step-chance"><strong>Waiting for chance</strong><p>Random sources</p></li>
+<li id="step-done"><strong>Your draw</strong><p>Checked, with a receipt</p></li>
+</ol>
+</section>
+</details>
+<p id="clock" role="timer" aria-label="Time waiting">0:00</p>
+<p class="leave">You can leave this page. The draw keeps going, and it'll be waiting here when you come back on this device.</p>
+<p id="wait-note" role="status"></p>
+</section>
+
+<section id="result" class="wrap" aria-live="polite" hidden>
+<div id="result-iching" hidden>
+<div class="hex-wrap">
+<figure id="hexagram" class="hexagram" data-ahi="ahi.motion-time.drawing-reveal" role="img">
+<div class="hex-lines" id="hex-lines"></div>
+<figcaption><span>Read from the bottom up</span><span class="chg" id="hex-chg" hidden>▬ changing line</span></figcaption>
+</figure>
+</div>
+<div class="hex-side">
+<div>
+<p class="eyebrow" id="hex-eyebrow" style="margin-bottom:8px">Your hexagram</p>
+<h1 id="hex-name"></h1>
+</div>
+<section class="bridge" id="bridge" data-ahi="ahi.relationships-diagrams.comparison-bridge" hidden>
+<p id="bridge-text"></p>
+<svg aria-hidden="true" width="28" height="16" viewBox="0 0 28 16" fill="none" stroke="#d9b36c" stroke-width="1.6"><path d="M0 8h26M19 1l7 7-7 7"></path></svg>
+<div class="mini" id="mini" role="img"></div>
+<p class="to-name" id="to-name"></p>
+</section>
+</div>
+</div>
+
+<div id="result-tarot" hidden>
+<p class="eyebrow" id="tarot-eyebrow">Your tarot draw</p>
+<h1>In the order <span>they were drawn.</span></h1>
+<ol class="cards" id="cards"></ol>
+</div>
+
+<div class="after">
+<figure class="seal-row" id="seal-row" data-ahi="ahi.annotation-evidence.hand-drawn-circle">
+<span class="seal" id="seal" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#f2ead9" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"></path></svg></span>
+<figcaption><strong id="verdict-head"></strong><br><span id="verdict-detail"></span></figcaption>
+</figure>
+<div class="actions">
+<button type="button" class="btn solid" id="save-receipt">Save receipt</button>
+<button type="button" class="btn" id="save-question" hidden>Save my question (private)</button>
+<button type="button" class="btn quiet" id="draw-again">Draw again</button>
+</div>
+<details class="more" data-ahi="ahi.reveals-discoveries.foldout">
+<summary>Receipt details</summary>
+<p id="receipt-facts"></p>
+</details>
+</div>
+</section>
+
+<template id="card-template">
+<li>
+<details class="flip" open data-ahi="ahi.reveals-discoveries.flip-card">
+<summary><div class="face" role="img"><div><span class="num"></span><span class="art"></span><span class="nm"></span></div></div></summary>
+</details>
+<aside class="tag" data-ahi="ahi.publications-objects.exhibition-label"><p class="pos"></p><p class="nm2"></p><p class="way"></p></aside>
+</li>
+</template>
+
+<section id="fair" data-ahi="ahi.relationships-diagrams.provenance-trail">
+<div class="wrap">
+<p class="eyebrow">Why it's fair</p>
+<h2>Your request is sealed <span>before</span> chance arrives.</h2>
+<ol class="trail">
+<li><h3>You ask</h3><p>Your question stays with you. Only its fingerprint goes out.</p></li>
+<li><h3>It's written down</h3><p>Into a public log, time-stamped by outside services.</p></li>
+<li><h3>Chance arrives</h3><p>Fresh random numbers from public sources, made after you asked.</p></li>
+<li><h3>Fixed rules</h3><p>Published rules turn the numbers into your draw. No one chooses.</p></li>
+<li><h3>A sealed receipt</h3><p>This page checks it. So can anyone else.</p></li>
+</ol>
+<p class="promise">Lotcast shows what was drawn. It never tells you what it means. That part is yours.</p>
+</div>
+</section>
+
+<section id="check">
+<div class="wrap">
+<details class="checker" open data-ahi="ahi.reveals-discoveries.foldout">
+<summary>Someone sent you a draw? Check it here.</summary>
+<div class="checker-body">
+<p>Paste the receipt. The check happens here in your browser; the receipt isn't sent anywhere.</p>
+<label for="receipt">Receipt (the whole file, or drop the file on the box)</label>
+<textarea id="receipt" spellcheck="false" placeholder="Paste the whole receipt, from the first { to the last }"></textarea>
+<details class="key-fold">
+<summary>Change the key</summary>
+<label for="key" style="margin-top:10px">Operator key <span class="help">(64 hex characters; the key the service's log is signed with)</span></label>
+<input type="text" id="key" spellcheck="false" autocomplete="off">
+<small class="help" id="key-note"></small>
+</details>
+<button type="button" class="btn" id="check-btn" disabled>Check this receipt</button>
+<section id="check-result" hidden aria-live="polite">
+<p id="check-headline"></p>
+<p id="check-detail"></p>
+<div id="check-owed" hidden></div>
+</section>
+<details class="key-fold">
+<summary>What does the check look at?</summary>
+<p class="steps">Six steps, in order. The first one that fails is named.</p>
+<ol class="steps">
+<li><b>Entry and promise.</b> Your request is the one that went into the log, and the operator signed a promise to answer it in a named time slot.</li>
+<li><b>Log.</b> The log's signed checkpoint contains that entry.</li>
+<li><b>Timestamps.</b> Independent time-stamp authorities stamped that checkpoint, so it existed before the random numbers did.</li>
+<li><b>Sources.</b> Each public randomness beacon pulse in the receipt is genuine, and is the first one after the deadline.</li>
+<li><b>Outcome.</b> The result follows from the request, the checkpoint and those numbers by a fixed method anyone can re-run.</li>
+<li><b>Question.</b> If you asked a question, the receipt holds only a commitment to it. This box can't check it, because the question stays on your device; the Save my question file lets <code>lotcast verify</code> do it.</li>
+</ol>
+<p class="steps">This page checks the offline half only. It cannot ask a beacon whether it has since published a pulse for your draw, so a receipt that depends on an idle source is marked as not fully checked.</p>
+</details>
+</div>
+</details>
+</div>
+</section>
 </main>
-<script type="module">
-import { loadModules, run } from './loader.mjs';
 
-const $ = (id) => document.getElementById(id);
-const MAX_TEXT = 65536;
-const STEPS = 5000000; // measured: about 120,000 to 260,000 for the test receipts
-
-const fetchBytes = async (name) => {
-  const r = await fetch(new URL(name, import.meta.url));
-  if (!r.ok) throw new Error(`${name} returned ${r.status}`);
-  return new Uint8Array(await r.arrayBuffer());
-};
-
-let ready = null;
-function start() {
-  ready ??= Promise.all([fetchBytes('guion_vm.wasm'), fetchBytes('verify.gub')])
-    .then(async ([vm, artifact]) => ({ modules: await loadModules(null, vm), artifact }))
-    .catch((e) => { ready = null; throw e; });
-  return ready;
-}
-
-const show = (state, headline, detail, owed) => {
-  const box = $('result');
-  box.hidden = false;
-  box.dataset.state = state;
-  $('headline').textContent = headline;
-  $('detail').textContent = detail;
-  $('owed').hidden = !owed;
-  $('owed').replaceChildren();
-  if (owed) {
-    const p = document.createElement('p');
-    p.textContent = 'To finish the check, run this on your computer (Guion 0.8 or later):';
-    const pre = document.createElement('pre');
-    pre.textContent = owed;
-    $('owed').append(p, pre);
-  }
-};
-
-const HEADLINES = {
-  verified: ['verified', 'Verified.'],
-  'verified-pending-live': ['pending', 'Not fully checked: one live check is still owed.'],
-  'verified-unanchored': ['pending', 'Partly verified: the result follows from a real random number, but nothing shows the request came first.'],
-  invalid: ['invalid', 'This receipt does not check out.'],
-  unreadable: ['unreadable', 'This could not be read.'],
-};
-
-
-async function check() {
-  const receipt = $('receipt').value.trim();
-  const key = $('key').value.trim();
-  if (receipt.length > MAX_TEXT) {
-    show('unreadable', 'This could not be read.', `The receipt is ${receipt.length.toLocaleString('en-US')} characters; this page takes at most ${MAX_TEXT.toLocaleString('en-US')}. Use lotcast verify on your computer instead.`);
-    return;
-  }
-  $('check').disabled = true;
-  $('headline').textContent = 'Checking…';
-  $('result').hidden = false;
-  try {
-    const { modules, artifact } = await start();
-    const out = run(modules, artifact, { steps: STEPS, allowRaisedSteps: true }, { entry: 'verify_page', arguments: [receipt, key] });
-    if (!out.ok) {
-      show('unreadable', 'The checker stopped.', `${out.code}: ${out.message}`);
-      return;
-    }
-    const answer = JSON.parse(out.value);
-    const [state, headline] = HEADLINES[answer.verdict] ?? ['unreadable', 'Unexpected answer.'];
-    let detail = answer.detail;
-    const owed = answer.verdict === 'verified-pending-live'
-      ? `lotcast verify RECEIPT.json --operator-key ${key} --live`
-      : '';
-    show(state, headline, detail, owed);
-  } catch (error) {
-    show('unreadable', 'The checker did not load.', `Check your connection and try again. (${error.message ?? error})`);
-  } finally {
-    $('check').disabled = false;
-  }
-}
-
-$('check').addEventListener('click', check);
-const sync = () => { $('check').disabled = $('receipt').value.trim() === '' || $('key').value.trim() === ''; };
-$('receipt').addEventListener('input', sync);
-$('key').addEventListener('input', sync);
-$('receipt').addEventListener('dragover', (e) => e.preventDefault());
-$('receipt').addEventListener('drop', async (e) => {
-  e.preventDefault();
-  const file = e.dataTransfer.files[0];
-  if (file) { $('receipt').value = await file.text(); sync(); }
-});
-
-// The published operator key, if this deployment ships one next to the page.
-fetch(new URL('operator-key.txt', import.meta.url)).then((r) => (r.ok ? r.text() : '')).then((t) => {
-  const key = t.trim();
-  if (/^[0-9a-f]{64}$/.test(key)) {
-    $('key').value = key;
-    $('key-note').textContent = 'Filled in from the key this service published. For an independent check, compare it with the key in the Lotcast README before you trust the result.';
-    sync();
-  } else {
-    $('key-note').textContent = 'Paste the key from the Lotcast README.';
-  }
-}).catch(() => { $('key-note').textContent = 'Paste the key from the Lotcast README.'; });
-start().catch(() => {});
-</script>
+<footer class="site-footer" id="dev">
+<div class="wrap">
+<section data-ahi="ahi.navigation-journeys.jump-point"><p>Building an app or an AI agent? <a href="/llms.txt">Use Lotcast from code →</a></p></section>
+<p class="made">Made with <span class="gmark" aria-hidden="true">G</span> Guion and AllHereHTML</p>
+</div>
+</footer>
+<script type="module" src="./page.mjs"></script>
 </body>
 </html>

@@ -163,3 +163,9 @@ test('progress reads waiting_on', () => {
   assert.deepEqual(progress({ status: 'pending', waiting_on: [] }), { logged: true, stamped: true, sourcesIn: 3, sourcesTotal: 3, done: false });
   assert.equal(progress({ status: 'complete', waiting_on: [] }).done, true);
 });
+
+test('a draw picked up again after a long absence is looked at once, and may be done', async () => {
+  const { deps } = pollDeps([reply(200, fixtureView)], { now: () => 3 * 60 * 60 * 1000 });
+  const out = await pollDraw(fixturePending(), deps);
+  assert.equal(out.verdict.verdict, 'verified');
+});

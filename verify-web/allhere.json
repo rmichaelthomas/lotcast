@@ -1,0 +1,76 @@
+{
+  "source": "instruments/registry/behaviors.json",
+  "commit": "9657208210752fb2dfa157cb7f48056df01a6379",
+  "instruments": {
+    "ahi.motion-time.typographic-entrance": {
+      "element": "section",
+      "interaction": "progressive-css",
+      "fallback": "The authored words remain in a semantic section in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.reveals-discoveries.tabbed-scene": {
+      "element": "section",
+      "interaction": "details",
+      "fallback": "The authored words remain in a semantic section in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.visual-art-media.procedural-ornament": {
+      "element": "figure",
+      "interaction": "progressive-css",
+      "fallback": "The authored words remain in a semantic figure in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.computational-experiences.generative-artwork": {
+      "element": "figure",
+      "interaction": "progressive-css",
+      "fallback": "The page still names the input, expected output, explanation, and limit in ordinary HTML; without an explicitly granted Guion artifact, no calculation is claimed or run."
+    },
+    "ahi.relationships-diagrams.provenance-trail": {
+      "element": "section",
+      "interaction": "anchor",
+      "fallback": "The authored words remain in a semantic section in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.motion-time.time-ribbon": {
+      "element": "section",
+      "interaction": "none",
+      "fallback": "The authored words remain in a semantic section in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.motion-time.state-transition": {
+      "element": "details",
+      "interaction": "details",
+      "fallback": "The authored words remain in a semantic details in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.motion-time.drawing-reveal": {
+      "element": "figure",
+      "interaction": "progressive-css",
+      "fallback": "The authored words remain in a semantic figure in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.relationships-diagrams.comparison-bridge": {
+      "element": "section",
+      "interaction": "none",
+      "fallback": "The authored words remain in a semantic section in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.reveals-discoveries.flip-card": {
+      "element": "details",
+      "interaction": "details",
+      "fallback": "The authored words remain in a semantic details in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.publications-objects.exhibition-label": {
+      "element": "aside",
+      "interaction": "none",
+      "fallback": "The authored words remain in a semantic aside in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.annotation-evidence.hand-drawn-circle": {
+      "element": "figure",
+      "interaction": "none",
+      "fallback": "The authored words remain in a semantic figure in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.reveals-discoveries.foldout": {
+      "element": "details",
+      "interaction": "details",
+      "fallback": "The authored words remain in a semantic details in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    },
+    "ahi.navigation-journeys.jump-point": {
+      "element": "section",
+      "interaction": "anchor",
+      "fallback": "The authored words remain in a semantic section in ordinary HTML; responsive and decorative styling can disappear without removing the meaning or reading order."
+    }
+  }
+}

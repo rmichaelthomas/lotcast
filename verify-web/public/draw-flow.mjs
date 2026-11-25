@@ -108,8 +108,10 @@ const queued = (view) => view && view.status === 'pending' && view.promise === u
 export async function pollDraw(pending, deps, onProgress = () => {}) {
   const { vm, fetch, store, operatorKey, sleep, now } = deps;
   let backoff = FIRST_BACKOFF;
+  // Asked after each poll, never before the first: a draw picked up again after a long absence
+  // is looked at once, and may well be done.
+  const waitedTooLong = () => now() - pending.startedAt >= TEN_MINUTES;
   for (;;) {
-    if (now() - pending.startedAt >= TEN_MINUTES) return failure('still-waiting', MESSAGES['still-waiting']);
     let res;
     let text;
     try {
@@ -119,6 +121,7 @@ export async function pollDraw(pending, deps, onProgress = () => {}) {
       res = null;
     }
     if (!res || text === null) {
+      if (waitedTooLong()) return failure('still-waiting', MESSAGES['still-waiting']);
       await sleep(backoff);
       backoff = Math.min(backoff * 2, LAST_BACKOFF);
       continue;
@@ -140,6 +143,7 @@ export async function pollDraw(pending, deps, onProgress = () => {}) {
       clearPending(store);
       return { receipt: view.receipt, outcome: view.receipt.outcome, verdict };
     }
+    if (waitedTooLong()) return failure('still-waiting', MESSAGES['still-waiting']);
     await sleep(Number.isFinite(view.poll_after_ms) ? view.poll_after_ms : 2000);
   }
 }

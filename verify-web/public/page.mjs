@@ -2,7 +2,7 @@
 // hexagram or the cards, the Save buttons, resume on load, and the check-a-receipt box.
 // Everything that needs trust runs in Guion (verify.gub); see draw-flow.mjs.
 import { loadModules, run } from './loader.mjs';
-import { makeVm, startDraw, pollDraw, resumePending, STEPS } from './draw-flow.mjs';
+import { makeVm, startDraw, pollDraw, resumePending, loadRegistry, STEPS } from './draw-flow.mjs';
 import { hexagram, cards, cardFace } from './names.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -40,9 +40,11 @@ const keyReady = fetch(new URL('operator-key.txt', import.meta.url))
   .then((t) => { const k = t.trim(); if (/^[0-9a-f]{64}$/.test(k)) operatorKey = k; })
   .catch(() => {});
 
+// Loaded before a finished draw's pending record is cleared (see `prepare` below), so a failed load
+// cannot lose a draw that is already checked.
 let registry = null;
-async function getRegistry() {
-  registry ??= await (await fetch('/v1/registry')).json();
+async function ensureRegistry() {
+  registry ??= await loadRegistry((...a) => fetch(...a));
   return registry;
 }
 
@@ -250,7 +252,7 @@ function showSeal(verdict, what) {
 }
 
 async function showResult(done, pending) {
-  const reg = await getRegistry();
+  const reg = await ensureRegistry();
   const isTarot = Array.isArray(done.outcome.cards);
   $('result-iching').hidden = isTarot;
   $('result-tarot').hidden = !isTarot;
@@ -284,18 +286,21 @@ $('draw-again').addEventListener('click', () => { $('draw-note').textContent = '
 async function deps() {
   const { vm } = await start();
   await keyReady;
-  return { vm, fetch: (...a) => fetch(...a), random: (n) => crypto.getRandomValues(new Uint8Array(n)), store, operatorKey, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), now: () => Date.now() };
+  return { vm, fetch: (...a) => fetch(...a), random: (n) => crypto.getRandomValues(new Uint8Array(n)), store, operatorKey, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), now: () => Date.now(), prepare: ensureRegistry };
 }
 
 async function follow(pending) {
   showWaiting(pending);
   const d = await deps();
-  const out = await pollDraw(pending, d, (p) => showProgress(p, pending));
-  clearInterval(clockTimer);
-  if (out.kind === 'still-waiting') {
+  const out = await pollDraw(pending, d, (p) => showProgress(p, pending), (message) => { $('wait-note').textContent = message; });
+  if (out.kind === 'unreachable') {
+    // The draw is done but a file the page needs to show it did not load: the pending record is
+    // still there, so try again shortly.
     $('wait-note').textContent = out.message;
+    setTimeout(() => follow(pending).catch(() => {}), 10000);
     return;
   }
+  clearInterval(clockTimer);
   if (out.kind) {
     $('draw-note').textContent = out.message;
     setState('draw');

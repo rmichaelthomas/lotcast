@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { loadModules, run } from './public/loader.mjs';
-import { makeVm, startDraw, pollDraw, progress, resumePending, MESSAGES, PENDING_KEY } from './public/draw-flow.mjs';
+import { makeVm, startDraw, pollDraw, progress, resumePending, loadRegistry, MESSAGES, PENDING_KEY } from './public/draw-flow.mjs';
 
 const modules = await loadModules(null, await readFile('public/guion_vm.wasm'));
 const artifact = new Uint8Array(await readFile('public/verify.gub'));
@@ -43,6 +43,8 @@ const fixturePending = () => ({
   request_json: JSON.stringify(fixtureView.receipt.request), entry_hash: fixtureView.entry_hash,
   question: '', salt_hex: '11'.repeat(32), startedAt: 0,
 });
+
+function pollDraw_deps(script, extra = {}) { return pollDeps(script, extra); }
 
 function pollDeps(script, extra = {}) {
   const { fetch, calls } = scripted(script);
@@ -141,15 +143,53 @@ test('a dropped poll retries with backoff', async () => {
   assert.deepEqual(sleeps, [2000, 4000, 8000]);
 });
 
-test('ten minutes of waiting is still-waiting and keeps pending', async () => {
-  const waiting = () => reply(200, { ...fixtureView, status: 'pending', waiting_on: [{ source: 'curby-rng' }], receipt: undefined, poll_after_ms: 30000 });
-  const { fetch } = scripted(Array.from({ length: 40 }, waiting));
+test('after ten minutes the visitor is told it is still waiting, polling goes on slowly, and a later result is still picked up', async () => {
+  const waiting = () => reply(200, { ...fixtureView, status: 'pending', waiting_on: [{ source: 'curby-rng' }], receipt: undefined, poll_after_ms: 2000 });
+  const script = [...Array.from({ length: 400 }, waiting), reply(200, fixtureView)];
+  const { fetch, calls } = scripted(script);
   let clock = 0;
+  const sleeps = [];
   const store = memoryStore();
   store.setItem(PENDING_KEY, 'x');
-  const out = await pollDraw(fixturePending(), { vm, fetch, store, operatorKey, now: () => clock, sleep: async (ms) => { clock += ms; } });
-  assert.deepEqual(out, { kind: 'still-waiting', message: MESSAGES['still-waiting'] });
-  assert.equal(store.getItem(PENDING_KEY), 'x');
+  const told = [];
+  const out = await pollDraw(fixturePending(), { vm, fetch, store, operatorKey, now: () => clock, sleep: async (ms) => { sleeps.push(ms); clock += ms; } }, () => {}, (message) => told.push([message, clock]));
+  assert.equal(out.verdict.verdict, 'verified');
+  assert.equal(told.length, 1, 'told once');
+  assert.equal(told[0][0], MESSAGES['still-waiting']);
+  assert.ok(told[0][1] >= 10 * 60 * 1000);
+  assert.equal(sleeps.at(-1), 30000, 'slow polling after the message');
+  assert.ok(calls.length > 300);
+  assert.equal(store.getItem(PENDING_KEY), null);
+});
+
+test('a queued 202 reply is not distrusted: pending is saved without an index and polling binds the draw', async () => {
+  const store = memoryStore();
+  const queuedView = (id) => ({ id, status: 'pending', waiting_on: [{ source: 'log' }], poll_after_ms: 500 });
+  const { fetch } = scripted([(url, init) => reply(202, queuedView('x'))]);
+  const pending = await startDraw(choice, { vm, fetch, random: bytes, store, operatorKey, now: () => 5 });
+  assert.equal(pending.kind, undefined, JSON.stringify(pending));
+  assert.equal(pending.index, null);
+  assert.deepEqual(resumePending(store), pending);
+  // Polling: still queued, then the complete view for the same entry.
+  const view = { ...fixtureView };
+  const p = { ...pending, id: view.id, request_json: JSON.stringify(view.receipt.request), entry_hash: view.entry_hash, question: '' };
+  const { deps } = pollDraw_deps([reply(200, queuedView(view.id)), reply(200, view)]);
+  const out = await pollDraw(p, deps);
+  assert.equal(out.verdict.verdict, 'verified');
+});
+
+test('a registry that cannot be loaded does not lose a finished draw: pending is kept', async () => {
+  const { deps } = pollDraw_deps([reply(200, fixtureView)], { prepare: async () => { throw new Error('registry returned 502'); } });
+  deps.store.setItem(PENDING_KEY, 'x');
+  const out = await pollDraw(fixturePending(), deps);
+  assert.deepEqual(out, { kind: 'unreachable', message: MESSAGES.unreachable });
+  assert.equal(deps.store.getItem(PENDING_KEY), 'x');
+});
+
+test('loadRegistry checks the status instead of parsing an error page', async () => {
+  await assert.rejects(loadRegistry(async () => reply(502, { error: 'bad gateway' })), /502/);
+  const ok = await loadRegistry(async () => reply(200, { iching: { hexagrams: [] } }));
+  assert.deepEqual(ok, { iching: { hexagrams: [] } });
 });
 
 test('a changed receipt in a complete view is untrusted', async () => {

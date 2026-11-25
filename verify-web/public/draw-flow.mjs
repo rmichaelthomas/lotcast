@@ -8,6 +8,7 @@ export const LIVE_SOURCES = ['curby-rng', 'drand-quicknet', 'nist-beacon-2'];
 const TEN_MINUTES = 10 * 60 * 1000;
 const FIRST_BACKOFF = 2000;
 const LAST_BACKOFF = 10000;
+const SLOW_POLL = 30000;
 
 export const MESSAGES = {
   'rate-limited': 'Lotcast is getting a lot of requests from this connection. Try again in a minute.',
@@ -59,6 +60,15 @@ function clearPending(store) {
   try { store.removeItem(PENDING_KEY); } catch { /* storage may be unavailable */ }
 }
 
+// A queued view has no index or promise yet: there is nothing to check and nothing to show.
+const queued = (view) => view && view.status === 'pending' && view.promise === undefined && (view.waiting_on ?? []).some((w) => w.source === 'log');
+
+export async function loadRegistry(fetch) {
+  const res = await fetch('/v1/registry');
+  if (!res.ok) throw new Error(`the registry returned ${res.status}`);
+  return JSON.parse(await res.text());
+}
+
 async function readJson(res) {
   try { return JSON.parse(await res.text()); } catch { return null; }
 }
@@ -79,7 +89,9 @@ export async function startDraw(choice, deps) {
   }
   if (res.status === 429) return failure('rate-limited', MESSAGES['rate-limited']);
   const reply = await readJson(res);
-  const busy = res.status === 503 && reply?.error?.code === 'E_BUSY'; // not logged yet; the poll binds it later
+  // The writer had not logged the request yet: a 202 with a queued view, or a 503 E_BUSY. Either way
+  // the draw exists; the poll binds it once it has a promise.
+  const busy = (res.status === 503 && reply?.error?.code === 'E_BUSY') || (res.ok && queued(reply));
   if (!res.ok && !busy) {
     return failure('refused', `Lotcast turned this request down: ${reply?.error?.message ?? `status ${res.status}`}`);
   }
@@ -102,15 +114,20 @@ export async function startDraw(choice, deps) {
   return pending;
 }
 
-// A queued view has no index or promise yet: there is nothing to check and nothing to show.
-const queued = (view) => view && view.status === 'pending' && view.promise === undefined && (view.waiting_on ?? []).some((w) => w.source === 'log');
-
-export async function pollDraw(pending, deps, onProgress = () => {}) {
+// onStillWaiting(message) is called once, after ten minutes; polling then goes on every 30 seconds
+// until the draw is done, so a tab left open eventually shows the result.
+export async function pollDraw(pending, deps, onProgress = () => {}, onStillWaiting = () => {}) {
   const { vm, fetch, store, operatorKey, sleep, now } = deps;
   let backoff = FIRST_BACKOFF;
   // Asked after each poll, never before the first: a draw picked up again after a long absence
   // is looked at once, and may well be done.
   const waitedTooLong = () => now() - pending.startedAt >= TEN_MINUTES;
+  let told = false;
+  const tellOnce = () => {
+    if (told || !waitedTooLong()) return;
+    told = true;
+    onStillWaiting(MESSAGES['still-waiting']);
+  };
   for (;;) {
     let res;
     let text;
@@ -121,8 +138,8 @@ export async function pollDraw(pending, deps, onProgress = () => {}) {
       res = null;
     }
     if (!res || text === null) {
-      if (waitedTooLong()) return failure('still-waiting', MESSAGES['still-waiting']);
-      await sleep(backoff);
+      tellOnce();
+      await sleep(told ? SLOW_POLL : backoff);
       backoff = Math.min(backoff * 2, LAST_BACKOFF);
       continue;
     }
@@ -139,11 +156,16 @@ export async function pollDraw(pending, deps, onProgress = () => {}) {
       return failure('anchor-failed', MESSAGES['anchor-failed']);
     }
     if (view.status === 'complete') {
+      // Load whatever the page needs to show the result before the pending record goes: a failure
+      // here must not lose a draw that is already checked.
+      if (deps.prepare) {
+        try { await deps.prepare(); } catch { return failure('unreachable', MESSAGES.unreachable); }
+      }
       const verdict = JSON.parse(vm('verify_draw', [JSON.stringify(view.receipt), operatorKey, pending.question, pending.salt_hex]));
       clearPending(store);
       return { receipt: view.receipt, outcome: view.receipt.outcome, verdict };
     }
-    if (waitedTooLong()) return failure('still-waiting', MESSAGES['still-waiting']);
-    await sleep(Number.isFinite(view.poll_after_ms) ? view.poll_after_ms : 2000);
+    tellOnce();
+    await sleep(told ? SLOW_POLL : (Number.isFinite(view.poll_after_ms) ? view.poll_after_ms : 2000));
   }
 }

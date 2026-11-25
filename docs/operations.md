@@ -88,7 +88,7 @@ Docker on the machine that deploys.
   through a small file layer (`packages/lotcast-log/src/vfs.gu`), and on Cloudflare that layer talks to
   the Worker's `/internal/store/` route, which keeps the files in the Durable Object's SQLite database.
   The route needs a token derived from the operator key; nobody else can read or write it.
-- **Deploy** (from `deploy/cloudflare`): `npm install`, `npx wrangler deploy`. Changing the code does not
+- **Deploy** (from `deploy/cloudflare`): `npm install`, then `npm run deploy`. That first builds the checking page's program, which is git-ignored (`cd verify-web && guion build verify.gu && mv verify.gub public/verify.gub`) and runs the page's tests (`node --test`), then runs `wrangler deploy`. Needs `guion` 0.9 on the PATH. Do not run `wrangler deploy` on its own: the page would go out without `verify.gub` and could not check anything. Changing the code does not
   replace a running container; it takes the new image the next time it starts.
 - **The operator key** is the Worker secret `LOTCAST_OPERATOR_KEY` (64 hex characters, the Ed25519 seed).
   Set it with `printf '%s' "$SEED" | npx wrangler secret put LOTCAST_OPERATOR_KEY`. A secret cannot be read

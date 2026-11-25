@@ -69,7 +69,10 @@ name = "lotcast-cli-modes"
 version = "0.1.0"
 
 [process]
-commands = ["ls", "chmod"]
+commands = [
+    "ls",
+    "chmod",
+]
 
 [runtime]
 output_limit_bytes = 2000000000

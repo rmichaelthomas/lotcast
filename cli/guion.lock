@@ -45,7 +45,7 @@ exports = [
     "src/receipt.gu",
     "src/anchored.gu",
 ]
-sha256 = "693fac076ecec69a711d888e1bcf058c09d2c524552d8dfb0427f3ba3465323f"
+sha256 = "43203453fb1f43b4b44e98c66f626a0aa7751a2e5da7e94c83ee14bbb09ba639"
 source = "../packages/lotcast-core"
 source_kind = "path"
 version = "0.1.0"
@@ -72,7 +72,7 @@ exports = [
     "src/tsa_pins.gu",
     "src/anchor.gu",
 ]
-sha256 = "37501a0a74fd0e92ae7e146c12a8a7105eef7bdd367a74fadc216ed40af5b76d"
+sha256 = "b006d905ca1ad3a96a3ccc458720fa18af6d36acd6b78017114c37a3b779e783"
 source = "../packages/lotcast-log"
 source_kind = "path"
 version = "0.1.0"
@@ -82,7 +82,7 @@ version = "0.1.0"
 [native.lotcast-service]
 entry = "src/lib.gu"
 exports = ["src/lib.gu"]
-sha256 = "e4ce674182677626df4e9531aa4d5ad7fa33282751b815b16bea3762214c15e8"
+sha256 = "65eaadab0a145999c8be93dfee7643654690c38db69b30970a5d61d88e3da861"
 source = "../service"
 source_kind = "path"
 version = "0.1.0"

@@ -1,0 +1,116 @@
+import "std:types"
+import "std:fs"
+import "std:json"
+import "std:text"
+import "src/lib.gu"
+
+fn main() -> Int:
+    return 0
+
+fn echo_call(name: Text, args: Json) -> Json:
+    if name == "boom":
+        return tool_result("E_BOOM: no", true)
+    return tool_result(name, false)
+
+fn line(text: Text) -> Json:
+    return unwrap(json_parse(unwrap(mcp_line(text, echo_call, tool_definitions(), "0.1.0"))))
+
+fn test_initialize_echoes_version() -> Unit:
+    let r = line("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}")
+    assert(json_as_text(json_get(json_get(r, "result"), "protocolVersion")) == "2025-03-26")
+    assert(json_as_text(json_get(json_get(json_get(r, "result"), "serverInfo"), "name")) == "lotcast")
+
+fn test_initialize_default_version() -> Unit:
+    let r = line("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")
+    assert(json_as_text(json_get(json_get(r, "result"), "protocolVersion")) == "2024-11-05")
+
+fn test_ping() -> Unit:
+    let r = line("{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"method\":\"ping\"}")
+    assert(json_as_text(json_get(r, "id")) == "a")
+    assert(json_has(r, "result"))
+
+fn test_tools_list_has_six_named_tools() -> Unit:
+    let r = line("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")
+    let tools = json_get(json_get(r, "result"), "tools")
+    var names: List[Text] = []
+    for i in range(0, json_len(tools)):
+        set names = list_push(names, json_as_text(json_get(unwrap(json_index_safe(tools, i)), "name")))
+    assert(names == ["list_traditions", "describe_method", "draw", "get_draw", "verify_receipt", "open_sealed"])
+
+fn required_of(tools: Json, name: Text) -> Text:
+    for i in range(0, json_len(tools)):
+        let t = unwrap(json_index_safe(tools, i))
+        if json_as_text(json_get(t, "name")) == name:
+            return json_stringify(json_get(json_get(t, "inputSchema"), "required"))
+    return "missing"
+
+fn test_required_fields_follow_the_spec() -> Unit:
+    let tools = tool_definitions()
+    assert(required_of(tools, "describe_method") == "[\"tradition\",\"method\"]")
+    assert(required_of(tools, "draw") == "[\"tradition\",\"method\"]")
+    assert(required_of(tools, "get_draw") == "[\"id\"]")
+    assert(required_of(tools, "verify_receipt") == "[\"receipt\"]")
+    assert(required_of(tools, "open_sealed") == "[\"id\"]")
+
+fn description_of(name: Text) -> Text:
+    let tools = tool_definitions()
+    for i in range(0, json_len(tools)):
+        let t = unwrap(json_index_safe(tools, i))
+        if json_as_text(json_get(t, "name")) == name:
+            return json_as_text(json_get(t, "description"))
+    return ""
+
+fn test_draw_descriptions_say_the_four_things() -> Unit:
+    for name in ["draw", "get_draw"]:
+        let d = description_of(name)
+        assert(text_find(d, "never from the model", 0) >= 0)
+        assert(text_find(d, "Quote positions exactly", 0) >= 0)
+        assert(text_find(d, "Meanings are", 0) >= 0)
+        assert(text_find(d, "check the draw", 0) >= 0)
+
+fn test_notification_gets_no_reply() -> Unit:
+    assert(not is_some(mcp_line("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}", echo_call, tool_definitions(), "0.1.0")))
+
+fn test_unknown_method_is_32601() -> Unit:
+    let r = line("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"nope\"}")
+    assert(json_as_int(json_get(json_get(r, "error"), "code")) == -32601)
+
+fn test_wrong_typed_method_is_32600() -> Unit:
+    let r = line("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":5}")
+    assert(json_as_int(json_get(json_get(r, "error"), "code")) == -32600)
+    let arr = line("[1]")
+    assert(json_as_int(json_get(json_get(arr, "error"), "code")) == -32600)
+
+fn test_wrong_typed_params_is_32602() -> Unit:
+    for body in ["{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":5}", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":3}}", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"x\",\"arguments\":[1]}}", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":4}}"]:
+        let r = line(body)
+        assert(json_as_int(json_get(json_get(r, "error"), "code")) == -32602)
+
+fn test_parse_error_has_null_id() -> Unit:
+    let r = line("not json")
+    assert(json_as_int(json_get(json_get(r, "error"), "code")) == -32700)
+    assert(json_is_null(json_get(r, "id")))
+
+fn test_blank_line_is_skipped() -> Unit:
+    assert(not is_some(mcp_line("", echo_call, tool_definitions(), "0.1.0")))
+
+fn test_line_limit_is_answered_and_other_failures_end() -> Unit:
+    let said = unwrap(mcp_read_failed("E_STDIN_LINE_LIMIT"))
+    assert(json_as_int(json_get(json_get(unwrap(json_parse(said)), "error"), "code")) == -32600)
+    assert(not is_some(mcp_read_failed("E_STDIN_READ")))
+
+fn test_tool_error_is_a_result_not_a_protocol_error() -> Unit:
+    let r = line("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"boom\"}}")
+    assert(json_has(r, "result"))
+    assert(not json_has(r, "error"))
+    assert(json_as_bool(json_get(json_get(r, "result"), "isError")))
+
+fn test_every_reply_is_a_jsonrpc_object() -> Unit:
+    for body in ["{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}", "x", "{\"id\":2,\"method\":1}", "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}"]:
+        let r = line(body)
+        assert(json_as_text(json_get(r, "jsonrpc")) == "2.0")
+
+fn test_no_mcp_source_prints_to_stdout() -> Unit:
+    for path in ["src/mcp_tools.gu", "src/run.gu", "src/home.gu"]:
+        let src = unwrap(read_text(path))
+        assert(text_find(src, "print(", 0) < 0)

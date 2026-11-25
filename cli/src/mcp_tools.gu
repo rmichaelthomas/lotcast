@@ -1,0 +1,43 @@
+import "std:types"
+import "std:json"
+
+# The six tools and their JSON Schemas (spec 8.2).
+
+fn prop(kind: Text, description: Text) -> Json:
+    var p = json_set(json_object(), "type", json_text(kind))
+    return json_set(p, "description", json_text(description))
+
+fn schema(properties: List[Text], kinds: List[Json], required: List[Text]) -> Json:
+    var props = json_object()
+    for i in range(0, len(properties)):
+        set props = json_set(props, properties[i], kinds[i])
+    var req = json_array()
+    for r in required:
+        set req = json_push(req, json_text(r))
+    var s = json_object()
+    set s = json_set(s, "type", json_text("object"))
+    set s = json_set(s, "properties", props)
+    set s = json_set(s, "required", req)
+    return json_set(s, "additionalProperties", json_bool(false))
+
+fn tool(name: Text, description: Text, input: Json) -> Json:
+    var t = json_object()
+    set t = json_set(t, "name", json_text(name))
+    set t = json_set(t, "description", json_text(description))
+    return json_set(t, "inputSchema", input)
+
+fn honesty() -> Text:
+    return " The draw comes from this tool, never from the model: do not invent or adjust positions. Quote positions exactly as returned. Meanings are the model's or the user's own; this tool returns positions only. The receipt lets anyone check the draw."
+
+pub fn tool_definitions() -> Json:
+    var tools = json_array()
+    set tools = json_push(tools, tool("list_traditions", "List the traditions and methods that can be drawn, with one-line odds summaries.", schema([], [], [])))
+    let none: List[Json] = []
+    set tools = json_push(tools, tool("describe_method", "Describe one method: its options, the exact odds and the audit's procedure summary.", schema(["tradition", "method"], [prop("string", "for example iching"), prop("string", "for example coins")], ["tradition", "method"])))
+    let draw_props = ["tradition", "method", "options", "question", "seal", "sources", "wait_seconds"]
+    let draw_kinds = [prop("string", "for example iching"), prop("string", "for example coins"), prop("object", "method options, for example {\"count\": 3}"), prop("string", "the question. It stays on this machine: only a hash of it is sent, with a secret salt kept locally."), prop("string", "hash (default when a question is given), tlock (not yet available) or none"), prop("array", "beacon source ids; drand-quicknet is always used"), prop("integer", "seconds to wait for the draw to complete, 0 to 600 (default 180)")]
+    set tools = json_push(tools, tool("draw", "Cast a verifiable draw. Returns positions with registry names, the receipt id and the result of checking the receipt on this machine. If it is still pending when wait_seconds runs out, it returns the id and what it is waiting on; use get_draw later." + honesty(), schema(draw_props, draw_kinds, ["tradition", "method"])))
+    set tools = json_push(tools, tool("get_draw", "Fetch a draw by id (as returned by draw) and check its receipt locally." + honesty(), schema(["id", "wait_seconds"], [prop("string", "the 32-hex draw id"), prop("integer", "seconds to wait, 0 to 600 (default 0)")], ["id"])))
+    set tools = json_push(tools, tool("verify_receipt", "Verify a receipt on this machine, step by step. The receipt is a JSON object, JSON text, or a path relative to the lotcast home. Give question and salt together to check a sealed question.", schema(["receipt", "question", "salt"], [prop("object", "the receipt"), prop("string", "the question"), prop("string", "its hex salt")], ["receipt"])))
+    set tools = json_push(tools, tool("open_sealed", "Return the question and salt of a sealed draw made from this machine, once its receipt is complete and the question matches its commitment.", schema(["id"], [prop("string", "the 32-hex draw id")], ["id"])))
+    return tools

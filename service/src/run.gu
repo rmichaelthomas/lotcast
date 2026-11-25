@@ -9,6 +9,7 @@ import "config.gu"
 import "store.gu"
 import "routes.gu"
 import "loops.gu"
+import "pkg:lotcast-log/src/lib.gu"
 
 # The service as a function, so serve.gu and the `lotcast serve` command both run it.
 # One process runs four jobs side by side: the HTTP workers, the writer (the only appender to the
@@ -40,6 +41,7 @@ fn run_job(job: Job) -> Int:
         return stamper_loop(store, 0)
     return watch_loop(store, job.cfg, job.key, 0)
 
+# A key file (not used on Cloudflare, where the key is a secret) is always on the local disk.
 fn read_seed(path: Text, create: Bool) -> Result[Bytes, Text]:
     let body = read_text(path)
     if is_ok(body):
@@ -108,8 +110,8 @@ pub fn serve_main(all: List[Text]) -> Int:
             Ok(ignored):
                 eprint("cannot open the data directory")
         return 2
-    let saved = write_text_atomic(unwrap(cfg).data_dir + "/state/operator_key.hex", hex_encode(unwrap(public)) + "\n")
-    let cleared = fs_remove(unwrap(cfg).data_dir + "/state/stop")
+    let saved = vfs_write_text(unwrap(cfg).data_dir + "/state/operator_key.hex", hex_encode(unwrap(public)) + "\n")
+    let cleared = vfs_remove(unwrap(cfg).data_dir + "/state/stop")
     eprint("operator_key=" + hex_encode(unwrap(public)))
     var jobs: List[Job] = []
     for kind in [0, 1, 2, 3]:

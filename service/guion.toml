@@ -12,11 +12,13 @@ clock = true
 network = ["beacon.nist.gov"]
 
 [approved-capabilities.lotcast-log]
+environment = ["LOTCAST_STORE_URL"]
 files = [
     "read",
     "write",
 ]
 network = [
+    "store.do",
     "timestamp.digicert.com",
     "timestamp.sectigo.com",
     "freetsa.org",
@@ -41,6 +43,7 @@ network = [
     "beacon.nist.gov",
     "drand.cloudflare.com",
     "random.colorado.edu",
+    "store.do",
     "timestamp.digicert.com",
     "timestamp.sectigo.com",
     "freetsa.org",
@@ -70,7 +73,7 @@ url = "https://guion-registry.thomasbuild.workers.dev/objects/3eaf1653f4fd4aeec3
 version = "0.2.0"
 
 [environment]
-variables = ["LOTCAST_OPERATOR_KEY"]
+variables = ["LOTCAST_OPERATOR_KEY", "LOTCAST_STORE_URL"]
 
 [package]
 entry = "src/lib.gu"

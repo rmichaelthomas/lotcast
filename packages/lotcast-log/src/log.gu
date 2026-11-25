@@ -7,6 +7,7 @@ import "encode.gu"
 import "merkle.gu"
 import "note.gu"
 import "tiles.gu"
+import "vfs.gu"
 
 # A single-writer tlog-tiles log kept in a directory: `checkpoint` (a signed note), `tile/L/N` hash
 # tiles and `tile/entries/N` entry bundles. Opening a log re-derives every tile from the stored
@@ -189,12 +190,12 @@ pub fn log_lock(dir: Text) -> Result[Bool, StdError]:
     let path = dir + "/lock"
     if has_file(dir, "lock"):
         return Err(log_error("the log is locked by another draw (remove " + path + " if none is running)"))
-    if not is_ok(fs_make_dir(path)):
+    if not is_ok(vfs_make_dir(path)):
         return Err(log_error("cannot take the log lock at " + path))
     return Ok(true)
 
 pub fn log_unlock(dir: Text) -> Bool:
-    return is_ok(fs_remove(dir + "/lock"))
+    return vfs_remove(dir + "/lock")
 
 pub fn log_inclusion(state: LogState, index: Int) -> Result[List[Bytes], StdError]:
     return inclusion_proof_of_hashes(state.hashes, index)

@@ -1,0 +1,180 @@
+import "std:types"
+import "std:encoding"
+import "std:fs"
+import "std:http"
+import "std:json"
+import "std:process"
+import "std:text"
+
+# The file layer the service and the log write through. By default it is the local disk. When the
+# environment variable LOTCAST_STORE_URL is set (the Cloudflare deployment sets it to http://store.do),
+# every file lives in a key-value store behind that URL instead, because a Cloudflare container's own
+# disk is erased when it stops. The store keeps files by path:
+#
+#   GET    BASE/f/PATH   the file's bytes, or 404
+#   PUT    BASE/f/PATH   write the file (replacing it); with `If-None-Match: *` only if absent, else 412
+#   DELETE BASE/f/PATH   remove the file, or the directory marker PATH/.dir if there is no such file
+#   GET    BASE/e/PATH   200 if PATH is a file, a directory marker or has files under it, else 404
+#   GET    BASE/l/PATH   a JSON array of the names directly under PATH, 404 if there are none
+#
+# A directory is the marker file PATH/.dir. Paths use only letters, digits and . _ - / (no "..").
+
+fn vfs_error(message: Text) -> StdError:
+    return std_error("E_VFS", message)
+
+pub fn vfs_base() -> Text:
+    match env("LOTCAST_STORE_URL"):
+        Some(value):
+            return text_trim(value)
+        None:
+            return ""
+
+fn path_char_ok(ch: Text) -> Bool:
+    return (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or (ch >= "0" and ch <= "9") or ch == "." or ch == "_" or ch == "-" or ch == "/"
+
+# The store URL for a path, or an error for a path the store does not accept.
+pub fn vfs_store_url(base: Text, route: Text, path: Text) -> Result[Text, StdError]:
+    var clean = path
+    while len(clean) > 1 and text_slice(clean, 0, 2) == "./":
+        set clean = text_slice(clean, 2, len(clean))
+    if clean == "" or text_find(clean, "..", 0) >= 0 or text_find(clean, "//", 0) >= 0:
+        return Err(vfs_error("not a store path: " + path))
+    var i = 0
+    while i < len(clean):
+        if not path_char_ok(text_slice(clean, i, i + 1)):
+            return Err(vfs_error("not a store path: " + path))
+        set i = i + 1
+    var root = base
+    while len(root) > 0 and text_slice(root, len(root) - 1, len(root)) == "/":
+        set root = text_slice(root, 0, len(root) - 1)
+    return Ok(root + route + "/" + clean)
+
+record Answer:
+    status: Int
+    body: Bytes
+
+fn call(method: Text, url: Text, headers: Map[Text, Text], body: Bytes) -> Result[Answer, StdError]:
+    let answered = http_request_bytes(method, url, headers, body, 30000)
+    if not is_ok(answered):
+        return Err(vfs_error("the store did not answer: " + method + " " + url))
+    return Ok(Answer(unwrap(answered).status, unwrap(answered).body))
+
+fn no_headers() -> Map[Text, Text]:
+    let none: Map[Text, Text] = {}
+    return none
+
+pub fn vfs_read_bytes(path: Text) -> Result[Bytes, StdError]:
+    let base = vfs_base()
+    if base == "":
+        let r = read_bytes(path)
+        if not is_ok(r):
+            return Err(vfs_error("cannot read " + path))
+        return Ok(unwrap(r))
+    let reply = call("GET", vfs_store_url(base, "/f", path)?, no_headers(), bytes_from_text(""))?
+    if reply.status != 200:
+        return Err(vfs_error("cannot read " + path))
+    return Ok(reply.body)
+
+pub fn vfs_read_text(path: Text) -> Result[Text, StdError]:
+    let bytes = vfs_read_bytes(path)?
+    let text = encoding_utf8_decode(bytes)
+    if not is_ok(text):
+        return Err(vfs_error(path + " is not UTF-8"))
+    return Ok(unwrap(text))
+
+# Writes the whole file; a reader sees the old file or the new one, never half of it.
+pub fn vfs_write_bytes(path: Text, data: Bytes) -> Result[Bool, StdError]:
+    let base = vfs_base()
+    if base == "":
+        let temp = path + ".tmp"
+        if not is_ok(write_bytes(temp, data)):
+            return Err(vfs_error("cannot write " + temp))
+        if not is_ok(fs_rename(temp, path)):
+            return Err(vfs_error("cannot rename " + temp))
+        return Ok(true)
+    let reply = call("PUT", vfs_store_url(base, "/f", path)?, no_headers(), data)?
+    if reply.status < 200 or reply.status > 299:
+        return Err(vfs_error("cannot write " + path))
+    return Ok(true)
+
+pub fn vfs_write_text(path: Text, text: Text) -> Result[Bool, StdError]:
+    return vfs_write_bytes(path, bytes_from_text(text))
+
+pub fn vfs_exists(path: Text) -> Bool:
+    let base = vfs_base()
+    if base == "":
+        let r = fs_exists(path)
+        return is_ok(r) and unwrap(r)
+    let url = vfs_store_url(base, "/e", path)
+    if not is_ok(url):
+        return false
+    let reply = call("GET", unwrap(url), no_headers(), bytes_from_text(""))
+    return is_ok(reply) and unwrap(reply).status == 200
+
+# Creates the directory, and fails when it already exists: the log's writer lock relies on that.
+pub fn vfs_make_dir(path: Text) -> Result[Bool, StdError]:
+    let base = vfs_base()
+    if base == "":
+        if vfs_exists(path) or not is_ok(fs_make_dir(path)):
+            return Err(vfs_error("cannot create " + path))
+        return Ok(true)
+    var headers: Map[Text, Text] = {}
+    set headers = map_set(headers, "If-None-Match", "*")
+    let reply = call("PUT", vfs_store_url(base, "/f", path + "/.dir")?, headers, bytes_from_text(""))?
+    if reply.status < 200 or reply.status > 299:
+        return Err(vfs_error("cannot create " + path))
+    return Ok(true)
+
+# Creates the directory and every missing parent (a store has no directories to create).
+pub fn vfs_make_dirs(path: Text) -> Result[Bool, StdError]:
+    if vfs_base() != "":
+        return Ok(true)
+    let parts = text_split(path, "/")
+    var built = ""
+    var first = true
+    for part in parts:
+        if first:
+            set built = part
+            set first = false
+        else:
+            set built = built + "/" + part
+        if part != "" and not vfs_exists(built):
+            if not is_ok(fs_make_dir(built)):
+                return Err(vfs_error("cannot create " + built))
+    return Ok(true)
+
+pub fn vfs_remove(path: Text) -> Bool:
+    let base = vfs_base()
+    if base == "":
+        return is_ok(fs_remove(path))
+    let url = vfs_store_url(base, "/f", path)
+    if not is_ok(url):
+        return false
+    let reply = call("DELETE", unwrap(url), no_headers(), bytes_from_text(""))
+    return is_ok(reply) and unwrap(reply).status >= 200 and unwrap(reply).status <= 299
+
+pub fn vfs_list(path: Text) -> Result[List[Text], StdError]:
+    let base = vfs_base()
+    if base == "":
+        let listed = fs_list_dir(path)
+        if not is_ok(listed):
+            return Err(vfs_error("cannot list " + path))
+        return Ok(unwrap(listed))
+    let reply = call("GET", vfs_store_url(base, "/l", path)?, no_headers(), bytes_from_text(""))?
+    if reply.status != 200:
+        return Err(vfs_error("cannot list " + path))
+    let text = encoding_utf8_decode(reply.body)
+    if not is_ok(text):
+        return Err(vfs_error("the store's listing is not UTF-8"))
+    let parsed = json_parse(unwrap(text))
+    if not is_ok(parsed):
+        return Err(vfs_error("the store's listing is not JSON"))
+    var out: List[Text] = []
+    var i = 0
+    while i < json_len(unwrap(parsed)):
+        let item = json_index_safe(unwrap(parsed), i)
+        if not is_ok(item):
+            return Err(vfs_error("the store's listing is malformed"))
+        set out = list_push(out, json_as_text(unwrap(item)))
+        set i = i + 1
+    return Ok(out)

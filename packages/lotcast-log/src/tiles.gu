@@ -5,6 +5,7 @@ import "std:text"
 import "std:fs"
 import "encode.gu"
 import "merkle.gu"
+import "vfs.gu"
 
 # C2SP tlog-tiles layout: tile height 8 (256 hashes per tile), RFC 6962 hashing, entry bundles of
 # uint16 length-prefixed entries.
@@ -116,25 +117,10 @@ pub fn split_hashes(blob: Bytes) -> Result[List[Bytes], StdError]:
 # File helpers: every write goes to a temporary name and is renamed into place.
 
 fn file_exists(path: Text) -> Bool:
-    let r = fs_exists(path)
-    if not is_ok(r):
-        return false
-    return unwrap(r)
+    return vfs_exists(path)
 
 pub fn make_dirs(path: Text) -> Result[Bool, StdError]:
-    let parts = text_split(path, "/")
-    var built = ""
-    var first = true
-    for part in parts:
-        if first:
-            set built = part
-            set first = false
-        else:
-            set built = built + "/" + part
-        if part != "" and not file_exists(built):
-            if not is_ok(fs_make_dir(built)):
-                return Err(tile_error("cannot create " + built))
-    return Ok(true)
+    return vfs_make_dirs(path)
 
 pub fn put_file(root: Text, relative: Text, data: Bytes) -> Result[Bool, StdError]:
     let target = root + "/" + relative
@@ -148,16 +134,13 @@ pub fn put_file(root: Text, relative: Text, data: Bytes) -> Result[Bool, StdErro
             set dir = dir + "/" + pieces[i]
         set i = i + 1
     let made = make_dirs(dir)?
-    let temp = target + ".tmp"
-    if not is_ok(write_bytes(temp, data)):
-        return Err(tile_error("cannot write " + temp))
-    if not is_ok(fs_rename(temp, target)):
-        return Err(tile_error("cannot rename " + temp))
+    if not is_ok(vfs_write_bytes(target, data)):
+        return Err(tile_error("cannot write " + target))
     return Ok(true)
 
 pub fn get_file(root: Text, relative: Text) -> Result[Bytes, StdError]:
     let path = root + "/" + relative
-    let r = read_bytes(path)
+    let r = vfs_read_bytes(path)
     if not is_ok(r):
         return Err(tile_error("cannot read " + path))
     return Ok(unwrap(r))

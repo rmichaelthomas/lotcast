@@ -165,6 +165,7 @@ pub fn api_traditions() -> Json:
         set methods = json_push(methods, item)
     return json_set(json_object(), "methods", methods)
 
+# The registry is data shipped with the service, not state: it is always read from the local disk.
 pub fn api_registry(path: Text) -> Result[Json, ApiError]:
     let body = read_text(path)
     if not is_ok(body):

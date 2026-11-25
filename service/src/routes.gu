@@ -11,6 +11,7 @@ import "request.gu"
 import "store.gu"
 import "api.gu"
 import "limits.gu"
+import "pkg:lotcast-log/src/lib.gu"
 
 # The HTTP surface (spec 8.1). The service's settings reach the handlers as request headers named
 # `x-lotcast-*` set by a first layer (which also deletes any such header a client sent), because a
@@ -124,7 +125,7 @@ fn h_get_receipt(request: Request) -> Result[Response, HttpFailure]:
                     return Ok(error_response(e))
 
 fn operator_key_of(request: Request) -> Bytes:
-    let body = read_text(header_of(request, "x-lotcast-data") + "/state/operator_key.hex")
+    let body = vfs_read_text(header_of(request, "x-lotcast-data") + "/state/operator_key.hex")
     if not is_ok(body):
         return bytes_from_ints([])
     let decoded = hex_decode(text_trim(unwrap(body)))
@@ -161,7 +162,7 @@ fn h_operator(request: Request) -> Result[Response, HttpFailure]:
     return Ok(json_response(200, json_set(json_set(json_object(), "origin", json_text(header_of(request, "x-lotcast-origin"))), "public_key", json_text(key))))
 
 fn operator_key_hex(request: Request) -> Text:
-    let body = read_text(header_of(request, "x-lotcast-data") + "/state/operator_key.hex")
+    let body = vfs_read_text(header_of(request, "x-lotcast-data") + "/state/operator_key.hex")
     if not is_ok(body):
         return ""
     return unwrap(body)

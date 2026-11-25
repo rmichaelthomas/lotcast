@@ -10,7 +10,7 @@ const FIRST_BACKOFF = 2000;
 const LAST_BACKOFF = 10000;
 
 export const MESSAGES = {
-  'rate-limited': 'Lotcast allows one draw a minute from each connection. Try again in a minute.',
+  'rate-limited': 'Lotcast is getting a lot of requests from this connection. Try again in a minute.',
   unreachable: "Couldn't reach Lotcast. Check your connection and try again.",
   'anchor-failed': "This draw couldn't be time-stamped, so nothing was drawn. You can draw again.",
   'still-waiting': 'Your draw is still waiting for random numbers. Leave this page open, or come back later on this device.',

@@ -6,11 +6,13 @@ Code is Apache-2.0; the positions registry is CC0.
 
 ## Status
 
-Guion 0.8.0 or later is needed (the `beacons` dependency installs from the Guion registry, `beacons` 0.3.0). Four parts:
+Guion 0.8.0 or later is needed (the `beacons` dependency installs from the Guion registry, `beacons` 0.3.0). Five parts:
 
 - `packages/lotcast-core`: the stream and samplers (I Ching coins and yarrow, tarot RWS), the registry, the inclusion rule for all four beacons (drand quicknet, NIST beacon 2.0, CURBy-RNG, CURBy-Q), and a receipt verifier that runs spec §5.2 steps 1 to 7 offline.
 - `service/`: the HTTP draw service (`lotcast serve`): a writer that appends requests to the log and promises each an epoch, a stamper that gets two RFC 3161 timestamps per epoch, a watcher that reads the beacons and completes receipts, and the API. See `service/README.md` and `docs/operations.md`.
 - `cli/`: the `lotcast` command (`cli/lotcast.gu`): `draw`, `get`, `verify`, `compute` (an outcome from public log files and the beacons alone), `audit` (compare mirrors), `mcp` (a local stdio MCP server for AI clients; see `cli/README.md`) and `serve`.
+- `verify-web/`: the checking page (Guion's own browser VM running a Guion checker; see `verify-web/build.md`).
+- `deploy/cloudflare/`: the Worker that puts the service online (`deploy/cloudflare/README.md`).
 - `packages/lotcast-log`: the append-only Merkle log (RFC 6962 hashing, C2SP signed notes and tlog-tiles) and RFC 3161 anchoring with pinned time-stamp authorities (DigiCert, Sectigo, FreeTSA).
 
 ### What an anchored receipt proves
@@ -23,7 +25,14 @@ A draw made with a log (`draw.gu --log-dir ... --key-file ...`) puts the request
 
 Verdicts: `verified` (every step passed offline), `verified-pending-live` (one or more sources had no pulse for this draw when the receipt was made, as CURBy-Q has been idle since 2025-08-22, or stalled mid-round; the receipt says which, and the verifier script exits 3 until the live check is done with `--live`), `verified-unanchored` (a receipt with no log, from the first slice: it shows the outcome follows from a real drand round, not that the request came first) and `invalid` (with the first failing step).
 
-What an anchored receipt does **not** have: witness cosignatures, timelocked questions and signed subject keys (the last two are refused with named errors). These, mirrors, new tradition audits (Marseille and Thoth tarot are refused until theirs exist), stream batteries, the Rust reference stream and publishing `lotcast-core` and `lotcast-log` to the Guion registry were taken out of scope on 2026-11-24: the aim is a service people can use to trust that their random draw is random, not more layers. A single operator key signs the log, and its public key is published (see `docs/operations.md`). Still to build: going online on Cloudflare and the browser checking page (`docs/superpowers/plans/2026-11-24-lotcast-online.md`).
+What an anchored receipt does **not** have: witness cosignatures, timelocked questions and signed subject keys (the last two are refused with named errors). These, mirrors, new tradition audits (Marseille and Thoth tarot are refused until theirs exist), stream batteries, the Rust reference stream and publishing `lotcast-core` and `lotcast-log` to the Guion registry were taken out of scope on 2026-11-24: the aim is a service people can use to trust that their random draw is random, not more layers. A single operator key signs the log, and its public key is published (see `docs/operations.md`). 
+
+### Live service and checking page
+
+- Service and page: https://lotcast.thomasbuild.workers.dev (`/` checks a receipt in your browser; `/v1/...` is the API).
+- **Operator public key** (the log is signed with this; check receipts against it, and compare it with `GET /v1/operator`): `a1aa46bfdd9cec63fa4c3f1abd1c5919e058c21cdce25085bbec9f1104df779b`
+- `lotcast draw iching coins --server https://lotcast.thomasbuild.workers.dev --operator-key a1aa46bfdd9cec63fa4c3f1abd1c5919e058c21cdce25085bbec9f1104df779b`
+
 
 ### Use
 

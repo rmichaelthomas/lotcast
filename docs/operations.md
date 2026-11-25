@@ -76,10 +76,34 @@ writes no access log; delete anything your host keeps after 24 hours.
 
 ## Deploying on Cloudflare
 
-Lotcast runs as a Cloudflare Container behind one Worker, at the `*.workers.dev` address Cloudflare gives the
-Worker, with the log in an R2 bucket. `service/Dockerfile` builds the service image from the repository root;
-`deploy/cloudflare/` holds the Worker. The commands, where the operator key lives and how to back up are
-filled in when the service goes live.
+Lotcast runs as one Worker with one container, at `https://lotcast.thomasbuild.workers.dev` (the address
+Cloudflare assigns). `/` is the checking page, `/v1/...` is the service. Needs the Workers Paid plan and
+Docker on the machine that deploys.
+
+- **Where the log lives.** A container's own disk is erased whenever it stops, and R2 mounted as a disk
+  only imitates the rename and lock behaviour the signed log needs. So the service writes every file
+  through a small file layer (`packages/lotcast-log/src/vfs.gu`), and on Cloudflare that layer talks to
+  the Worker's `/internal/store/` route, which keeps the files in the Durable Object's SQLite database.
+  The route needs a token derived from the operator key; nobody else can read or write it.
+- **Deploy** (from `deploy/cloudflare`): `npm install`, `npx wrangler deploy`. Changing the code does not
+  replace a running container; it takes the new image the next time it starts.
+- **The operator key** is the Worker secret `LOTCAST_OPERATOR_KEY` (64 hex characters, the Ed25519 seed).
+  Set it with `printf '%s' "$SEED" | npx wrangler secret put LOTCAST_OPERATOR_KEY`. A secret cannot be read
+  back, so keep the seed somewhere safe too: if it is lost, the log's identity is lost. The public half
+  is at `GET /v1/operator`, in the README, and on the checking page (`verify-web/public/operator-key.txt`).
+- **Backup.** There is no backup command yet. What is public is copyable: `GET /v1/log/...` serves the
+  log's tiles and checkpoint, so anyone can keep a copy of the log (it is `lotcast audit` input), and every
+  receipt a user holds checks on its own. What is not public is the operator's own copy of the receipts and
+  request files: they exist only in the Durable Object's database. Cloudflare's point-in-time recovery for
+  SQLite Durable Objects is the safety net for that database; it is a restore you do from code, not a
+  scheduled export. Keep the operator seed somewhere safe as well (see above).
+- **Idle.** The Durable Object checks on every alarm (every few minutes while the container runs) and stops
+  the container after 30 minutes (`IDLE_MINUTES`) without an outside request, but not while `GET /v1/status`
+  reports a pending draw. `GET /internal/diag` (bearer token, as for the store) shows `lastSeen`, `lastAlarm`
+  and `lastCheck`. A draw that was cut off anyway is finished on the next wake.
+- **Logs.** `npx wrangler tail` shows the Worker. The container's own output is in the dashboard under
+  the Worker's container.
+- **Try it locally** (needs Docker): `deploy/cloudflare/README.md`.
 
 ## API codes
 

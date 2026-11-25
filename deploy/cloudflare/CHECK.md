@@ -7,7 +7,18 @@
 
 ## R2 mounted at /data
 
-Not run yet: it needs a scratch R2 bucket (`lotcast-check`) in Rob's Cloudflare account.
+Not run, and no longer needed. R2 over FUSE needs S3-style access tokens, which `wrangler`'s own login
+cannot create, and the plan's fallback applies anyway: the log's files live in the Durable Object's SQLite
+database behind the Worker's `/internal/store/` route (`packages/lotcast-log/src/vfs.gu`). The scratch
+bucket `lotcast-check` exists in the account and is unused.
+
+## Decision (2026-11-24): Durable Object storage
+
+Checked on Cloudflare itself, not just locally:
+
+- A draw made, the container restarted by Cloudflare: the earlier receipt still verified and the next draw got the next index.
+- The idle logic stops the container (alarm check, `GET /v1/status` pending 0, quiet longer than `IDLE_MINUTES`). SIGTERM alone does nothing because the service is process 1 in the container, so the Durable Object waits ten seconds and then kills it. After that kill, the next request woke it and the next draw was index 5 and verified: nothing was lost.
+- `lastSeen`, `lastAlarm`, `lastCheck` and `outcome` at `GET /internal/diag` (bearer token) show what the idle logic last did.
 
 ## Worker and container, run locally with `wrangler dev` (2026-11-24)
 

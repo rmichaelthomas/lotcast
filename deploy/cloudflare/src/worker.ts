@@ -11,7 +11,7 @@ interface Env {
   LOTCAST: DurableObjectNamespace<Lotcast>;
   LOTCAST_OPERATOR_KEY: string;
   PUBLIC_URL: string; // https://NAME.SUBDOMAIN.workers.dev: where the container reaches the store
-  SLEEP_AFTER?: string; // for tests only; the default is 30 minutes
+  IDLE_MINUTES?: string; // minutes without an outside request before sleeping (default 30)
 }
 
 // The log's files live in this Durable Object's SQLite database, not on the container's disk (which
@@ -20,11 +20,10 @@ interface Env {
 // operator key, which is itself never sent). See vfs.gu in the lotcast-log package for the protocol.
 export class Lotcast extends Container<Env> {
   defaultPort = 8080;
-  sleepAfter = '30m';
+  sleepAfter = '24h'; // the library's own timer is only a backstop; checkIdle decides
   // Set after construction: `env` is only available then.
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    if (env.SLEEP_AFTER) this.sleepAfter = env.SLEEP_AFTER;
     this.envVars = {
       LOTCAST_OPERATOR_KEY: env.LOTCAST_OPERATOR_KEY,
       LOTCAST_STORE_URL: `${env.PUBLIC_URL}/internal/store`,
@@ -35,6 +34,80 @@ export class Lotcast extends Container<Env> {
       this.envVars = { ...this.envVars, LOTCAST_STORE_TOKEN: await storeToken(env.LOTCAST_OPERATOR_KEY) };
     });
     ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, data BLOB NOT NULL)');
+  }
+
+  // Sleep is decided here, not by the library's timer (which did not fire on Cloudflare while the
+  // service was polling the store): the container stops when no outside request has arrived for
+  // IDLE_MS and no draw is pending. Store calls from the container itself do not count as activity.
+  private idleMs(): number {
+    const minutes = Number(this.env.IDLE_MINUTES ?? '30');
+    return (Number.isFinite(minutes) && minutes > 0 ? minutes : 30) * 60 * 1000;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    this.ctx.storage.kv.put('lastSeen', Date.now());
+    return super.fetch(request);
+  }
+
+  // What the idle logic last saw, for the operator (see docs/operations.md).
+  async diag(): Promise<Response> {
+    const kv = this.ctx.storage.kv;
+    return Response.json({
+      running: this.ctx.container?.running ?? false,
+      lastSeen: kv.get('lastSeen') ?? null,
+      lastAlarm: kv.get('lastAlarm') ?? null,
+      lastCheck: kv.get('lastCheck') ?? null,
+      outcome: kv.get('outcome') ?? null,
+      idleMinutes: this.idleMs() / 60000,
+      now: Date.now(),
+    });
+  }
+
+  // The library runs its alarm loop for as long as the container runs (every three minutes or less),
+  // so the idle check rides on it rather than on a schedule of its own.
+  async alarm(alarmProps?: { isRetry: boolean; retryCount: number }): Promise<void> {
+    this.ctx.storage.kv.put('lastAlarm', Date.now());
+    try {
+      await this.checkIdle();
+    } catch (e) {
+      console.error('idle check failed', e);
+    }
+    return super.alarm(alarmProps);
+  }
+
+  async checkIdle(): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    const last = kv.get<{ at: number }>('lastCheck');
+    if (last && Date.now() - last.at < 30_000) return;
+    kv.put('lastCheck', { at: Date.now(), running: this.ctx.container?.running ?? false });
+    if (!this.ctx.container?.running) return;
+    const quiet = Date.now() - (kv.get<number>('lastSeen') ?? 0);
+    if (quiet <= this.idleMs()) return;
+    let pending = 1;
+    try {
+      const status = await this.ctx.container.getTcpPort(this.defaultPort).fetch('http://container/v1/status');
+      pending = ((await status.json()) as { pending?: number }).pending ?? 1;
+    } catch (e) {
+      kv.put('outcome', `status failed: ${String(e)}`);
+      pending = 0; // cannot be asked: do not keep a broken container alive
+    }
+    console.log(`idle check: quiet ${Math.round(quiet / 1000)}s, pending draws ${pending}`);
+    kv.put('outcome', `quiet ${Math.round(quiet / 1000)}s, pending ${pending}`);
+    if (pending === 0) {
+      console.log('stopping the container');
+      try {
+        await this.stop();
+        // The service is process 1 in its container, which ignores SIGTERM unless it handles it: give it
+        // ten seconds, then kill it. Nothing is lost: no draw is pending and the log lives in this object.
+        for (let i = 0; i < 10 && this.ctx.container?.running; i++) await new Promise((r) => setTimeout(r, 1000));
+        const killed = this.ctx.container?.running ?? false;
+        if (killed) await this.destroy();
+        kv.put('outcome', `${killed ? 'killed' : 'stopped'} after quiet ${Math.round(quiet / 1000)}s`);
+      } catch (e) {
+        kv.put('outcome', `stop failed: ${String(e)}`);
+        throw e;
+      }
+    }
   }
 
   async store(request: Request): Promise<Response> {
@@ -94,6 +167,7 @@ export class Lotcast extends Container<Env> {
       // The raw port, not containerFetch: containerFetch counts as activity and would keep it awake forever.
       const status = await this.ctx.container!.getTcpPort(this.defaultPort).fetch('http://container/v1/status');
       const body = (await status.json()) as { pending?: number };
+      console.log(`idle timer expired; pending draws: ${body.pending}`);
       if (typeof body.pending === 'number' && body.pending > 0) {
         this.renewActivityTimeout();
         return;
@@ -101,6 +175,7 @@ export class Lotcast extends Container<Env> {
     } catch {
       // If the service cannot be asked, do not keep a broken container alive forever.
     }
+    console.log('stopping the container');
     await this.stop();
   }
 }
@@ -125,6 +200,11 @@ export default {
       if (!sameText(sent, await storeToken(env.LOTCAST_OPERATOR_KEY))) return new Response('forbidden', { status: 403 });
       url.pathname = url.pathname.slice('/internal/store'.length);
       return getContainer(env.LOTCAST, 'lotcast').store(new Request(url, request));
+    }
+    if (url.pathname === '/internal/diag') {
+      const sent = (request.headers.get('authorization') ?? '').replace(/^Bearer /, '');
+      if (!sameText(sent, await storeToken(env.LOTCAST_OPERATOR_KEY))) return new Response('forbidden', { status: 403 });
+      return getContainer(env.LOTCAST, 'lotcast').diag();
     }
     if (!url.pathname.startsWith('/v1/')) return new Response('not found', { status: 404 });
     // One name, one Durable Object, one container: only one writer ever touches the log.

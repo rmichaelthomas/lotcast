@@ -108,8 +108,5 @@ exports = ["src/lib.gu"]
 name = "lotcast-cli"
 version = "0.1.0"
 
-[process]
-commands = ["chmod"]
-
 [runtime]
 output_limit_bytes = 2000000000

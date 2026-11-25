@@ -313,24 +313,12 @@ pub fn cmd_serve(all: List[Text]) -> Int:
 # ---------------------------------------------------------------- lotcast mcp
 
 fn mcp_flags() -> Result[Flags, Text]:
-    return parse_flags(args_from(1), ["--home", "--home-path", "--server", "--operator-key"], [])
+    return parse_flags(args_from(1), ["--home", "--server", "--operator-key"], [])
 
 # The lotcast home is a directory under Guion's file root (`--home`, default the root itself), so
-# run: cd ~/.lotcast && guion run --file-root . .../lotcast.gu mcp. Guion confines files to relative
-# paths, but chmod resolves its path from the process's working directory, so it is given the file
-# root's absolute path: `--home-path`, else $PWD.
+# run: cd ~/.lotcast && guion run --file-root . .../lotcast.gu mcp.
 fn mcp_root(f: Flags) -> Result[Text, Text]:
     return Ok(flag_one(f, "--home", "."))
-
-fn mcp_absolute(f: Flags) -> Text:
-    let given = flag_one(f, "--home-path", "")
-    if given != "":
-        return given
-    match env("PWD"):
-        Some(v):
-            return v
-        None:
-            return ""
 
 fn mcp_random(n: Int) -> Bytes:
     let r = crypto_random_bytes(n)
@@ -347,7 +335,7 @@ fn mcp_call(name: Text, arguments: Json) -> Json:
     let root = mcp_root(unwrap(f))
     if not is_ok(root):
         return tool_result("E_CONFIG: no home", true)
-    let h = McpHome(unwrap(root), mcp_absolute(unwrap(f)))
+    let h = McpHome(unwrap(root))
     let loaded = home_config(h)
     if not is_ok(loaded):
         match loaded:
@@ -360,7 +348,7 @@ fn mcp_call(name: Text, arguments: Json) -> Json:
     return call_tool(h, cfg, name, arguments, real_send, real_pause, real_now, mcp_random)
 
 pub fn cmd_mcp(all: List[Text]) -> Int:
-    let parsed = parse_flags(all, ["--home", "--home-path", "--server", "--operator-key"], [])
+    let parsed = parse_flags(all, ["--home", "--server", "--operator-key"], [])
     if not is_ok(parsed):
         match parsed:
             Err(why):
@@ -376,7 +364,7 @@ pub fn cmd_mcp(all: List[Text]) -> Int:
                 return say_error(why)
             Ok(ignored):
                 return 2
-    let opened = home_open(unwrap(root), mcp_absolute(unwrap(parsed)))
+    let opened = home_open(unwrap(root))
     if not is_ok(opened):
         match opened:
             Err(why):

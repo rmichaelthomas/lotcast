@@ -10,7 +10,7 @@ spec lives in a private repository, so this repository's `docs/operations.md`, t
 
 ## Status
 
-Guion 0.8.0 or later is needed (the `beacons` dependency installs from the Guion registry, `beacons` 0.3.0). Five parts:
+Guion 0.9.0 or later is needed (the `beacons` dependency installs from the Guion registry, `beacons` 0.3.0, and `web` 0.3.0). Five parts:
 
 - `packages/lotcast-core`: the stream and samplers (I Ching coins and yarrow, tarot RWS), the registry, the inclusion rule for all four beacons (drand quicknet, NIST beacon 2.0, CURBy-RNG, CURBy-Q), and a receipt verifier that runs spec §5.2 steps 1 to 7 offline.
 - `service/`: the HTTP draw service (`lotcast serve`): a writer that appends requests to the log and promises each an epoch, a stamper that gets two RFC 3161 timestamps per epoch, a watcher that reads the beacons and completes receipts, and the API. See `service/README.md` and `docs/operations.md`.
@@ -86,7 +86,7 @@ the first index where one differs.
 
 ```
 cd service && guion test && guion test tests_routes.gu    # the service (tests_live.gu makes a real stamp)
-cd cli && guion test && guion test tests_home.gu && guion test tests_mcp.gu && (cd ../cli-modes && guion test)
+cd cli && guion test && guion test tests_home.gu && guion test tests_mcp.gu
 ```
 
 

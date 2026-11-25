@@ -28,13 +28,7 @@ fn send(method: Text, url: Text, body: Text) -> Result[Reply, StdError]:
     return http_reply(method, url, body)
 
 fn main() -> Int:
-    var here = ""
-    match env("PWD"):
-        Some(v):
-            set here = v
-        None:
-            pass
-    let h = unwrap(home_open(".", here))
+    let h = unwrap(home_open("."))
     let cfg = McpConfig("http://127.0.0.1:8080", "", false)
     var a = json_set(json_object(), "tradition", json_text("iching"))
     set a = json_set(a, "method", json_text("coins"))

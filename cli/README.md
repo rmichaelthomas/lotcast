@@ -12,8 +12,7 @@ to stdout). It runs on your machine, builds your question's commitment here, ver
 and talks only to the HTTP service. Six tools: `list_traditions`, `describe_method`, `draw`, `get_draw`,
 `verify_receipt`, `open_sealed`.
 
-Run it from the lotcast home, which must be the file root (Guion confines files to relative paths under it;
-`chmod` is given the root's absolute path from `$PWD`, or `--home-path`):
+Run it from the lotcast home, which must be the file root (Guion confines files to paths under it):
 
 ```
 mkdir -p ~/.lotcast && cd ~/.lotcast && guion run --file-root . --allow-clock \
@@ -24,7 +23,7 @@ mkdir -p ~/.lotcast && cd ~/.lotcast && guion run --file-root . --allow-clock \
 
 Claude Code: `claude mcp add lotcast -- sh -c 'cd ~/.lotcast && exec guion run --file-root . ... lotcast.gu mcp'`.
 Claude Desktop: the same command as `command: "sh"`, `args: ["-c", "..."]` in `claude_desktop_config.json`.
-The `[process] commands = ["chmod"]` grant is needed and is the only one. The tests that read file modes with `ls` live in their own project, `../cli-modes`.
+The home's modes are set with Guion's `fs_set_mode` (Guion 0.9.0 or later), so the file grants are all it needs: no `--allow-command`. `tests_home.gu` reads the modes back with `fs_mode`.
 
 The home holds `config.json` (`server`, `operator_key`, `sign_requests`; any other key is refused), `pinned.json`
 (`pinned/`, one file per server: the operator key first seen for it; a later change is refused), `receipts/ID.json` and `salts/ID.json`

@@ -123,15 +123,8 @@ fn test_no_mcp_source_prints_to_stdout() -> Unit:
 
 # ---------------------------------------------------------------- the tools
 
-fn project_dir() -> Text:
-    match env("PWD"):
-        Some(v):
-            return v
-        None:
-            return ""
-
 fn fresh_home() -> McpHome:
-    return unwrap(home_open(unwrap(fs_temp_dir("lotcast-mcp")) + "/home", project_dir()))
+    return unwrap(home_open(unwrap(fs_temp_dir("lotcast-mcp")) + "/home"))
 
 fn fixture_receipt() -> Json:
     return unwrap(json_parse(unwrap(read_text("fixtures/receipt.json"))))
@@ -314,7 +307,7 @@ fn test_get_draw_completes_and_resumes_after_a_restart() -> Unit:
     assert(json_as_text(json_get(out, "verdict")) == "verified")
     assert(json_as_int(json_get(json_get(out, "positions"), "hexagram")) == 17)
     assert(json_as_text(json_get(json_get(out, "names"), "hexagram")) != "")
-    let again = McpHome(h.root, project_dir())
+    let again = McpHome(h.root)
     assert(is_ok(home_load_receipt(again, fixture_id())))
     let r2 = call_tool(again, cfg_with(fixture_key_hex()), "get_draw", args, send_fixture, no_pause, zero_now, fixed_random)
     assert(not failed(r2))
@@ -515,13 +508,6 @@ fn test_a_draw_whose_post_fails_names_the_id_to_ask_about() -> Unit:
     let r = call_tool(h, operator_cfg(), "draw", draw_args(), send_post_fails, no_pause, zero_now, fixed_random)
     assert(failed(r))
     assert(text_find(text_of(r), text_slice(hex_encode(the_hash(posted_body())), 0, 32), 0) >= 0)
-
-# --- the home is proven before anything is chmodded
-
-fn test_a_wrong_absolute_path_is_refused_before_any_chmod() -> Unit:
-    assert(not is_ok(home_open(".", "/tmp")))
-    assert(not is_ok(home_open(".", "relative/path")))
-    assert(not is_ok(home_open("elsewhere", "/nonexistent-root")))
 
 # --- arguments
 

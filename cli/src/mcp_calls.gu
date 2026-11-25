@@ -19,7 +19,10 @@ fn fail(code: Text, message: Text) -> Json:
 
 # "" when every key of `args` is one of `allowed`, else the first stranger.
 fn stray_key(args: Json, allowed: List[Text]) -> Text:
-    for k in object_keys(args):
+    let keys = json_keys(args)
+    if not is_ok(keys):
+        return ""
+    for k in unwrap(keys):
         var found = false
         for a in allowed:
             if a == k:
@@ -196,7 +199,7 @@ fn option_args(args: Json) -> Result[List[Text], Text]:
     if not is_ok(o) or not is_object(unwrap(o)):
         return Err("options must be an object")
     let obj = unwrap(o)
-    for k in object_keys(obj):
+    for k in unwrap(json_keys(obj)):
         if not plain_word(k):
             return Err("option names must be plain words, not " + k)
         let v = json_get(obj, k)

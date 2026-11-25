@@ -6,7 +6,6 @@ import "pkg:lotcast-core/src/lib.gu"
 import "pkg:lotcast-log/src/lib.gu"
 import "client.gu"
 import "plan.gu"
-import "bind.gu"
 
 # The work of `draw`, `get` and `verify` as values, with nothing printed: the command line and the
 # MCP server both build on these. The network, the clock and the sleep are passed in.
@@ -45,27 +44,6 @@ pub fn check_value(receipt: Json, operator_key: Bytes, asked: Bool, question: Te
 fn none_check() -> Check:
     let none: List[Int] = []
     return Check("", "", 0, none)
-
-# "" when `view` has the shape of a draw view; otherwise what is wrong with it. Everything that
-# comes from the network is read with the safe getters, so a malformed answer is an error, not a crash.
-pub fn view_problem(view: Json) -> Text:
-    if not is_object(view):
-        return "the service's answer is not a JSON object"
-    if not is_ok(json_get_text_safe(view, "id")) or not is_ok(json_get_int_safe(view, "index")):
-        return "the service's answer has no id or index"
-    let status = json_get_text_safe(view, "status")
-    if not is_ok(status):
-        return "the service's answer has no status"
-    if unwrap(status) != "complete" and unwrap(status) != "pending" and unwrap(status) != "anchor-failed":
-        return "the service's answer has an unknown status"
-    if unwrap(status) == "complete":
-        let receipt = json_get_safe(view, "receipt")
-        if not is_ok(receipt) or not is_object(unwrap(receipt)):
-            return "the service says the draw is complete but sent no receipt"
-        let outcome = json_get_safe(unwrap(receipt), "outcome")
-        if not is_ok(outcome) or not is_object(unwrap(outcome)):
-            return "the receipt has no outcome"
-    return ""
 
 fn drawn_from(view: Json, key: Bytes, asked: Bool, question: Text, salt: Bytes) -> Drawn:
     let id = json_as_text(json_get(view, "id"))

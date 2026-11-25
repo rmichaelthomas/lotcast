@@ -14,6 +14,7 @@ COPY service /app/service
 COPY registry /app/registry
 WORKDIR /app/service
 RUN guion update
+RUN mkdir -p /data
 ENV PORT=8080
 EXPOSE 8080
 # --trust-proxy 1: exactly one proxy (the Cloudflare Worker) sits in front, and the rate limit needs its client address.

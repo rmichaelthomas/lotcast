@@ -3,7 +3,7 @@
 # Run with a volume on /data and the operator key as an environment variable (never in the image):
 #   docker run -p 8080:8080 -v lotcast-data:/data -e LOTCAST_OPERATOR_KEY=<64 hex> lotcast
 FROM debian:stable-slim
-ARG GUION_VERSION=0.8.0
+ARG GUION_VERSION=0.9.0
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
  && curl -fsSL "https://github.com/rmichaelthomas/guion/releases/download/v${GUION_VERSION}/guion-debian-x86_64.tar.gz" -o /tmp/guion.tar.gz \
  && tar -xzf /tmp/guion.tar.gz -C /opt && ln -s /opt/guion-debian-x86_64/bin/guion /usr/local/bin/guion \
@@ -19,8 +19,9 @@ ENV PORT=8080
 EXPOSE 8080
 # --trust-proxy 1: exactly one proxy (the Cloudflare Worker) sits in front, and the rate limit needs its client address.
 # File paths in `guion run` are relative to --file-root (/data), so the registry is copied there first.
-# `exec` makes guion process 1: a shell as process 1 does not pass SIGTERM on, and the service's signal loop
-# (service/src/loops.gu) is what stops its loops cleanly before the host kills the container.
+# `exec` makes guion process 1: a shell as process 1 does not pass SIGTERM on. The service handles TERM itself
+# (service/src/run.gu polls for signals): the HTTP server finishes the requests it is handling and returns, and
+# the signal loop (service/src/loops.gu) stops the other jobs, so the process exits on its own.
 CMD cp /app/registry/lotcast-registry-v1.json /data/registry.json && exec guion run --allow-bind 0.0.0.0:${PORT} --allow-clock --file-root /data \
     --allow-http-host api.drand.sh --allow-http-host drand.cloudflare.com \
     --allow-http-host beacon.nist.gov --allow-http-host random.colorado.edu \

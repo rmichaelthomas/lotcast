@@ -103,7 +103,7 @@ fn main() -> Int:
     if len(names()) != 64 or len(rws_ids()) != 78:
         eprint("registry data has the wrong size")
         return 1
-    if not is_ok(write_text_atomic("registry/lotcast-registry-v1.json", json_stringify(registry_json()) + "\n")):
+    if not is_ok(write_text_atomic("registry/lotcast-registry-v1.json", json_stringify_pretty(registry_json(), 2) + "\n")):
         eprint("cannot write registry/lotcast-registry-v1.json")
         return 1
     if not is_ok(write_text_atomic("packages/lotcast-core/src/registry_data.gu", guion_data())):

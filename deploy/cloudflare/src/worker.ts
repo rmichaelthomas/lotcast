@@ -129,9 +129,10 @@ export class Lotcast extends Container<Env> {
       kv.put('lastPending', 0);
       await this.stop();
       // The service is process 1 in its container (the Dockerfile `exec`s it), and a process 1 ignores SIGTERM
-      // unless it handles it. The service does: on TERM its signal loop writes state/stop, so the writer, stamper and watcher finish
-      // their step and return. Its HTTP server cannot stop, so the process ends only when killed: give the
-      // loops ten seconds, then kill it. Nothing is lost: no draw is pending and the log lives in this object.
+      // unless it handles it. The service does: on TERM its HTTP server finishes the requests it is handling and
+      // returns, and its signal loop writes state/stop so the writer, stamper and watcher finish their step and
+      // return, so the process exits by itself. The ten seconds are only a fallback for one that does not: then
+      // destroy it. Nothing is lost: no draw is pending and the log lives in this object.
       for (let i = 0; i < 10 && this.ctx.container?.running; i++) await new Promise((r) => setTimeout(r, 1000));
       const killed = this.ctx.container?.running ?? false;
       if (killed) await this.destroy();

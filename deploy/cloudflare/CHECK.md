@@ -17,7 +17,7 @@ bucket `lotcast-check` exists in the account and is unused.
 Checked on Cloudflare itself, not just locally:
 
 - A draw made, the container restarted by Cloudflare: the earlier receipt still verified and the next draw got the next index.
-- The idle logic stops the container (alarm check, `GET /v1/status` pending 0, quiet longer than `IDLE_MINUTES`). SIGTERM alone does nothing because the service is process 1 in the container, so the Durable Object waits ten seconds and then kills it. After that kill, the next request woke it and the next draw was index 5 and verified: nothing was lost.
+- The idle logic stops the container (alarm check, `GET /v1/status` pending 0, quiet longer than `IDLE_MINUTES`). The service is process 1 in the container and handles SIGTERM itself (its HTTP server finishes the requests it is handling and returns, and its loops stop), so the container exits on its own; the Durable Object waits up to ten seconds and kills it only as a fallback. That check was made with Guion 0.8, whose HTTP server could not stop, so the Durable Object had to kill it; with 0.9.0 the service exits by itself (confirm `outcome` says `stopped` in `/internal/diag` after the next deploy). After the kill, the next request woke it and the next draw was index 5 and verified: nothing was lost.
 - `lastSeen`, `lastAlarm`, `lastCheck` and `outcome` at `GET /internal/diag` (bearer token) show what the idle logic last did.
 
 ## Worker and container, run locally with `wrangler dev` (2026-11-24)

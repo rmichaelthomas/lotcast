@@ -17,8 +17,5 @@ fn test_iso_round_trip() -> Unit:
     assert(iso_from_seconds(951868800) == "2000-03-01T00:00:00Z")
     assert(iso_from_seconds(1767225599) == "2025-12-31T23:59:59Z")
 
-fn test_ascii_lower() -> Unit:
-    assert(ascii_lower("0A1B2c") == "0a1b2c")
-
 fn main() -> Int:
     return 0

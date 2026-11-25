@@ -45,7 +45,7 @@ exports = [
     "src/receipt.gu",
     "src/anchored.gu",
 ]
-sha256 = "0bb7a4d908bf67b9cd3c06ba5a937ced87c1de4d0e4cd8ff3c2bd66cdc2e39d9"
+sha256 = "0bfa1be16b239ddb4da2cd1c20628977a84dfeb09c4fce872c088937d0a5cc3b"
 source = "../packages/lotcast-core"
 source_kind = "path"
 version = "0.1.0"
@@ -72,7 +72,7 @@ exports = [
     "src/tsa_pins.gu",
     "src/anchor.gu",
 ]
-sha256 = "3b979b4019a3be3b78f23426ce05760b408f53355753c5905fe08a32f9db06c8"
+sha256 = "fd14b2b55e9c88efc272598ea7e6972d3e081eacfcfd2ee145b3bfe26f43a85e"
 source = "../packages/lotcast-log"
 source_kind = "path"
 version = "0.1.0"
@@ -82,7 +82,7 @@ version = "0.1.0"
 [native.lotcast-service]
 entry = "src/lib.gu"
 exports = ["src/lib.gu"]
-sha256 = "074d3307024584de56dfca930a321562b3d576bed9713a1957b754f8127c03d8"
+sha256 = "c948f615bb8b2209807ba5d32627805dbe1b593f0e605cdd3d407e93d2444c33"
 source = "../service"
 source_kind = "path"
 version = "0.1.0"
@@ -113,7 +113,7 @@ version = "0.1.0"
 version = "0.1.0"
 
 [native.lotcast-service.dependencies.web]
-version = "0.2.0"
+version = "0.3.0"
 
 [native.web]
 entry = "src/lib.gu"
@@ -127,10 +127,10 @@ exports = [
     "src/html.gu",
     "src/static.gu",
 ]
-sha256 = "8f961472ad448adbeba8f027147a3be040d45a4830634c67c56549e708f0a817"
-source = "https://guion-registry.thomasbuild.workers.dev/objects/3eaf1653f4fd4aeec39a1a752608ae3a61032878826ea375db72209e830476a9.tar"
+sha256 = "110011f8e0233071265330d511514047dbd15696225e6381f0a9a2b85d0729ad"
+source = "https://guion-registry.thomasbuild.workers.dev/objects/24ca27c80c1e4753595b657f85191ea7ac49c0edd86ce2bdcf28f12fe8166b35.tar"
 source_kind = "url"
-version = "0.2.0"
+version = "0.3.0"
 
 [native.web.capabilities]
 clock = true

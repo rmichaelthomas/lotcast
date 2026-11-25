@@ -32,12 +32,15 @@ fn make_app(root: Text, trust: Int) -> App:
     return unwrap(app_build(cfg_at(root, trust), 0))
 
 fn call(app: App, method: Text, path: Text, body: Text) -> Response:
+    return call_from(app, method, path, body, "203.0.113.50:40000")
+
+fn call_from(app: App, method: Text, path: Text, body: Text, peer: Text) -> Response:
     let base = request_new(method, path)
-    return app_respond(app, Request(base.method, base.path, base.query, base.headers, bytes_from_text(body), base.params))
+    return app_respond(app, Request(base.method, base.path, base.query, base.headers, bytes_from_text(body), base.params, peer))
 
 fn call_with(app: App, method: Text, path: Text, body: Text, headers: List[Header]) -> Response:
     let base = request_new(method, path)
-    return app_respond(app, Request(base.method, base.path, base.query, headers, bytes_from_text(body), base.params))
+    return app_respond(app, Request(base.method, base.path, base.query, headers, bytes_from_text(body), base.params, "10.1.1.1:40000"))
 
 fn body_of(r: Response) -> Text:
     return unwrap(encoding_utf8_decode(r.body.data))
@@ -143,6 +146,14 @@ fn test_sixty_first_post_in_a_minute_is_rate_limited() -> Unit:
     let limited = call(app, "POST", "/v1/draws", "{}")
     assert(limited.status == 429)
     assert(error_code(limited) == "E_RATE")
+
+fn test_without_a_proxy_each_client_has_its_own_bucket() -> Unit:
+    let app = make_app(temp_root(), 0)
+    for i in range(0, 60):
+        assert(call_from(app, "POST", "/v1/draws", "{}", "203.0.113.1:" + int_to_text(40000 + i)).status == 400)
+    assert(call_from(app, "POST", "/v1/draws", "{}", "203.0.113.1:50000").status == 429)
+    assert(call_from(app, "POST", "/v1/draws", "{}", "203.0.113.2:50000").status == 400)
+    assert(call_from(app, "POST", "/v1/draws", "{}", "[2001:db8::1]:50000").status == 400)
 
 fn test_a_client_cannot_dodge_the_limit_by_inventing_forwarded_addresses() -> Unit:
     let app = make_app(temp_root(), 1)

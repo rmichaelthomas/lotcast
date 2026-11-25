@@ -84,20 +84,6 @@ pub fn latest_index(chain: Text) -> Result[Int, Text]:
     let latest = fetch_json("https://random.colorado.edu/api/chains/" + chain + "/pulses/latest")?
     return walk_int(latest, ["data", "content", "index"])
 
-# ASCII lower case (Guion has no text lower-casing function).
-pub fn ascii_lower(text: Text) -> Text:
-    let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    let lower = "abcdefghijklmnopqrstuvwxyz"
-    var out = ""
-    for i in range(0, len(text)):
-        let c = text_slice(text, i, i + 1)
-        let at = text_find(upper, c, 0)
-        if at >= 0:
-            set out = out + text_slice(lower, at, at + 1)
-        else:
-            set out = out + c
-    return out
-
 # Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's algorithm).
 fn days_from_civil(year: Int, month: Int, day: Int) -> Int:
     var y = year

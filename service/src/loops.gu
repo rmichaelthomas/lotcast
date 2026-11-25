@@ -27,9 +27,10 @@ fn now_seconds() -> Int:
 fn stopped(store: Store) -> Bool:
     return store_has(store, "state/stop")
 
-# Which signals mean "stop": TERM (what a container host sends first) and INT (Ctrl-C). A hang-up is ignored.
+# Which signals mean "stop": TERM (what a container host sends first), INT (Ctrl-C) and HUP. These are the
+# three the web server's `serve` also stops on, so one signal ends every job and not only the HTTP workers.
 pub fn signal_requests_stop(signal: Text) -> Bool:
-    return signal == "TERM" or signal == "INT"
+    return signal == "TERM" or signal == "INT" or signal == "HUP"
 
 # Writes the marker the writer, stamper and watcher loops look for, so each finishes its current step and
 # returns instead of being cut off in the middle of one.
@@ -37,7 +38,8 @@ pub fn request_stop(store: Store) -> Result[Bool, StdError]:
     return store_put_json(store, "state/stop", json_object())
 
 # Polls for signals (the program handles them itself once it polls) and, on a stop signal, asks the loops
-# to stop. The HTTP server has no way to stop; it ends when the container host kills the process.
+# to stop. The HTTP server needs no marker: `serve` sees the signal itself (the program polls, see
+# `serve_main`), finishes the requests it is handling and returns, so the whole service ends by itself.
 pub fn signal_loop(store: Store) -> Int:
     while not stopped(store):
         let signal = process_signal_poll()

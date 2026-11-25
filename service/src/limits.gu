@@ -9,11 +9,12 @@ import "pkg:lotcast-log/src/lib.gu"
 
 # Per-client rate limiting for POST /v1/draws: at most `limit` requests in any 60 seconds.
 #
-# Guion does not tell a server the peer address of a connection (a Guion gap), so the client is
-# named only by the proxy in front of the service: with `trust_proxy = N` the client is the Nth
-# entry from the right of X-Forwarded-For (the one the Nth proxy added; everything left of it is
-# whatever the client claimed and is ignored). With `trust_proxy = 0` there is no client name and
-# every request shares one bucket, so the limit still holds, for everyone together.
+# Who the client is depends on what sits in front of the service. With `trust_proxy = 0` nothing
+# does, so the client is the host of the connection's peer address (`request.peer`, "host:port"
+# or "[host]:port" for IPv6; the port changes with every connection, so it is dropped) and each
+# client gets its own bucket. With `trust_proxy = N` the peer is the proxy, so the client is the
+# Nth entry from the right of X-Forwarded-For (the one the Nth proxy added; everything left of it
+# is whatever the client claimed and is ignored).
 
 pub fn rate_window_seconds() -> Int:
     return 60
@@ -32,9 +33,25 @@ pub fn rate_check(stamps: List[Int], now: Int, limit: Int) -> RateResult:
         return RateResult(false, kept)
     return RateResult(true, list_push(kept, now))
 
-pub fn client_key(forwarded: Text, trust_proxy: Int) -> Text:
+# The host part of a peer address ("1.2.3.4:5000" is "1.2.3.4", "[::1]:5000" is "::1"); "" when
+# the address is unknown or not in either form.
+pub fn peer_host(peer: Text) -> Text:
+    if len(peer) >= 2 and text_slice(peer, 0, 1) == "[":
+        let close = text_find(peer, "]", 0)
+        if close < 0:
+            return ""
+        return text_slice(peer, 1, close)
+    let parts = text_split(peer, ":")
+    if len(parts) != 2:
+        return ""
+    return parts[0]
+
+pub fn client_key(forwarded: Text, trust_proxy: Int, peer: Text) -> Text:
     if trust_proxy <= 0:
-        return "shared"
+        let host = peer_host(peer)
+        if host == "":
+            return "unknown"
+        return host
     var parts: List[Text] = []
     for p in text_split(forwarded, ","):
         let t = text_trim(p)

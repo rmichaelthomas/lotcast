@@ -81,7 +81,7 @@ fn too_many() -> Response:
 fn h_post_draw(request: Request) -> Result[Response, HttpFailure]:
     let store = store_of(request)
     let now = now_seconds()
-    let key = client_key(forwarded_for(request), int_of(header_of(request, "x-lotcast-trust"), 0))
+    let key = client_key(forwarded_for(request), int_of(header_of(request, "x-lotcast-trust"), 0), request.peer)
     if not rate_hit(store, key, now, 60):
         return Ok(too_many())
     match api_submit_start(store, request.body, now):
@@ -133,7 +133,7 @@ fn operator_key_of(request: Request) -> Bytes:
     return unwrap(decoded)
 
 fn h_verify(request: Request) -> Result[Response, HttpFailure]:
-    let key = client_key(forwarded_for(request), int_of(header_of(request, "x-lotcast-trust"), 0))
+    let key = client_key(forwarded_for(request), int_of(header_of(request, "x-lotcast-trust"), 0), request.peer)
     if not rate_hit(store_of(request), "verify|" + key, now_seconds(), 60):
         return Ok(too_many())
     match api_verify(request.body, operator_key_of(request)):
@@ -228,7 +228,7 @@ fn before(config: Map[Text, Text], request: Request) -> Result[Request, Response
         let made = header_new(name, config[name])
         if is_ok(made):
             set headers = list_push(headers, unwrap(made))
-    let fixed = Request(request.method, request.path, request.query, headers, request.body, request.params)
+    let fixed = Request(request.method, request.path, request.query, headers, request.body, request.params, request.peer)
     if len(fixed.path) > len("/v1/log/") and text_slice(fixed.path, 0, len("/v1/log/")) == "/v1/log/":
         return Err(serve_log(fixed))
     return Ok(fixed)

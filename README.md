@@ -151,7 +151,7 @@ Lotcast is built to be used by agents, with the question and the checking kept o
 
 ```sh
 mkdir -p ~/.lotcast
-claude mcp add lotcast -- sh -c 'cd ~/.lotcast && exec guion run --file-root . --allow-clock --allow-command chmod \
+claude mcp add lotcast -- sh -c 'cd ~/.lotcast && exec guion run --file-root . --allow-clock \
   --allow-http-host lotcast.thomasbuild.workers.dev --allow-http-host api.drand.sh --allow-http-host drand.cloudflare.com \
   --allow-http-host beacon.nist.gov --allow-http-host random.colorado.edu \
   /FULL/PATH/TO/lotcast/cli/lotcast.gu mcp \

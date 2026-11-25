@@ -1,0 +1,32 @@
+import "std:types"
+import "std:fs"
+import "std:process"
+import "std:text"
+import "pkg:lotcast-cli/src/lib.gu"
+
+fn main() -> Int:
+    return 0
+
+fn project_dir() -> Text:
+    match env("PWD"):
+        Some(v):
+            return v
+        None:
+            return ""
+
+fn fresh_home() -> McpHome:
+    let root = unwrap(fs_temp_dir("lotcast-modes")) + "/home"
+    return unwrap(home_open(root, project_dir()))
+
+fn mode_of(path: Text) -> Text:
+    let r = unwrap(process_run("ls", ["-ld", path], ""))
+    return text_slice(r.stdout, 0, 10)
+
+fn test_private_modes() -> Unit:
+    let h = fresh_home()
+    let id = "0123456789abcdef0123456789abcdef"
+    assert(is_ok(home_save_sealed(h, Sealed(id, "q", "ab", "{}", "cd"))))
+    assert(mode_of(h.root) == "drwx------")
+    assert(mode_of(h.root + "/salts") == "drwx------")
+    assert(mode_of(h.root + "/salts/" + id + ".json") == "-rw-------")
+

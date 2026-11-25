@@ -16,6 +16,11 @@ import "compute.gu"
 import "client.gu"
 import "plan.gu"
 import "bind.gu"
+import "run.gu"
+import "home.gu"
+import "mcp_rpc.gu"
+import "mcp_tools.gu"
+import "mcp_calls.gu"
 
 # The `lotcast` subcommands. Exit codes: 0 done and verified, 1 invalid or failed, 2 bad arguments
 # or unreadable input, 3 verified except for a live check still owed, 4 still pending.
@@ -31,34 +36,16 @@ fn sleep_seconds(n: Int) -> Unit:
 
 # Checks a receipt and prints the verdict (the verify_receipt.gu output); returns the exit code.
 pub fn check_receipt(receipt: Json, operator_key: Bytes, asked: Bool, question: Text, salt: Bytes, live: Bool) -> Int:
-    let verdict = verify_any(receipt, operator_key, tsa_pins(), asked, question, salt)
-    if verdict.result == "verified-pending-live":
-        if not live:
-            print(verdict.result)
-            print(verdict.detail)
-            print("NOT fully checked: rerun with --live to ask the live chains, or treat this receipt as unconfirmed.")
-            return 3
-        let confirmed = live_recheck(receipt)
-        if not is_ok(confirmed):
-            match confirmed:
-                Err(problem):
-                    if problem.code == "E_LOTCAST_PENDING":
-                        print(verdict.result)
-                        print(problem.message)
-                        return 3
-                    print("invalid")
-                    print("failed step 4: " + problem.message)
-                    return 1
-                Ok(ignored):
-                    return 2
-        print("verified")
-        print("Every step passed offline, and the live chains confirm that these sources still have no pulse for this draw: " + text_join(unwrap(confirmed), ", ") + ".")
-        return 0
-    print(verdict.result)
-    if verdict.result == "invalid":
-        print("failed step " + int_to_text(verdict.failed_step) + ": " + verdict.detail)
+    let c = check_value(receipt, operator_key, asked, question, salt, live)
+    print(c.verdict)
+    if c.verdict == "invalid":
+        print("failed step " + int_to_text(c.failed_step) + ": " + c.detail)
         return 1
-    print(verdict.detail)
+    print(c.detail)
+    if c.verdict == "verified-pending-live":
+        if not live:
+            print("NOT fully checked: rerun with --live to ask the live chains, or treat this receipt as unconfirmed.")
+        return 3
     return 0
 
 fn key_from(f: Flags, server: Text) -> Result[Bytes, Text]:
@@ -129,51 +116,40 @@ fn show_waiting(view: Json) -> Unit:
         let w = unwrap(json_index_safe(waiting, i))
         eprint("  waiting on " + json_as_text(json_get(w, "source")) + ": " + json_as_text(json_get(w, "detail")))
 
-# Polls a draw until it is complete, anchor-failed, or `wait` seconds have passed.
-fn poll_draw(server: Text, id: Text, wait: Int) -> Result[Json, Text]:
-    var waited = 0
-    var last = json_null()
-    while true:
-        let reply = http_reply("GET", server + "/v1/draws/" + id, "")
-        if is_ok(reply) and unwrap(reply).status == 200:
-            set last = unwrap(reply).body
-            let status = json_as_text(json_get(last, "status"))
-            if status == "complete" or status == "anchor-failed":
-                return Ok(last)
-        if waited >= wait:
-            if json_is_null(last):
-                return Err("the service did not answer")
-            return Ok(last)
-        sleep_seconds(3)
-        set waited = waited + 3
-    return Ok(last)
+fn real_send(method: Text, url: Text, body: Text) -> Result[Reply, StdError]:
+    return http_reply(method, url, body)
 
-# Prints the finished receipt and the verdict; returns the exit code.
-fn finish(view: Json, key: Bytes, asked: Bool, question: Text, salt: Bytes, live: Bool) -> Int:
-    let status = json_as_text(json_get(view, "status"))
-    if status == "anchor-failed":
+fn real_pause(n: Int) -> Unit:
+    sleep_seconds(n)
+
+fn real_now() -> Int:
+    return unix_time_ms() // 1000
+
+# Prints the finished receipt and the verdict; returns the exit code. The verdict goes to stderr so
+# stdout stays the receipt alone.
+fn finish(d: Drawn) -> Int:
+    if d.status == "anchor-failed":
         eprint("the epoch's timestamps did not arrive in time, so this request has no receipt; send it again (a new nonce is made for you)")
         return 1
-    if status != "complete":
-        eprint("still pending; ask again with: lotcast get " + json_as_text(json_get(view, "id")))
-        show_waiting(view)
+    if d.status != "complete":
+        eprint("still pending; ask again with: lotcast get " + d.id)
+        for i in range(0, json_len(d.waiting_on)):
+            let w = unwrap(json_index_safe(d.waiting_on, i))
+            eprint("  waiting on " + json_as_text(json_get(w, "source")) + ": " + json_as_text(json_get(w, "detail")))
         return 4
-    let receipt = json_get(view, "receipt")
-    print(json_stringify(receipt))
-    return check_receipt_to_stderr(receipt, key, asked, question, salt, live)
-
-# The verdict goes to stderr so stdout stays the receipt alone.
-fn check_receipt_to_stderr(receipt: Json, key: Bytes, asked: Bool, question: Text, salt: Bytes, live: Bool) -> Int:
-    let verdict = verify_any(receipt, key, tsa_pins(), asked, question, salt)
-    eprint("verdict: " + verdict.result)
-    if verdict.result == "invalid":
-        eprint("failed step " + int_to_text(verdict.failed_step) + ": " + verdict.detail)
+    print(json_stringify(d.receipt))
+    eprint("verdict: " + d.check.verdict)
+    if d.check.verdict == "invalid":
+        eprint("failed step " + int_to_text(d.check.failed_step) + ": " + d.check.detail)
         return 1
-    if verdict.result == "verified-pending-live":
-        eprint(verdict.detail)
+    if d.check.verdict == "verified-pending-live":
+        eprint(d.check.detail)
         eprint("not fully checked: lotcast verify RECEIPT.json --live")
         return 3
     return 0
+
+fn log_to_stderr(id: Text, index: Int) -> Unit:
+    eprint("logged: index=" + int_to_text(index) + " id=" + id)
 
 pub fn cmd_draw(all: List[Text]) -> Int:
     let nonce = crypto_random_bytes(32)
@@ -198,40 +174,17 @@ pub fn cmd_draw(all: List[Text]) -> Int:
                 return say_error(why + " (nothing was sent)")
             Ok(ignored):
                 return 2
-    let posted = http_reply("POST", plan.server + "/v1/draws", plan.body)
-    if not is_ok(posted):
-        match posted:
-            Err(problem):
-                return say_error(problem.message)
-            Ok(ignored):
-                return 2
-    let reply = unwrap(posted)
-    if reply.status != 200 and reply.status != 202:
-        eprint("the service refused the request: " + error_message(reply.body))
-        return 1
-    let id = json_as_text(json_get(reply.body, "id"))
-    let doubt = binding_problem(reply.body, unwrap(key), plan.request_json, plan.entry_hash_hex, id)
-    if doubt != "":
-        eprint(doubt + ": do not trust this draw")
-        return 1
-    eprint("logged: index=" + int_to_text(json_as_int(json_get(reply.body, "index"))) + " id=" + id)
     if plan.has_question:
         eprint("salt=" + plan.salt_hex)
-    let view = poll_draw(plan.server, id, plan.wait_seconds)
-    if not is_ok(view):
-        match view:
+    let drawn = run_draw(plan, unwrap(key), real_send, real_pause, real_now, log_to_stderr)
+    if not is_ok(drawn):
+        match drawn:
             Err(why):
-                return say_error(why)
+                eprint(why)
+                return 1
             Ok(ignored):
                 return 2
-    var saltbytes = bytes_from_ints([])
-    if plan.has_question:
-        set saltbytes = unwrap(hex_decode(plan.salt_hex))
-    let later = binding_problem(unwrap(view), unwrap(key), plan.request_json, plan.entry_hash_hex, id)
-    if later != "":
-        eprint(later + ": do not trust this draw")
-        return 1
-    return finish(unwrap(view), unwrap(key), plan.has_question, plan.question, saltbytes, false)
+    return finish(unwrap(drawn))
 
 pub fn cmd_get(all: List[Text]) -> Int:
     let parsed = parse_flags(all, ["--server", "--operator-key", "--wait"], [])
@@ -258,18 +211,15 @@ pub fn cmd_get(all: List[Text]) -> Int:
         if not is_ok(n) or unwrap(n) < 0:
             return say_error("--wait takes seconds")
         set wait = unwrap(n)
-    let view = poll_draw(server, f.positional[0], wait)
-    if not is_ok(view):
-        match view:
+    let drawn = fetch_draw(server, f.positional[0], unwrap(key), wait, real_send, real_pause, real_now, "", "", false, "", bytes_from_ints([]))
+    if not is_ok(drawn):
+        match drawn:
             Err(why):
-                return say_error(why)
+                eprint(why)
+                return 1
             Ok(ignored):
                 return 2
-    let doubt = binding_problem(unwrap(view), unwrap(key), "", "", f.positional[0])
-    if doubt != "":
-        eprint(doubt + ": do not trust this draw")
-        return 1
-    return finish(unwrap(view), unwrap(key), false, "", bytes_from_ints([]), false)
+    return finish(unwrap(drawn))
 
 # ---------------------------------------------------------------- lotcast compute / audit
 
@@ -358,3 +308,78 @@ pub fn cmd_audit(all: List[Text]) -> Int:
 
 pub fn cmd_serve(all: List[Text]) -> Int:
     return serve_main(all)
+
+# ---------------------------------------------------------------- lotcast mcp
+
+fn mcp_flags() -> Result[Flags, Text]:
+    return parse_flags(args_from(1), ["--home", "--home-path", "--server", "--operator-key"], [])
+
+# The lotcast home is a directory under Guion's file root (`--home`, default the root itself), so
+# run: cd ~/.lotcast && guion run --file-root . .../lotcast.gu mcp. Guion confines files to relative
+# paths, but chmod resolves its path from the process's working directory, so it is given the file
+# root's absolute path: `--home-path`, else $PWD.
+fn mcp_root(f: Flags) -> Result[Text, Text]:
+    return Ok(flag_one(f, "--home", "."))
+
+fn mcp_absolute(f: Flags) -> Text:
+    let given = flag_one(f, "--home-path", "")
+    if given != "":
+        return given
+    match env("PWD"):
+        Some(v):
+            return v
+        None:
+            return ""
+
+fn mcp_random(n: Int) -> Bytes:
+    let r = crypto_random_bytes(n)
+    assert(is_ok(r))
+    return unwrap(r)
+
+# One tool call. Function values capture nothing, so the home and config are read again from the
+# command line and config.json each time; --server and --operator-key given by the person who
+# started the server override the file (a tool argument never can).
+fn mcp_call(name: Text, arguments: Json) -> Json:
+    let f = mcp_flags()
+    if not is_ok(f):
+        return tool_result("E_CONFIG: bad command line", true)
+    let root = mcp_root(unwrap(f))
+    if not is_ok(root):
+        return tool_result("E_CONFIG: no home", true)
+    let h = McpHome(unwrap(root), mcp_absolute(unwrap(f)))
+    let loaded = home_config(h)
+    if not is_ok(loaded):
+        match loaded:
+            Err(why):
+                return tool_result("E_CONFIG: " + why, true)
+            Ok(ignored):
+                return tool_result("E_CONFIG", true)
+    let c = unwrap(loaded)
+    let cfg = McpConfig(flag_one(unwrap(f), "--server", c.server), flag_one(unwrap(f), "--operator-key", c.operator_key_hex), c.sign_requests)
+    return call_tool(h, cfg, name, arguments, real_send, real_pause, real_now, mcp_random)
+
+pub fn cmd_mcp(all: List[Text]) -> Int:
+    let parsed = parse_flags(all, ["--home", "--home-path", "--server", "--operator-key"], [])
+    if not is_ok(parsed):
+        match parsed:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    if len(unwrap(parsed).positional) != 0:
+        return say_error("usage: lotcast mcp [--home DIR] [--server URL] [--operator-key HEX]")
+    let root = mcp_root(unwrap(parsed))
+    if not is_ok(root):
+        match root:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    let opened = home_open(unwrap(root), mcp_absolute(unwrap(parsed)))
+    if not is_ok(opened):
+        match opened:
+            Err(why):
+                return say_error("cannot use the lotcast home: " + why)
+            Ok(ignored):
+                return 2
+    return mcp_loop(mcp_call, tool_definitions(), "0.1.0")

@@ -1,0 +1,196 @@
+import "std:types"
+import "std:io"
+import "std:json"
+import "pkg:lotcast-core/src/lib.gu"
+
+# A Model Context Protocol server over stdio: one JSON-RPC 2.0 message per line. Nothing but those
+# lines is ever printed to stdout. `call(name, arguments)` runs a tool and returns its result object.
+
+fn ok_reply(id: Json, result: Json) -> Json:
+    var reply = json_object()
+    set reply = json_set(reply, "jsonrpc", json_text("2.0"))
+    set reply = json_set(reply, "id", id)
+    return json_set(reply, "result", result)
+
+fn error_reply(id: Json, code: Int, message: Text) -> Json:
+    var problem = json_object()
+    set problem = json_set(problem, "code", json_int(code))
+    set problem = json_set(problem, "message", json_text(message))
+    var reply = json_object()
+    set reply = json_set(reply, "jsonrpc", json_text("2.0"))
+    set reply = json_set(reply, "id", id)
+    return json_set(reply, "error", problem)
+
+pub fn tool_json(value: Json, is_error: Bool) -> Json:
+    return tool_result(json_stringify(value), is_error)
+
+pub fn tool_result(text: Text, is_error: Bool) -> Json:
+    var part = json_object()
+    set part = json_set(part, "type", json_text("text"))
+    set part = json_set(part, "text", json_text(text))
+    var content = json_array()
+    set content = json_push(content, part)
+    var result = json_object()
+    set result = json_set(result, "content", content)
+    return json_set(result, "isError", json_bool(is_error))
+
+fn supported_version(asked: Text) -> Text:
+    if asked == "2025-06-18" or asked == "2024-11-05":
+        return asked
+    return "2025-06-18"
+
+# The protocol version to answer with: the client's when this server speaks it, otherwise the newest it
+# does. Err when `params` or `protocolVersion` has the wrong type.
+fn requested_version(request: Json) -> Result[Text, JsonError]:
+    match json_get_safe(request, "params"):
+        Ok(params):
+            match json_get_safe(params, "protocolVersion"):
+                Ok(version):
+                    match json_text_safe(version):
+                        Ok(asked):
+                            return Ok(supported_version(asked))
+                        Err(problem):
+                            return Err(problem)
+                Err(problem):
+                    if json_error_code(problem) == "E_JSON_MISSING":
+                        return Ok("2024-11-05")
+                    return Err(problem)
+        Err(problem):
+            return Ok("2024-11-05")
+
+fn initialize_result(version: Text, server_version: Text) -> Json:
+    var info = json_object()
+    set info = json_set(info, "name", json_text("lotcast"))
+    set info = json_set(info, "version", json_text(server_version))
+    var capabilities = json_object()
+    set capabilities = json_set(capabilities, "tools", json_object())
+    var result = json_object()
+    set result = json_set(result, "protocolVersion", json_text(version))
+    set result = json_set(result, "capabilities", capabilities)
+    return json_set(result, "serverInfo", info)
+
+# The name and arguments of a tools/call, or None when malformed (wrong types, missing name).
+fn call_parts(request: Json) -> Option[Json]:
+    match json_get_safe(request, "params"):
+        Ok(params):
+            if not is_object(params):
+                return None
+            match json_get_text_safe(params, "name"):
+                Ok(name):
+                    var args = json_object()
+                    if json_has(params, "arguments"):
+                        match json_get_safe(params, "arguments"):
+                            Ok(given):
+                                if not is_object(given):
+                                    return None
+                                set args = given
+                            Err(problem):
+                                return None
+                    var parts = json_object()
+                    set parts = json_set(parts, "name", json_text(name))
+                    set parts = json_set(parts, "arguments", args)
+                    return Some(parts)
+                Err(problem):
+                    return None
+        Err(problem):
+            return None
+
+fn has_tool(tools: Json, name: Text) -> Bool:
+    for i in range(0, json_len(tools)):
+        let t = json_get_text_safe(unwrap(json_index_safe(tools, i)), "name")
+        if is_ok(t) and unwrap(t) == name:
+            return true
+    return false
+
+fn answer(id: Json, method: Text, request: Json, call: fn(Text, Json) -> Json, tools: Json, server_version: Text) -> Json:
+    if method == "initialize":
+        match requested_version(request):
+            Ok(version):
+                return ok_reply(id, initialize_result(version, server_version))
+            Err(problem):
+                return error_reply(id, -32602, "Invalid params")
+    if method == "ping":
+        return ok_reply(id, json_object())
+    if method == "tools/list":
+        return ok_reply(id, json_set(json_object(), "tools", tools))
+    if method == "tools/call":
+        let parts = call_parts(request)
+        if not is_some(parts):
+            return error_reply(id, -32602, "Invalid params")
+        let p = unwrap(parts)
+        if not has_tool(tools, json_as_text(json_get(p, "name"))):
+            return error_reply(id, -32602, "Unknown tool: " + json_as_text(json_get(p, "name")))
+        return ok_reply(id, call(json_as_text(json_get(p, "name")), json_get(p, "arguments")))
+    return error_reply(id, -32601, "Method not found")
+
+fn id_ok(id: Json) -> Bool:
+    return is_ok(json_text_safe(id)) or is_ok(json_int_safe(id)) or json_is_null(id)
+
+# One parsed message in; the reply out, or None for a notification or a client's response.
+pub fn mcp_handle(request: Json, call: fn(Text, Json) -> Json, tools: Json, server_version: Text) -> Option[Json]:
+    if not is_object(request):
+        return Some(error_reply(json_null(), -32600, "Invalid Request"))
+    var id = json_null()
+    var has_id = false
+    match json_get_safe(request, "id"):
+        Ok(found):
+            if not id_ok(found):
+                return Some(error_reply(json_null(), -32600, "Invalid Request: id must be a string, a number or null"))
+            set id = found
+            set has_id = true
+        Err(problem):
+            pass
+    let version = json_get_text_safe(request, "jsonrpc")
+    if not is_ok(version) or unwrap(version) != "2.0":
+        return Some(error_reply(id, -32600, "Invalid Request: jsonrpc must be 2.0"))
+    match json_get_text_safe(request, "method"):
+        Ok(method):
+            if has_id:
+                return Some(answer(id, method, request, call, tools, server_version))
+            return None
+        Err(problem):
+            if has_id and (json_has(request, "result") or json_has(request, "error")):
+                return None
+            return Some(error_reply(id, -32600, "Invalid Request"))
+
+# One input line in, one output line out (None for a blank line or a notification).
+pub fn mcp_line(line: Text, call: fn(Text, Json) -> Json, tools: Json, server_version: Text) -> Option[Text]:
+    if len(line) == 0:
+        return None
+    match json_parse(line):
+        Ok(request):
+            let reply = mcp_handle(request, call, tools, server_version)
+            if is_some(reply):
+                return Some(json_stringify(unwrap(reply)))
+            return None
+        Err(problem):
+            return Some(json_stringify(error_reply(json_null(), -32700, "Parse error")))
+
+# What to say when stdin could not be read: a line over the limit is answered and reading goes on;
+# any other failure is the end of input.
+pub fn mcp_read_failed(code: Text) -> Option[Text]:
+    if code == "E_STDIN_LINE_LIMIT":
+        return Some(json_stringify(error_reply(json_null(), -32600, "Invalid Request: the line is too long")))
+    if code == "E_STDIN_UTF8":
+        return Some(json_stringify(error_reply(json_null(), -32700, "Parse error: the line is not UTF-8")))
+    return None
+
+pub fn mcp_loop(call: fn(Text, Json) -> Json, tools: Json, server_version: Text) -> Int:
+    var going = true
+    while going:
+        match stdin_read_line():
+            Ok(next):
+                match next:
+                    Some(line):
+                        let out = mcp_line(line, call, tools, server_version)
+                        if is_some(out):
+                            print(unwrap(out))
+                    None:
+                        set going = false
+            Err(problem):
+                let out = mcp_read_failed(problem.code)
+                if is_some(out):
+                    print(unwrap(out))
+                else:
+                    set going = false
+    return 0

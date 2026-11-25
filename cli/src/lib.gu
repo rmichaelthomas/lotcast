@@ -5,6 +5,11 @@ pub import "compute.gu"
 pub import "client.gu"
 pub import "plan.gu"
 pub import "bind.gu"
+pub import "run.gu"
+pub import "home.gu"
+pub import "mcp_rpc.gu"
+pub import "mcp_tools.gu"
+pub import "mcp_calls.gu"
 pub import "commands.gu"
 
 pub fn lotcast_cli_version() -> Text:

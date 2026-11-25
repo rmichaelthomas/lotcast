@@ -959,3 +959,18 @@ fn test_rate_sweep_deletes_buckets_older_than_the_window_and_keeps_recent_ones()
     assert(len(bucket_files(root)) == 1)
     assert(rate_sweep(store, 1795556200) == 1)
     assert(len(bucket_files(root)) == 0)
+
+# ---- shutdown: SIGTERM and Ctrl-C stop the loops between steps; a hang-up does not
+fn test_term_and_int_ask_the_service_to_stop_and_nothing_else_does() -> Unit:
+    assert(signal_requests_stop("TERM"))
+    assert(signal_requests_stop("INT"))
+    assert(not signal_requests_stop("HUP"))
+    assert(not signal_requests_stop(""))
+    assert(not signal_requests_stop("USR1"))
+
+fn test_a_stop_request_writes_the_stop_marker_the_loops_watch() -> Unit:
+    let root = unwrap(fs_temp_dir("lotcast-shutdown"))
+    let store = unwrap(store_open(root))
+    assert(not store_has(store, "state/stop"))
+    assert(is_ok(request_stop(store)))
+    assert(store_has(store, "state/stop"))

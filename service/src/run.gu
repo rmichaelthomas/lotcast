@@ -39,6 +39,8 @@ fn run_job(job: Job) -> Int:
         return writer_loop(store, job.cfg, job.seed, 0)
     if job.kind == 2:
         return stamper_loop(store, 0)
+    if job.kind == 4:
+        return signal_loop(store)
     return watch_loop(store, job.cfg, job.key, 0)
 
 # A key file (not used on Cloudflare, where the key is a secret) is always on the local disk.
@@ -114,9 +116,9 @@ pub fn serve_main(all: List[Text]) -> Int:
     let cleared = vfs_remove(unwrap(cfg).data_dir + "/state/stop")
     eprint("operator_key=" + hex_encode(unwrap(public)))
     var jobs: List[Job] = []
-    for kind in [0, 1, 2, 3]:
+    for kind in [0, 1, 2, 3, 4]:
         set jobs = list_push(jobs, Job(kind, unwrap(cfg), unwrap(seed), unwrap(public)))
-    match parallel_map(jobs, run_job, 4):
+    match parallel_map(jobs, run_job, 5):
         Ok(codes):
             return 0
         Err(problem):

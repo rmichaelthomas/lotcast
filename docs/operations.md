@@ -98,6 +98,10 @@ Docker on the machine that deploys.
   are not copied; the copy holds no secret, but keep it private anyway (it has every question hash and
   receipt). A receipt in the copy verifies with `lotcast verify`. Cloudflare's point-in-time recovery for
   SQLite Durable Objects is a second safety net. Keep the operator seed itself somewhere safe too (see above).
+- **Stopping.** The container gets SIGTERM; the service catches it (`signal_loop` in `service/src/loops.gu`),
+  writes `state/stop`, and the writer, stamper and watcher loops finish their current step and return, so none is cut
+  off mid-step. The HTTP server has no way to stop (Guion's web package has none), so after ten seconds the Durable
+  Object kills the process. The marker is cleared at the next start.
 - **Idle.** The Durable Object checks on every alarm (every few minutes while the container runs) and stops
   the container after 30 minutes (`IDLE_MINUTES`) without an outside request, but not while `GET /v1/status`
   reports a pending draw. If the service cannot be asked, the container is kept (it is stopped only after five

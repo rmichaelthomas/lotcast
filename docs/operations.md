@@ -98,13 +98,18 @@ Docker on the machine that deploys.
   are not copied; the copy holds no secret, but keep it private anyway (it has every question hash and
   receipt). A receipt in the copy verifies with `lotcast verify`. Cloudflare's point-in-time recovery for
   SQLite Durable Objects is a second safety net. Keep the operator seed itself somewhere safe too (see above).
+- **Stopping.** The container gets SIGTERM; the service catches it (`signal_loop` in `service/src/loops.gu`),
+  writes `state/stop`, and the writer, stamper and watcher loops finish their current step and return, so none is cut
+  off mid-step. The HTTP server has no way to stop (Guion's web package has none), so after ten seconds the Durable
+  Object kills the process. The marker is cleared at the next start.
 - **Idle.** The Durable Object checks on every alarm (every few minutes while the container runs) and stops
   the container after 30 minutes (`IDLE_MINUTES`) without an outside request, but not while `GET /v1/status`
   reports a pending draw. If the service cannot be asked, the container is kept (it is stopped only after five
   checks in a row fail). While it is being stopped, new requests wait and then meet a fresh container, so no
   draw is accepted by a container about to go. If the container exits with draws pending, the Durable Object
   starts it again. `GET /internal/diag` (bearer token, as for the store) shows `lastSeen`, `lastAlarm`,
-  `lastCheck` and `outcome` (what the last check decided).
+  `lastCheck`, `outcome` (what the last check decided) and `lastExit` (the exit code and reason of the last time the
+  container stopped).
 - **Log origin.** The log's origin line is `lotcast.local/log`. A C2SP origin is only a unique name, not an
   address, and it is inside every signed checkpoint, so changing it would break the existing log; leave it.
 - **Store outages.** A server error from the store is retried for up to ten minutes, and an existence check

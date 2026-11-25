@@ -47,3 +47,10 @@ test('a file too big for one database row is refused', () => {
   assert.equal(tooLarge(1024), false);
   assert.equal(tooLarge(1_900_000), true);
 });
+
+test('the image runs guion as process 1 (exec), so SIGTERM reaches the service and not a shell', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const dockerfile = await readFile(new URL('../../../service/Dockerfile', import.meta.url), 'utf8');
+  const cmd = dockerfile.split('\n').filter((line) => line.startsWith('CMD ')).join(' ');
+  assert.match(cmd, /&& exec guion run /);
+});

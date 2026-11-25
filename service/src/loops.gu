@@ -27,6 +27,27 @@ fn now_seconds() -> Int:
 fn stopped(store: Store) -> Bool:
     return store_has(store, "state/stop")
 
+# Which signals mean "stop": TERM (what a container host sends first) and INT (Ctrl-C). A hang-up is ignored.
+pub fn signal_requests_stop(signal: Text) -> Bool:
+    return signal == "TERM" or signal == "INT"
+
+# Writes the marker the writer, stamper and watcher loops look for, so each finishes its current step and
+# returns instead of being cut off in the middle of one.
+pub fn request_stop(store: Store) -> Result[Bool, StdError]:
+    return store_put_json(store, "state/stop", json_object())
+
+# Polls for signals (the program handles them itself once it polls) and, on a stop signal, asks the loops
+# to stop. The HTTP server has no way to stop; it ends when the container host kills the process.
+pub fn signal_loop(store: Store) -> Int:
+    while not stopped(store):
+        let signal = process_signal_poll()
+        if signal_requests_stop(signal):
+            eprint("stopping: " + signal)
+            let marked = request_stop(store)
+            return 0
+        sleep_ms(500)
+    return 0
+
 # ---------------------------------------------------------------- the real adapters
 
 pub fn real_stamp(note: Text, tsa_ids: List[Text]) -> Result[Json, StdError]:

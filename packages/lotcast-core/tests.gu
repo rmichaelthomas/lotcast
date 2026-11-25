@@ -1258,3 +1258,12 @@ fn test_draw_request_body_has_no_commitment_without_a_question() -> Unit:
 fn test_view_problem_rejects_an_unknown_status() -> Unit:
     let view = json_set(json_set(json_set(json_object(), "id", json_text("x")), "index", json_int(1)), "status", json_text("weird"))
     assert(view_problem(view) != "")
+
+fn test_view_is_queued_only_for_a_pending_view_waiting_on_the_log_without_a_promise() -> Unit:
+    let waiting = json_push(json_array(), json_set(json_object(), "source", json_text("log")))
+    let queued = json_set(json_set(json_set(json_object(), "id", json_text("x")), "status", json_text("pending")), "waiting_on", waiting)
+    assert(view_is_queued(queued))
+    assert(not view_is_queued(json_set(queued, "promise", json_text("p"))))
+    assert(not view_is_queued(json_set(queued, "status", json_text("complete"))))
+    assert(not view_is_queued(json_set(queued, "waiting_on", json_array())))
+    assert(not view_is_queued(json_array()))

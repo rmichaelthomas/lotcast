@@ -45,7 +45,7 @@ exports = [
     "src/receipt.gu",
     "src/anchored.gu",
 ]
-sha256 = "125844969f3fef804028572f26d5a1e37ec1e7b4110a577a986f46e011a85fbe"
+sha256 = "ad3df03127739ad283f0c4590c60833db8844bbd84ef852ae97aa3cf894a6386"
 source = "../packages/lotcast-core"
 source_kind = "path"
 version = "0.1.0"

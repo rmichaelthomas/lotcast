@@ -472,6 +472,45 @@ fn test_run_draw_hands_over_the_id_before_it_polls() -> Unit:
     assert(unwrap(read_text("logged-marker.txt")) == fx_id() + " 0")
     let tidy = fs_remove("logged-marker.txt")
 
+fn queued_view() -> Json:
+    var v = json_set(json_object(), "id", json_text(fx_id()))
+    set v = json_set(v, "status", json_text("pending"))
+    set v = json_set(v, "waiting_on", json_push(json_array(), json_set(json_set(json_object(), "source", json_text("log")), "detail", json_text("the request is queued for the log"))))
+    return json_set(v, "poll_after_ms", json_int(500))
+
+# POST answers 202 with a queued view; the first GET is still queued, the second is the complete draw.
+fn send_queued_then_complete(method: Text, url: Text, body: Text) -> Result[Reply, StdError]:
+    if method == "POST":
+        return Ok(Reply(202, queued_view()))
+    let seen = fs_exists("queued-marker.txt")
+    if is_ok(seen) and unwrap(seen):
+        return Ok(Reply(200, view_of_fixture()))
+    let wrote = write_text("queued-marker.txt", "1")
+    return Ok(Reply(200, queued_view()))
+
+fn marker_log_to_file(id: Text, index: Int) -> Unit:
+    let w = write_text("queued-logged.txt", id + " " + int_to_text(index))
+
+fn test_run_draw_waits_out_a_queued_202_and_then_binds_the_draw() -> Unit:
+    let gone = fs_remove("queued-marker.txt")
+    let gone2 = fs_remove("queued-logged.txt")
+    let d = unwrap(run_draw(fx_plan(30), fixture_key(), send_queued_then_complete, no_pause, zero_now, marker_log_to_file))
+    assert(d.status == "complete")
+    assert(d.check.verdict == "verified")
+    assert(unwrap(read_text("queued-logged.txt")) == fx_id() + " 0")
+    let tidy = fs_remove("queued-marker.txt")
+    let tidy2 = fs_remove("queued-logged.txt")
+
+fn send_queued_forever(method: Text, url: Text, body: Text) -> Result[Reply, StdError]:
+    return Ok(Reply(202, queued_view()))
+
+fn test_run_draw_with_a_queued_reply_that_never_logs_is_an_error_not_a_lie() -> Unit:
+    assert(not is_ok(run_draw(fx_plan(6), fixture_key(), send_queued_forever, no_pause, zero_now, no_log)))
+
+fn test_run_draw_rejects_a_queued_reply_for_a_different_entry() -> Unit:
+    let plan = DrawPlan("http://svc", "{}", "00" + text_slice(fixture_hash(), 2, len(fixture_hash())), false, "", "", 6, "", "{}")
+    assert(not is_ok(run_draw(plan, fixture_key(), send_queued_then_complete, no_pause, zero_now, no_log)))
+
 fn test_check_value_pending_live_without_the_live_flag_stays_pending() -> Unit:
     let r = unwrap(json_parse(unwrap(read_text("fixtures/receipt-pending-live.json"))))
     let key = unwrap(hex_decode(text_trim(unwrap(read_text("fixtures/pending-live-operator-key.hex")))))

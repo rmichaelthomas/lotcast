@@ -126,3 +126,20 @@ pub fn draw_request_body(r: DrawRequest) -> Json:
     if r.question_mode == 1:
         set body = json_set(body, "commitment", json_text(hex_encode(r.question_commit)))
     return body
+
+# A view the service answers while the writer has not logged the request yet: status pending, waiting on
+# "log", and no promise. It names the draw but promises nothing, so there is nothing to bind yet.
+pub fn view_is_queued(view: Json) -> Bool:
+    if not is_object(view):
+        return false
+    let status = json_get_text_safe(view, "status")
+    if not is_ok(status) or unwrap(status) != "pending" or is_ok(json_get_safe(view, "promise")):
+        return false
+    let waiting = json_get_safe(view, "waiting_on")
+    if not is_ok(waiting) or not is_array(unwrap(waiting)):
+        return false
+    for i in range(0, json_len(unwrap(waiting))):
+        let item = json_index_safe(unwrap(waiting), i)
+        if is_ok(item) and is_ok(json_get_text_safe(unwrap(item), "source")) and unwrap(json_get_text_safe(unwrap(item), "source")) == "log":
+            return true
+    return false

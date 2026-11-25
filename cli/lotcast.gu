@@ -13,13 +13,14 @@ import "src/lib.gu"
 #   lotcast verify RECEIPT.json [--live] [--operator-key HEX | --server URL] [--question TEXT --salt HEX]
 #   lotcast compute LOG-INDEX --mirror URL-or-DIRECTORY [--operator-key HEX | --server URL]
 #   lotcast audit --mirror A --mirror B [...] [--operator-key HEX | --server URL]
+#   lotcast mcp [--home DIR] [--server URL] [--operator-key HEX]   (a stdio MCP server; see cli/README.md)
 #   lotcast serve --data-dir DIR --key-file FILE [...]
 #
 # Exit codes: 0 done and verified, 1 invalid or failed, 2 bad arguments or unreadable input,
 # 3 verified except for a live check still owed, 4 still pending.
 
 fn usage() -> Int:
-    eprint("usage: lotcast draw|get|verify|compute|audit|serve ARGS...  (see the header of lotcast.gu)")
+    eprint("usage: lotcast draw|get|verify|compute|audit|mcp|serve ARGS...  (see the header of lotcast.gu)")
     return 2
 
 fn rest_of(all: List[Text]) -> List[Text]:
@@ -43,6 +44,8 @@ fn main() -> Int:
         return cmd_compute(rest)
     if all[0] == "audit":
         return cmd_audit(rest)
+    if all[0] == "mcp":
+        return cmd_mcp(rest)
     if all[0] == "serve":
         return cmd_serve(rest)
     return usage()

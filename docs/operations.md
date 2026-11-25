@@ -52,6 +52,13 @@ key is written to `state/operator_key.hex`, printed once on stderr and served at
 Publish it somewhere clients can pin it. Rotating the key means a new log and a new origin: freeze the
 old log, cross-sign its last checkpoint, and keep serving old receipts.
 
+## Pinning the operator key for MCP clients
+
+`lotcast mcp` takes the service's operator key from `GET /v1/operator` the first time it talks to a server and
+pins it in `pinned.json`; a different key later is refused with `E_KEY_CHANGED`. For anything that matters, put the
+key you got from the operator out of band in the client's `config.json` (`"operator_key": "HEX"`) before the first
+draw. After a deliberate key rotation, delete the server's entry from `pinned.json`.
+
 ## Pins
 
 `GET /v1/sources` lists each beacon's latest pulse and every pinned certificate's days left. The watcher

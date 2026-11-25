@@ -1,6 +1,7 @@
 import "std:types"
 import "std:fs"
 import "std:json"
+import "std:process"
 import "std:text"
 import "std:crypto"
 import "std:encoding"
@@ -122,8 +123,11 @@ fn test_no_mcp_source_prints_to_stdout() -> Unit:
 
 # ---------------------------------------------------------------- the tools
 
+fn project_dir() -> Text:
+    return text_trim(unwrap(process_run("pwd", [], "")).stdout)
+
 fn fresh_home() -> McpHome:
-    return unwrap(home_open(unwrap(fs_temp_dir("lotcast-mcp")) + "/home"))
+    return unwrap(home_open(unwrap(fs_temp_dir("lotcast-mcp")) + "/home", project_dir()))
 
 fn fixture_receipt() -> Json:
     return unwrap(json_parse(unwrap(read_text("fixtures/receipt.json"))))
@@ -303,7 +307,7 @@ fn test_get_draw_completes_and_resumes_after_a_restart() -> Unit:
     assert(json_as_text(json_get(out, "verdict")) == "verified")
     assert(json_as_int(json_get(json_get(out, "positions"), "hexagram")) == 17)
     assert(json_as_text(json_get(json_get(out, "names"), "hexagram")) != "")
-    let again = McpHome(h.root)
+    let again = McpHome(h.root, project_dir())
     assert(is_ok(home_load_receipt(again, fixture_id())))
     let r2 = call_tool(again, cfg_with(fixture_key_hex()), "get_draw", args, send_fixture, no_pause, fixed_random)
     assert(not failed(r2))
@@ -377,3 +381,10 @@ fn test_list_traditions_and_describe_method() -> Unit:
 
 fn test_the_tool_source_never_prints() -> Unit:
     assert(text_find(unwrap(read_text("src/mcp_calls.gu")), "print(", 0) < 0)
+
+fn test_mcp_command_requires_a_private_home() -> Unit:
+    let dir = unwrap(fs_temp_dir("lotcast-mcp-cmd"))
+    assert(is_ok(write_text(dir + "/afile", "x")))
+    assert(cmd_mcp(["--home", dir + "/afile/home"]) == 2)
+    assert(cmd_mcp(["extra"]) == 2)
+    assert(cmd_mcp(["--nope"]) == 2)

@@ -1,0 +1,50 @@
+import "std:types"
+import "std:crypto"
+import "std:fs"
+import "std:json"
+import "std:text"
+import "src/lib.gu"
+
+# A real draw through the MCP tools against a running `lotcast serve` (default http://127.0.0.1:8080).
+#
+#   cd EMPTY_DIR && guion run --file-root . --allow-clock --allow-http-host 127.0.0.1 \
+#       --allow-http-host api.drand.sh --allow-http-host drand.cloudflare.com PATH/TO/cli/tests_live_mcp.gu
+#
+# The service's inbox and log must hold no trace of the question: check with grep afterwards.
+
+fn pause(n: Int) -> Unit:
+    let slept = sleep_ms(n * 1000)
+
+fn random(n: Int) -> Bytes:
+    return unwrap(crypto_random_bytes(n))
+
+fn text_of(result: Json) -> Text:
+    return json_as_text(json_get(unwrap(json_index_safe(json_get(result, "content"), 0)), "text"))
+
+fn send(method: Text, url: Text, body: Text) -> Result[Reply, StdError]:
+    return http_reply(method, url, body)
+
+fn main() -> Int:
+    var here = ""
+    match env("PWD"):
+        Some(v):
+            set here = v
+        None:
+            pass
+    let h = unwrap(home_open(".", here))
+    let cfg = McpConfig("http://127.0.0.1:8080", "", false)
+    var a = json_set(json_object(), "tradition", json_text("iching"))
+    set a = json_set(a, "method", json_text("coins"))
+    set a = json_set(a, "question", json_text("Is this a live test?"))
+    set a = json_set(a, "sources", json_push(json_array(), json_text("drand-quicknet")))
+    set a = json_set(a, "wait_seconds", json_int(150))
+    let r = call_tool(h, cfg, "draw", a, send, pause, random)
+    let out = unwrap(json_parse(text_of(r)))
+    assert(json_as_text(json_get(out, "verdict")) == "verified")
+    let id = json_as_text(json_get(out, "id"))
+    let again = call_tool(h, cfg, "get_draw", json_set(json_object(), "id", json_text(id)), send, pause, random)
+    assert(json_as_text(json_get(unwrap(json_parse(text_of(again))), "verdict")) == "verified")
+    let opened = call_tool(h, cfg, "open_sealed", json_set(json_object(), "id", json_text(id)), send, pause, random)
+    assert(json_as_text(json_get(unwrap(json_parse(text_of(opened))), "question")) == "Is this a live test?")
+    print("live mcp ok " + id)
+    return 0

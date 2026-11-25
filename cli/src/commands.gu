@@ -17,6 +17,10 @@ import "client.gu"
 import "plan.gu"
 import "bind.gu"
 import "run.gu"
+import "home.gu"
+import "mcp_rpc.gu"
+import "mcp_tools.gu"
+import "mcp_calls.gu"
 
 # The `lotcast` subcommands. Exit codes: 0 done and verified, 1 invalid or failed, 2 bad arguments
 # or unreadable input, 3 verified except for a live check still owed, 4 still pending.
@@ -301,3 +305,78 @@ pub fn cmd_audit(all: List[Text]) -> Int:
 
 pub fn cmd_serve(all: List[Text]) -> Int:
     return serve_main(all)
+
+# ---------------------------------------------------------------- lotcast mcp
+
+fn mcp_flags() -> Result[Flags, Text]:
+    return parse_flags(args_from(1), ["--home", "--home-path", "--server", "--operator-key"], [])
+
+# The lotcast home is a directory under Guion's file root (`--home`, default the root itself), so
+# run: cd ~/.lotcast && guion run --file-root . .../lotcast.gu mcp. Guion confines files to relative
+# paths, but chmod resolves its path from the process's working directory, so it is given the file
+# root's absolute path: `--home-path`, else $PWD.
+fn mcp_root(f: Flags) -> Result[Text, Text]:
+    return Ok(flag_one(f, "--home", "."))
+
+fn mcp_absolute(f: Flags) -> Text:
+    let given = flag_one(f, "--home-path", "")
+    if given != "":
+        return given
+    match env("PWD"):
+        Some(v):
+            return v
+        None:
+            return ""
+
+fn mcp_random(n: Int) -> Bytes:
+    let r = crypto_random_bytes(n)
+    assert(is_ok(r))
+    return unwrap(r)
+
+# One tool call. Function values capture nothing, so the home and config are read again from the
+# command line and config.json each time; --server and --operator-key given by the person who
+# started the server override the file (a tool argument never can).
+fn mcp_call(name: Text, arguments: Json) -> Json:
+    let f = mcp_flags()
+    if not is_ok(f):
+        return tool_result("E_CONFIG: bad command line", true)
+    let root = mcp_root(unwrap(f))
+    if not is_ok(root):
+        return tool_result("E_CONFIG: no home", true)
+    let h = McpHome(unwrap(root), mcp_absolute(unwrap(f)))
+    let loaded = home_config(h)
+    if not is_ok(loaded):
+        match loaded:
+            Err(why):
+                return tool_result("E_CONFIG: " + why, true)
+            Ok(ignored):
+                return tool_result("E_CONFIG", true)
+    let c = unwrap(loaded)
+    let cfg = McpConfig(flag_one(unwrap(f), "--server", c.server), flag_one(unwrap(f), "--operator-key", c.operator_key_hex), c.sign_requests)
+    return call_tool(h, cfg, name, arguments, real_send, real_pause, mcp_random)
+
+pub fn cmd_mcp(all: List[Text]) -> Int:
+    let parsed = parse_flags(all, ["--home", "--home-path", "--server", "--operator-key"], [])
+    if not is_ok(parsed):
+        match parsed:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    if len(unwrap(parsed).positional) != 0:
+        return say_error("usage: lotcast mcp [--home DIR] [--server URL] [--operator-key HEX]")
+    let root = mcp_root(unwrap(parsed))
+    if not is_ok(root):
+        match root:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    let opened = home_open(unwrap(root), mcp_absolute(unwrap(parsed)))
+    if not is_ok(opened):
+        match opened:
+            Err(why):
+                return say_error("cannot use the lotcast home: " + why)
+            Ok(ignored):
+                return 2
+    return mcp_loop(mcp_call, tool_definitions(), "0.1.0")

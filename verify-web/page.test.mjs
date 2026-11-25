@@ -99,3 +99,10 @@ test('the result area has a Forget this draw on this device control, next to Dra
   assert.match(html, /<button type="button" class="btn quiet" id="forget">Forget this draw on this device<\/button>/);
   assert.ok(html.indexOf('id="forget"') > html.indexOf('id="draw-again"'));
 });
+
+test('the page has its own favicon, so browsers do not ask the server for /favicon.ico', async () => {
+  const link = html.match(/<link rel="icon" href="([^"]+)"/);
+  assert.ok(link, 'no <link rel="icon">');
+  assert.doesNotMatch(link[1], /^(https?:)?\/\//);
+  await readFile(new URL(link[1], 'file://' + process.cwd() + '/public/'));
+});

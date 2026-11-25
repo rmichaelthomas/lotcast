@@ -16,7 +16,7 @@ WORKDIR /app/service
 RUN guion update
 ENV PORT=8080
 EXPOSE 8080
-# --trust-proxy 1: Railway puts exactly one proxy in front, and the rate limit needs its client address.
+# --trust-proxy 1: exactly one proxy (the Cloudflare Worker) sits in front, and the rate limit needs its client address.
 # File paths in `guion run` are relative to --file-root (/data), so the registry is copied there first.
 CMD cp /app/registry/lotcast-registry-v1.json /data/registry.json && guion run --allow-bind 0.0.0.0:${PORT} --allow-clock --file-root /data \
     --allow-http-host api.drand.sh --allow-http-host drand.cloudflare.com \

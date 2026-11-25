@@ -74,11 +74,12 @@ a server no peer address, so the client is named only by the proxy in front: run
 request shares one bucket. A request carries no question text, IP address or account, and the service
 writes no access log; delete anything your host keeps after 24 hours.
 
-## Deploying on Railway
+## Deploying on Cloudflare
 
-`service/railway.toml` and `service/Dockerfile` build the image from the repository root. Attach a volume
-at `/data`, set `LOTCAST_OPERATOR_KEY` as a secret, and generate a domain. Sync `log/` to a public bucket
-for mirrors if you want one.
+Lotcast runs as a Cloudflare Container behind one Worker, at the `*.workers.dev` address Cloudflare gives the
+Worker, with the log in an R2 bucket. `service/Dockerfile` builds the service image from the repository root;
+`deploy/cloudflare/` holds the Worker. The commands, where the operator key lives and how to back up are
+filled in when the service goes live.
 
 ## API codes
 

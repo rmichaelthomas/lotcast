@@ -69,9 +69,12 @@ Replace a TSA pin with `packages/lotcast-log/scripts/fetch_tsa_fixtures.sh` and
 ## Limits and privacy
 
 60 `POST /v1/draws` per minute per client, a 64 KiB body, `not_before` at most 400 days ahead. Guion gives
-a server no peer address, so the client is named only by the proxy in front: run behind one and pass
-`--trust-proxy N` (the Nth entry from the right of `X-Forwarded-For`). With `--trust-proxy 0` every
-request shares one bucket. A request carries no question text, IP address or account, and the service
+a server the address of the connection (`request.peer`), so with `--trust-proxy 0` (the default) the client is
+the host of that address and each client has its own bucket; a header the client sends is ignored. Behind a
+proxy that address is the proxy's, so pass `--trust-proxy N` and the client is the Nth entry from the right of
+`X-Forwarded-For` (the one the Nth proxy added; the entries to its left are whatever the client claimed).
+A bucket is named by a salted hash, never by the address, and its file is deleted a minute after the client's
+last request. A request carries no question text, IP address or account, and the service
 writes no access log; delete anything your host keeps after 24 hours.
 
 ## Deploying on Cloudflare
@@ -98,10 +101,13 @@ Docker on the machine that deploys.
   are not copied; the copy holds no secret, but keep it private anyway (it has every question hash and
   receipt). A receipt in the copy verifies with `lotcast verify`. Cloudflare's point-in-time recovery for
   SQLite Durable Objects is a second safety net. Keep the operator seed itself somewhere safe too (see above).
-- **Stopping.** The container gets SIGTERM; the service catches it (`signal_loop` in `service/src/loops.gu`),
-  writes `state/stop`, and the writer, stamper and watcher loops finish their current step and return, so none is cut
-  off mid-step. The HTTP server has no way to stop (Guion's web package has none), so after ten seconds the Durable
-  Object kills the process. The marker is cleared at the next start.
+- **Stopping.** The container gets SIGTERM. The service polls for signals from the start (`serve_main` in
+  `service/src/run.gu`), so TERM, INT and HUP are requests to stop and not a kill: the HTTP server (Guion's web
+  `serve`) finishes the requests it is handling and returns, and `signal_loop` (`service/src/loops.gu`) writes
+  `state/stop` so the writer, stamper and watcher loops finish their current step and return. None is cut off
+  mid-step and the process exits by itself. The Durable Object waits up to ten seconds for that and only then
+  destroys the container, as a fallback for a process that does not exit (it should not be reached: the
+  `outcome` in `/internal/diag` says `stopped` or `killed`). The marker is cleared at the next start.
 - **Idle.** The Durable Object checks on every alarm (every few minutes while the container runs) and stops
   the container after 30 minutes (`IDLE_MINUTES`) without an outside request, but not while `GET /v1/status`
   reports a pending draw. If the service cannot be asked, the container is kept (it is stopped only after five

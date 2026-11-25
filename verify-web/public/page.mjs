@@ -3,7 +3,7 @@
 // Everything that needs trust runs in Guion (verify.gub); see draw-flow.mjs.
 import { loadModules, run } from './loader.mjs';
 import { makeVm, startDraw, pollDraw, resumePending, resumeLast, forgetLast, loadRegistry, chooseOperatorKey, STEPS } from './draw-flow.mjs';
-import { hexagram, cards, cardFace } from './names.mjs';
+import { hexagram, cards, cardFace, tarotWording } from './names.mjs';
 
 const $ = (id) => document.getElementById(id);
 const MAX_TEXT = 65536;
@@ -193,6 +193,7 @@ function renderCards(outcome) {
     faceBox.setAttribute('aria-label', `${c.name}, ${c.reversed ? 'reversed' : 'upright'}`);
     if (c.reversed) faceBox.setAttribute('data-reversed', '');
     li.querySelector('.num').textContent = face.numeral ?? '';
+    li.querySelector('.num').classList.toggle('underline', face.underline);
     li.querySelector('.art').replaceChildren(cardArt(c.id));
     li.querySelector('.nm').textContent = c.name;
     li.querySelector('.pos').textContent = String(c.position);
@@ -240,13 +241,14 @@ function renderHexagram(outcome, reg) {
   return h;
 }
 
-function showSeal(verdict, what) {
+function showSeal(verdict, what, count = 0) {
+  const words = tarotWording(count);
   const [state, headline] = HEADLINES[verdict.verdict] ?? ['unreadable', 'Unexpected answer.'];
   const row = $('seal-row');
   row.dataset.state = state;
   if (verdict.verdict === 'verified') {
-    $('verdict-head').textContent = what === 'cards' ? "Verified. These cards weren't re-drawn." : "Verified. This draw wasn't re-rolled.";
-    $('verdict-detail').textContent = `Checked in your browser: your request was logged first, and ${what === 'cards' ? 'these cards follow' : 'these lines follow'} from public random numbers.`;
+    $('verdict-head').textContent = what === 'cards' ? words.verified : "Verified. This draw wasn't re-rolled.";
+    $('verdict-detail').textContent = `Checked in your browser: your request was logged first, and ${what === 'cards' ? words.follows : 'these lines follow'} from public random numbers.`;
   } else {
     $('verdict-head').textContent = headline;
     $('verdict-detail').textContent = verdict.detail;
@@ -262,12 +264,15 @@ async function showResult(done, pending) {
   let facts;
   if (isTarot) {
     const list = renderCards(done.outcome);
+    const words = tarotWording(list.length);
+    $('tarot-lead').textContent = words.lead;
+    $('tarot-emphasis').textContent = words.emphasis;
     facts = `Draw no. ${index} in the public log · ${list.map((c) => `${c.id.replace('tarot:rws:', '')}${c.reversed ? ' reversed' : ''}`).join(', ')}`;
   } else {
     renderHexagram(done.outcome, reg);
     facts = `Draw no. ${index} in the public log · lines ${done.outcome.lines.join(' ')}, bottom up`;
   }
-  showSeal(done.verdict, isTarot ? 'cards' : 'lines');
+  showSeal(done.verdict, isTarot ? 'cards' : 'lines', isTarot ? done.outcome.cards.length : 0);
   $('receipt-facts').textContent = facts;
   $('save-question').hidden = pending.question === '';
   lastDraw = { receipt: done.receipt, index, question: pending.question, salt: pending.salt_hex };

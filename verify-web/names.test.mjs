@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
-import { TAROT_NAMES, cardFace, hexagram, cards } from './public/names.mjs';
+import { TAROT_NAMES, cardFace, hexagram, cards, tarotWording } from './public/names.mjs';
 
 const registry = JSON.parse(await readFile('../registry/lotcast-registry-v1.json', 'utf8'));
 
@@ -24,10 +24,10 @@ test('well-known names', () => {
 });
 
 test('cardFace gives a numeral for majors and 1 to 10, none for courts', () => {
-  assert.deepEqual(cardFace('tarot:rws:major:0'), { name: 'The Fool', numeral: '0', suit: null });
-  assert.deepEqual(cardFace('tarot:rws:major:15'), { name: 'The Devil', numeral: 'XV', suit: null });
-  assert.deepEqual(cardFace('tarot:rws:swords:4'), { name: 'Four of Swords', numeral: '4', suit: 'swords' });
-  assert.deepEqual(cardFace('tarot:rws:cups:12'), { name: 'Knight of Cups', numeral: null, suit: 'cups' });
+  assert.deepEqual(cardFace('tarot:rws:major:0'), { name: 'The Fool', numeral: '0', suit: null, underline: false });
+  assert.deepEqual(cardFace('tarot:rws:major:15'), { name: 'The Devil', numeral: 'XV', suit: null, underline: false });
+  assert.deepEqual(cardFace('tarot:rws:swords:4'), { name: 'Four of Swords', numeral: '4', suit: 'swords', underline: false });
+  assert.deepEqual(cardFace('tarot:rws:cups:12'), { name: 'Knight of Cups', numeral: null, suit: 'cups', underline: false });
 });
 
 test('a hexagram with a changing line, and what it changes to', () => {
@@ -53,4 +53,16 @@ test('the page says no more than names: no meanings, no interpretation', async (
     const stripped = text.replaceAll('It never tells you what it means', '');
     assert.doesNotMatch(stripped, /means|meaning|interpretation/i, f);
   }
+});
+
+test('a 6 or a 9 on a card face is underlined, so a reversed card cannot be misread', () => {
+  assert.equal(cardFace('tarot:rws:cups:6').underline, true);
+  assert.equal(cardFace('tarot:rws:swords:9').underline, true);
+  assert.equal(cardFace('tarot:rws:cups:8').underline, false);
+  assert.equal(cardFace('tarot:rws:major:6').underline, false);
+});
+
+test('one card is spoken of in the singular, several in the plural', () => {
+  assert.deepEqual(tarotWording(1), { lead: 'Your card, ', emphasis: 'as it was drawn.', verified: "Verified. This card wasn't re-drawn.", follows: 'this card follows' });
+  assert.deepEqual(tarotWording(3), { lead: 'In the order ', emphasis: 'they were drawn.', verified: "Verified. These cards weren't re-drawn.", follows: 'these cards follow' });
 });

@@ -16,8 +16,15 @@ export function cardFace(id) {
   const [, , kind, n] = id.split(':');
   const number = Number(n);
   const name = TAROT_NAMES[id] ?? id;
-  if (kind === 'major') return { name, numeral: ROMAN[number] ?? null, suit: null };
-  return { name, numeral: number <= 10 ? String(number) : null, suit: kind };
+  if (kind === 'major') return { name, numeral: ROMAN[number] ?? null, suit: null, underline: false };
+  // An upside-down 6 reads as a 9 (and the other way round), so both are underlined, as on dice.
+  return { name, numeral: number <= 10 ? String(number) : null, suit: kind, underline: number === 6 || number === 9 };
+}
+
+// The words around a tarot draw: singular for one card, plural for several.
+export function tarotWording(count) {
+  if (count === 1) return { lead: 'Your card, ', emphasis: 'as it was drawn.', verified: "Verified. This card wasn't re-drawn.", follows: 'this card follows' };
+  return { lead: 'In the order ', emphasis: 'they were drawn.', verified: "Verified. These cards weren't re-drawn.", follows: 'these cards follow' };
 }
 
 const names = (registry) => new Map(registry.iching.hexagrams.map((h) => [h.number, h.name]));

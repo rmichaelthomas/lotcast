@@ -127,7 +127,7 @@ a:hover { color: var(--bone); }
 .mini .line { height: 5px; }
 .mini .line span { height: 5px; background: var(--bone); animation: none; }
 #result-tarot h1 { margin: 0 0 48px; font: 600 clamp(38px, 7vw, 60px)/1.04 var(--sans); letter-spacing: -.045em; }
-#result-tarot h1 span { color: var(--brass); }
+#result-tarot h1 #tarot-emphasis { color: var(--brass); }
 .cards { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 48px; }
 .cards li { display: flex; flex-direction: column; gap: 18px; animation: lc-flip .7s both; }
 .flip { border: 0; padding: 0; margin: 0; }
@@ -136,6 +136,7 @@ a:hover { color: var(--bone); }
 .face[data-reversed] { transform: rotate(180deg); }
 .face > div { height: 100%; border: 1.5px solid #b08d4a; border-radius: 4px; display: flex; flex-direction: column; justify-content: space-between; align-items: center; padding: 22px 12px; text-align: center; }
 .face .num { font: 600 30px/1 var(--sans); min-height: 30px; }
+.face .num.underline { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; }
 .face .nm { font: 650 19px/1.1 var(--sans); letter-spacing: -.01em; }
 .face .pips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 22px; }
 .tag { border-top: 1px solid var(--brass); padding-top: 10px; width: 220px; max-width: 100%; }
@@ -338,7 +339,7 @@ Lotcast</a>
 
 <div id="result-tarot" hidden>
 <p class="eyebrow" id="tarot-eyebrow">Your tarot draw</p>
-<h1>In the order <span>they were drawn.</span></h1>
+<h1><span id="tarot-lead">In the order </span><span id="tarot-emphasis">they were drawn.</span></h1>
 <ol class="cards" id="cards"></ol>
 </div>
 

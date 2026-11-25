@@ -94,22 +94,7 @@ pub fn plan_draw(all: List[Text], nonce: Bytes, salt: Bytes) -> Result[DrawPlan,
     let hash = entry_hash(request)
     if not is_ok(hash):
         return Err("the request cannot be encoded")
-    var opts = json_object()
-    for key in options:
-        set opts = json_set(opts, key, json_text(options[key]))
-    var listed = json_array()
-    for id in sources:
-        set listed = json_push(listed, json_text(id))
-    var body = json_object()
-    set body = json_set(body, "tradition", json_text(request.tradition))
-    set body = json_set(body, "method", json_text(request.method))
-    set body = json_set(body, "options", opts)
-    set body = json_set(body, "sources", listed)
-    if not_before != 0:
-        set body = json_set(body, "not_before", json_int(not_before))
-    set body = json_set(body, "nonce", json_text(hex_encode(nonce)))
-    if asked:
-        set body = json_set(body, "commitment", json_text(hex_encode(commit)))
+    let body = draw_request_body(request)
     var salt_hex = ""
     if asked:
         set salt_hex = hex_encode(salt)

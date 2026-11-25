@@ -45,7 +45,7 @@ exports = [
     "src/receipt.gu",
     "src/anchored.gu",
 ]
-sha256 = "0bb7a4d908bf67b9cd3c06ba5a937ced87c1de4d0e4cd8ff3c2bd66cdc2e39d9"
+sha256 = "ad3df03127739ad283f0c4590c60833db8844bbd84ef852ae97aa3cf894a6386"
 source = "../packages/lotcast-core"
 source_kind = "path"
 version = "0.1.0"
@@ -72,7 +72,7 @@ exports = [
     "src/tsa_pins.gu",
     "src/anchor.gu",
 ]
-sha256 = "3b979b4019a3be3b78f23426ce05760b408f53355753c5905fe08a32f9db06c8"
+sha256 = "dae539039b8e9b0b8c958068209887a98960de3f81795cc4a4ade8ccab275235"
 source = "../packages/lotcast-log"
 source_kind = "path"
 version = "0.1.0"

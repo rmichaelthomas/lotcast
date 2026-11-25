@@ -1229,3 +1229,41 @@ fn test_compute_outcome_matches_the_outcome_in_a_stored_receipt() -> Unit:
     let computed = unwrap(compute_outcome(request, note, drand, others))
     assert(hex_encode(computed.seed) == json_as_text(json_get(receipt, "seed")))
     assert(json_stringify(computed.outcome) == json_stringify(json_get(receipt, "outcome")))
+
+fn zero_bytes(n: Int) -> Bytes:
+    var ints: List[Int] = []
+    for i in range(0, n):
+        set ints = list_push(ints, 0)
+    return bytes_from_ints(ints)
+
+fn sample_request(mode: Int) -> DrawRequest:
+    var nonce_ints: List[Int] = []
+    for i in range(0, 16):
+        set nonce_ints = list_push(nonce_ints, i)
+    var commit = bytes_from_ints([])
+    if mode == 1:
+        set commit = zero_bytes(64)
+    return DrawRequest("tarot", "rws", {"count": "3", "reversals": "true"}, mode, commit, ["curby-rng", "drand-quicknet", "nist-beacon-2"], 0, bytes_from_ints(nonce_ints), bytes_from_ints([]))
+
+fn test_draw_request_body_matches_the_cli_body() -> Unit:
+    let zeros = hex_encode(zero_bytes(64))
+    let expected = "{\"commitment\":\"" + zeros + "\",\"method\":\"rws\",\"nonce\":\"000102030405060708090a0b0c0d0e0f\",\"options\":{\"count\":\"3\",\"reversals\":\"true\"},\"sources\":[\"curby-rng\",\"drand-quicknet\",\"nist-beacon-2\"],\"tradition\":\"tarot\"}"
+    assert(json_stringify(draw_request_body(sample_request(1))) == expected)
+
+fn test_draw_request_body_has_no_commitment_without_a_question() -> Unit:
+    let body = draw_request_body(sample_request(0))
+    assert(not is_ok(json_get_safe(body, "commitment")))
+    assert(not is_ok(json_get_safe(body, "not_before")))
+
+fn test_view_problem_rejects_an_unknown_status() -> Unit:
+    let view = json_set(json_set(json_set(json_object(), "id", json_text("x")), "index", json_int(1)), "status", json_text("weird"))
+    assert(view_problem(view) != "")
+
+fn test_view_is_queued_only_for_a_pending_view_waiting_on_the_log_without_a_promise() -> Unit:
+    let waiting = json_push(json_array(), json_set(json_object(), "source", json_text("log")))
+    let queued = json_set(json_set(json_set(json_object(), "id", json_text("x")), "status", json_text("pending")), "waiting_on", waiting)
+    assert(view_is_queued(queued))
+    assert(not view_is_queued(json_set(queued, "promise", json_text("p"))))
+    assert(not view_is_queued(json_set(queued, "status", json_text("complete"))))
+    assert(not view_is_queued(json_set(queued, "waiting_on", json_array())))
+    assert(not view_is_queued(json_array()))

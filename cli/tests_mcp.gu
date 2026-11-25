@@ -411,7 +411,7 @@ fn test_the_output_limit_is_lifted_for_a_long_session() -> Unit:
     assert(text_find(toml, "output_limit_bytes", 0) >= 0)
 
 fn test_no_cli_source_prints_to_stdout_except_the_commands() -> Unit:
-    for path in ["src/run.gu", "src/home.gu", "src/client.gu", "src/plan.gu", "src/bind.gu", "src/flags.gu", "src/mcp_rpc.gu", "src/mcp_tools.gu", "src/mcp_calls.gu"]:
+    for path in ["src/run.gu", "src/home.gu", "src/client.gu", "src/plan.gu", "src/flags.gu", "src/mcp_rpc.gu", "src/mcp_tools.gu", "src/mcp_calls.gu"]:
         let src = unwrap(read_text(path))
         var found = text_find(src, "print(", 0)
         # mcp_rpc.gu prints exactly the reply lines of its loop

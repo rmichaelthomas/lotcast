@@ -6,7 +6,6 @@ import "pkg:lotcast-core/src/lib.gu"
 import "pkg:lotcast-log/src/lib.gu"
 import "client.gu"
 import "plan.gu"
-import "bind.gu"
 
 # The work of `draw`, `get` and `verify` as values, with nothing printed: the command line and the
 # MCP server both build on these. The network, the clock and the sleep are passed in.
@@ -46,27 +45,6 @@ fn none_check() -> Check:
     let none: List[Int] = []
     return Check("", "", 0, none)
 
-# "" when `view` has the shape of a draw view; otherwise what is wrong with it. Everything that
-# comes from the network is read with the safe getters, so a malformed answer is an error, not a crash.
-pub fn view_problem(view: Json) -> Text:
-    if not is_object(view):
-        return "the service's answer is not a JSON object"
-    if not is_ok(json_get_text_safe(view, "id")) or not is_ok(json_get_int_safe(view, "index")):
-        return "the service's answer has no id or index"
-    let status = json_get_text_safe(view, "status")
-    if not is_ok(status):
-        return "the service's answer has no status"
-    if unwrap(status) != "complete" and unwrap(status) != "pending" and unwrap(status) != "anchor-failed":
-        return "the service's answer has an unknown status"
-    if unwrap(status) == "complete":
-        let receipt = json_get_safe(view, "receipt")
-        if not is_ok(receipt) or not is_object(unwrap(receipt)):
-            return "the service says the draw is complete but sent no receipt"
-        let outcome = json_get_safe(unwrap(receipt), "outcome")
-        if not is_ok(outcome) or not is_object(unwrap(outcome)):
-            return "the receipt has no outcome"
-    return ""
-
 fn drawn_from(view: Json, key: Bytes, asked: Bool, question: Text, salt: Bytes) -> Drawn:
     let id = json_as_text(json_get(view, "id"))
     let index = json_as_int(json_get(view, "index"))
@@ -91,13 +69,17 @@ fn poll(server: Text, id: Text, wait: Int, send: fn(Text, Text, Text) -> Result[
     while true:
         let reply = send("GET", server + "/v1/draws/" + id, "")
         if is_ok(reply) and unwrap(reply).status == 200:
-            let wrong = view_problem(unwrap(reply).body)
-            if wrong != "":
-                return Err(wrong)
-            set last = unwrap(reply).body
-            let status = json_as_text(json_get(last, "status"))
-            if status == "complete" or status == "anchor-failed":
-                return Ok(last)
+            if view_is_queued(unwrap(reply).body):
+                # Not logged yet: nothing to check, keep waiting.
+                set last = unwrap(reply).body
+            else:
+                let wrong = view_problem(unwrap(reply).body)
+                if wrong != "":
+                    return Err(wrong)
+                set last = unwrap(reply).body
+                let status = json_as_text(json_get(last, "status"))
+                if status == "complete" or status == "anchor-failed":
+                    return Ok(last)
         var waited = slept
         if now() - started > waited:
             set waited = now() - started
@@ -108,6 +90,13 @@ fn poll(server: Text, id: Text, wait: Int, send: fn(Text, Text, Text) -> Result[
         pause(3)
         set slept = slept + 3
     return Ok(last)
+
+fn error_text(r: Result[Json, Text]) -> Text:
+    match r:
+        Err(message):
+            return message
+        Ok(ignored):
+            return ""
 
 # The draw as the POST left it: logged and promised, nothing known yet.
 fn logged_only(id: Text, index: Int) -> Drawn:
@@ -124,17 +113,37 @@ pub fn run_draw(plan: DrawPlan, key: Bytes, send: fn(Text, Text, Text) -> Result
     let reply = unwrap(posted)
     if reply.status != 200 and reply.status != 202:
         return Err("the service refused the request: " + error_message(reply.body))
-    let wrong = view_problem(reply.body)
-    if wrong != "":
-        return Err(wrong)
-    let id = json_as_text(json_get(reply.body, "id"))
-    let doubt = binding_problem(reply.body, key, plan.request_json, plan.entry_hash_hex, id)
-    if doubt != "":
-        return Err(doubt + ": do not trust this draw")
-    let index = json_as_int(json_get(reply.body, "index"))
-    logged(id, index)
-    # From here the draw is in the log: whatever goes wrong while waiting, the caller still gets its id.
-    let view = poll(plan.server, id, plan.wait_seconds, send, pause, now)
+    var id = ""
+    var index = 0
+    var view: Result[Json, Text] = Err("not polled")
+    if view_is_queued(reply.body):
+        # The writer had not logged the request when the service answered (202). It promises nothing yet,
+        # so there is nothing to bind: wait until the draw has a promise, then bind it like any other.
+        set id = json_as_text(json_get(reply.body, "id"))
+        if len(plan.entry_hash_hex) < 32 or text_slice(plan.entry_hash_hex, 0, 32) != id:
+            return Err("the service answered for a different entry than the one sent: do not trust this draw")
+        set view = poll(plan.server, id, plan.wait_seconds, send, pause, now)
+        if not is_ok(view):
+            return Err(error_text(view))
+        if view_is_queued(unwrap(view)):
+            return Err("the service had not logged the request when the wait ended; the draw is " + id + ", ask for it again with lotcast get")
+        let first = binding_problem(unwrap(view), key, plan.request_json, plan.entry_hash_hex, id)
+        if first != "":
+            return Err(first + ": do not trust this draw")
+        set index = json_as_int(json_get(unwrap(view), "index"))
+        logged(id, index)
+    else:
+        let wrong = view_problem(reply.body)
+        if wrong != "":
+            return Err(wrong)
+        set id = json_as_text(json_get(reply.body, "id"))
+        let doubt = binding_problem(reply.body, key, plan.request_json, plan.entry_hash_hex, id)
+        if doubt != "":
+            return Err(doubt + ": do not trust this draw")
+        set index = json_as_int(json_get(reply.body, "index"))
+        logged(id, index)
+        # From here the draw is in the log: whatever goes wrong while waiting, the caller still gets its id.
+        set view = poll(plan.server, id, plan.wait_seconds, send, pause, now)
     if not is_ok(view):
         return Ok(logged_only(id, index))
     let later = binding_problem(unwrap(view), key, plan.request_json, plan.entry_hash_hex, id)

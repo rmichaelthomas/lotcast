@@ -10,7 +10,7 @@ Guion 0.8.0 or later is needed (the `beacons` dependency installs from the Guion
 
 - `packages/lotcast-core`: the stream and samplers (I Ching coins and yarrow, tarot RWS), the registry, the inclusion rule for all four beacons (drand quicknet, NIST beacon 2.0, CURBy-RNG, CURBy-Q), and a receipt verifier that runs spec §5.2 steps 1 to 7 offline.
 - `service/`: the HTTP draw service (`lotcast serve`): a writer that appends requests to the log and promises each an epoch, a stamper that gets two RFC 3161 timestamps per epoch, a watcher that reads the beacons and completes receipts, and the API. See `service/README.md` and `docs/operations.md`.
-- `cli/`: the `lotcast` command (`cli/lotcast.gu`): `draw`, `get`, `verify`, `compute` (an outcome from public log files and the beacons alone), `audit` (compare mirrors), `mcp` (a local stdio MCP server for AI clients; see `cli/README.md`) and `serve`.
+- `cli/`: the `lotcast` command (`cli/lotcast.gu`): `draw`, `get`, `verify`, `compute` (an outcome from public log files and the beacons alone), `audit` (compare mirrors), `backup` (copy the live service's store to your machine), `mcp` (a local stdio MCP server for AI clients; see `cli/README.md`) and `serve`.
 - `verify-web/`: the checking page (Guion's own browser VM running a Guion checker; see `verify-web/build.md`).
 - `deploy/cloudflare/`: the Worker that puts the service online (`deploy/cloudflare/README.md`).
 - `packages/lotcast-log`: the append-only Merkle log (RFC 6962 hashing, C2SP signed notes and tlog-tiles) and RFC 3161 anchoring with pinned time-stamp authorities (DigiCert, Sectigo, FreeTSA).

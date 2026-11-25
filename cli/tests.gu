@@ -484,3 +484,41 @@ fn test_view_problem_names_what_is_missing() -> Unit:
     assert(view_problem(json_set(view_of_fixture(), "status", json_text("weird"))) != "")
     assert(view_problem(json_set(view_of_fixture(), "receipt", json_null())) != "")
     assert(view_problem(json_set(view_of_fixture(), "id", json_int(3))) != "")
+
+# ---- backup: copy every file of the store to a local folder
+fn test_the_backup_token_is_the_one_the_worker_derives_from_the_seed() -> Unit:
+    # sha256("lotcast-store:" + seed), hex; the vector was computed independently with python3's hashlib
+    assert(backup_token("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n") == "47a746e8f4ab7b29a086863d04775dbf4c3725726e97202e3a8df48873b42b8b")
+
+fn test_backup_skips_the_rate_limit_files_and_keeps_everything_else() -> Unit:
+    assert(backup_skip("state/rate_salt"))
+    assert(backup_skip("state/rate/abc.json"))
+    assert(not backup_skip("draws/abc.json"))
+    assert(not backup_skip("receipts/abc.json"))
+    assert(not backup_skip("state/operator_key.hex"))
+
+fn test_backup_copies_every_file_below_a_directory_and_can_be_run_again() -> Unit:
+    let from = unwrap(fs_temp_dir("lotcast-bk-from"))
+    let to = unwrap(fs_temp_dir("lotcast-bk-to"))
+    assert(is_ok(vfs_make_dirs(from + "/draws")))
+    assert(is_ok(vfs_make_dirs(from + "/state/rate")))
+    assert(is_ok(vfs_write_text(from + "/draws/a.json", "{\"a\":1}")))
+    assert(is_ok(vfs_write_text(from + "/receipts-b.json", "{\"b\":2}")))
+    assert(is_ok(vfs_write_text(from + "/state/rate_salt", "secret")))
+    assert(is_ok(vfs_write_text(from + "/state/rate/x.json", "{}")))
+    assert(is_ok(vfs_write_text(from + "/state/operator_key.hex", "abcd")))
+    let first = backup_copy("", "", from, to)
+    assert(is_ok(first))
+    assert(unwrap(first) == 3)
+    assert(unwrap(read_text(to + "/draws/a.json")) == "{\"a\":1}")
+    assert(unwrap(read_text(to + "/state/operator_key.hex")) == "abcd")
+    assert(not unwrap(fs_exists(to + "/state/rate_salt")))
+    assert(is_ok(vfs_write_text(from + "/draws/a.json", "{\"a\":2}")))
+    let again = backup_copy("", "", from, to)
+    assert(unwrap(again) == 3)
+    assert(unwrap(read_text(to + "/draws/a.json")) == "{\"a\":2}")
+
+fn test_backup_without_its_three_arguments_is_a_usage_error() -> Unit:
+    assert(cmd_backup([]) == 2)
+    assert(cmd_backup(["--server", "https://x.example"]) == 2)
+    assert(cmd_backup(["--server", "https://x.example", "--key-file", "k"]) == 2)

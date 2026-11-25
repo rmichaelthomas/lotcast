@@ -93,26 +93,37 @@ fn call(method: Text, url: Text, headers: Map[Text, Text], body: Bytes) -> Resul
         sleep_ms(1000)
     return Err(vfs_error("unreachable"))
 
-fn no_headers() -> Map[Text, Text]:
+fn headers_for(token: Text) -> Map[Text, Text]:
     var headers: Map[Text, Text] = {}
-    match env("LOTCAST_STORE_TOKEN"):
-        Some(token):
-            set headers = map_set(headers, "Authorization", "Bearer " + text_trim(token))
-        None:
-            return headers
+    if text_trim(token) != "":
+        set headers = map_set(headers, "Authorization", "Bearer " + text_trim(token))
     return headers
 
-pub fn vfs_read_bytes(path: Text) -> Result[Bytes, StdError]:
-    let base = vfs_base()
+fn env_token() -> Text:
+    match env("LOTCAST_STORE_TOKEN"):
+        Some(token):
+            return text_trim(token)
+        None:
+            return ""
+
+fn no_headers() -> Map[Text, Text]:
+    return headers_for(env_token())
+
+# Reads from the named store (BASE URL and bearer TOKEN); an empty base means the local disk. The
+# environment-driven functions below use the store the environment names.
+pub fn vfs_read_bytes_at(base: Text, token: Text, path: Text) -> Result[Bytes, StdError]:
     if base == "":
         let r = read_bytes(path)
         if not is_ok(r):
             return Err(vfs_error("cannot read " + path))
         return Ok(unwrap(r))
-    let reply = call("GET", vfs_store_url(base, "/f", path)?, no_headers(), bytes_from_text(""))?
+    let reply = call("GET", vfs_store_url(base, "/f", path)?, headers_for(token), bytes_from_text(""))?
     if reply.status != 200:
         return Err(vfs_error("cannot read " + path))
     return Ok(reply.body)
+
+pub fn vfs_read_bytes(path: Text) -> Result[Bytes, StdError]:
+    return vfs_read_bytes_at(vfs_base(), env_token(), path)
 
 pub fn vfs_read_text(path: Text) -> Result[Text, StdError]:
     let bytes = vfs_read_bytes(path)?
@@ -210,14 +221,13 @@ pub fn vfs_remove(path: Text) -> Bool:
     let reply = call("DELETE", unwrap(url), no_headers(), bytes_from_text(""))
     return is_ok(reply) and unwrap(reply).status >= 200 and unwrap(reply).status <= 299
 
-pub fn vfs_list(path: Text) -> Result[List[Text], StdError]:
-    let base = vfs_base()
+pub fn vfs_list_at(base: Text, token: Text, path: Text) -> Result[List[Text], StdError]:
     if base == "":
         let listed = fs_list_dir(path)
         if not is_ok(listed):
             return Err(vfs_error("cannot list " + path))
         return Ok(unwrap(listed))
-    let reply = call("GET", vfs_store_url(base, "/l", path)?, no_headers(), bytes_from_text(""))?
+    let reply = call("GET", vfs_store_url(base, "/l", path)?, headers_for(token), bytes_from_text(""))?
     if reply.status != 200:
         return Err(vfs_error("cannot list " + path))
     let text = encoding_utf8_decode(reply.body)
@@ -235,3 +245,6 @@ pub fn vfs_list(path: Text) -> Result[List[Text], StdError]:
         set out = list_push(out, json_as_text(unwrap(item)))
         set i = i + 1
     return Ok(out)
+
+pub fn vfs_list(path: Text) -> Result[List[Text], StdError]:
+    return vfs_list_at(vfs_base(), env_token(), path)

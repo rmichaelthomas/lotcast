@@ -10,6 +10,7 @@ import "pkg:lotcast-core/src/lib.gu"
 import "pkg:lotcast-log/src/lib.gu"
 import "pkg:lotcast-service/src/lib.gu"
 import "flags.gu"
+import "backup.gu"
 import "mirror.gu"
 import "audit.gu"
 import "compute.gu"
@@ -383,3 +384,35 @@ pub fn cmd_mcp(all: List[Text]) -> Int:
             Ok(ignored):
                 return 2
     return mcp_loop(mcp_call, tool_definitions(), "0.1.0")
+
+# lotcast backup --server URL --key-file SEED_FILE --to DIR [--root lotcast]
+# Copies the service's whole store (log, draws, receipts) from the Cloudflare Durable Object to DIR on this
+# machine. The seed file holds the operator seed (64 hex characters); it is used only to derive the token the
+# Worker expects and is never sent. Run it again any time: it overwrites with the current copy.
+pub fn cmd_backup(all: List[Text]) -> Int:
+    let parsed = parse_flags(all, ["--server", "--key-file", "--to", "--root"], [])
+    if not is_ok(parsed):
+        match parsed:
+            Err(why):
+                return say_error(why)
+            Ok(ignored):
+                return 2
+    let f = unwrap(parsed)
+    let server = flag_one(f, "--server", "")
+    let key_file = flag_one(f, "--key-file", "")
+    let to = flag_one(f, "--to", "")
+    if server == "" or key_file == "" or to == "":
+        return say_error("usage: lotcast backup --server URL --key-file SEED_FILE --to DIR [--root lotcast]")
+    let seed = read_text(key_file)
+    if not is_ok(seed):
+        return say_error("cannot read " + key_file)
+    let base = trim_slash(server) + "/internal/store"
+    let copied = backup_copy(base, backup_token(unwrap(seed)), flag_one(f, "--root", "lotcast"), to)
+    if not is_ok(copied):
+        match copied:
+            Err(why):
+                return say_error(why.message)
+            Ok(ignored):
+                return 1
+    print("backed up " + int_to_text(unwrap(copied)) + " files to " + to)
+    return 0

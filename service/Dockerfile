@@ -19,7 +19,9 @@ ENV PORT=8080
 EXPOSE 8080
 # --trust-proxy 1: exactly one proxy (the Cloudflare Worker) sits in front, and the rate limit needs its client address.
 # File paths in `guion run` are relative to --file-root (/data), so the registry is copied there first.
-CMD cp /app/registry/lotcast-registry-v1.json /data/registry.json && guion run --allow-bind 0.0.0.0:${PORT} --allow-clock --file-root /data \
+# `exec` makes guion process 1: a shell as process 1 does not pass SIGTERM on, and the service's signal loop
+# (service/src/loops.gu) is what stops its loops cleanly before the host kills the container.
+CMD cp /app/registry/lotcast-registry-v1.json /data/registry.json && exec guion run --allow-bind 0.0.0.0:${PORT} --allow-clock --file-root /data \
     --allow-http-host api.drand.sh --allow-http-host drand.cloudflare.com \
     --allow-http-host beacon.nist.gov --allow-http-host random.colorado.edu \
     --allow-http-host timestamp.digicert.com --allow-http-host timestamp.sectigo.com \

@@ -108,7 +108,8 @@ Docker on the machine that deploys.
   checks in a row fail). While it is being stopped, new requests wait and then meet a fresh container, so no
   draw is accepted by a container about to go. If the container exits with draws pending, the Durable Object
   starts it again. `GET /internal/diag` (bearer token, as for the store) shows `lastSeen`, `lastAlarm`,
-  `lastCheck` and `outcome` (what the last check decided).
+  `lastCheck`, `outcome` (what the last check decided) and `lastExit` (the exit code and reason of the last time the
+  container stopped).
 - **Log origin.** The log's origin line is `lotcast.local/log`. A C2SP origin is only a unique name, not an
   address, and it is inside every signed checkpoint, so changing it would break the existing log; leave it.
 - **Store outages.** A server error from the store is retried for up to ten minutes, and an existence check

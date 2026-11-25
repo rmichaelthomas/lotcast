@@ -57,7 +57,8 @@ export class Lotcast extends Container<Env> {
 
   // The container exited. If draws were waiting when the idle check last looked, start it again so they
   // finish on time (the service recovers them from the log); an idle stop clears that note first.
-  async onStop(): Promise<void> {
+  async onStop(params?: { exitCode: number; reason: string }): Promise<void> {
+    this.ctx.storage.kv.put('lastExit', { at: Date.now(), exitCode: params?.exitCode ?? null, reason: params?.reason ?? null });
     if ((this.ctx.storage.kv.get<number>('lastPending') ?? 0) > 0) {
       this.ctx.storage.kv.put('outcome', 'restarted: draws were pending');
       await this.startAndWaitForPorts();
@@ -73,6 +74,7 @@ export class Lotcast extends Container<Env> {
       lastAlarm: kv.get('lastAlarm') ?? null,
       lastCheck: kv.get('lastCheck') ?? null,
       outcome: kv.get('outcome') ?? null,
+      lastExit: kv.get('lastExit') ?? null,
       idleMinutes: this.idleMs() / 60000,
       now: Date.now(),
     });
@@ -126,8 +128,8 @@ export class Lotcast extends Container<Env> {
     try {
       kv.put('lastPending', 0);
       await this.stop();
-      // The service is process 1 in its container, and a process 1 ignores SIGTERM unless it handles it. The
-      // service does: on TERM its signal loop writes state/stop, so the writer, stamper and watcher finish
+      // The service is process 1 in its container (the Dockerfile `exec`s it), and a process 1 ignores SIGTERM
+      // unless it handles it. The service does: on TERM its signal loop writes state/stop, so the writer, stamper and watcher finish
       // their step and return. Its HTTP server cannot stop, so the process ends only when killed: give the
       // loops ten seconds, then kill it. Nothing is lost: no draw is pending and the log lives in this object.
       for (let i = 0; i < 10 && this.ctx.container?.running; i++) await new Promise((r) => setTimeout(r, 1000));

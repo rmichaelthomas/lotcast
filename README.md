@@ -6,7 +6,7 @@ Lotcast draws I Ching hexagrams and tarot cards for you, or for an AI agent acti
 
 It tells you **what was drawn**: the six lines, or the cards and where they fall. It never tells you what they mean. That part is yours.
 
-- **Check a receipt in your browser (nothing to install):** <https://lotcast.thomasbuild.workers.dev>
+- **Make a draw in your browser (nothing to install):** <https://lotcast.thomasbuild.workers.dev>. You can check a receipt someone gave you there too.
 - **The service:** the same address. The web page is at `/`, and the draws are at `/v1/...`.
 - **The operator's public key** (what receipts are checked against):
   `a1aa46bfdd9cec63fa4c3f1abd1c5919e058c21cdce25085bbec9f1104df779b`
@@ -36,16 +36,23 @@ Lotcast makes rigging visible. If a draw doesn't check out, the receipt says so,
 
 ---
 
-## Check a receipt (no install)
+## Make a draw (no install)
 
 1. Open <https://lotcast.thomasbuild.workers.dev>.
-2. Paste in a receipt (the whole file, from the first `{` to the last `}`) and press the button. The operator's key is already filled in.
+2. Choose I Ching or tarot, and type a question if you like. It never leaves your device; only a sealed fingerprint of it is sent. Press **Draw**.
+3. Wait one to three minutes. The page shows each step as it happens, and picks the draw back up if you reload it.
+4. You get the six lines, or your cards, with a red seal once the draw checks out. **Save receipt** keeps the receipt, which is safe to share. **Save my question (private)** keeps your question and its secret, so you can prove later what you asked. The page remembers your last draw in your browser until you draw again, press **Forget this draw on this device**, or seven days pass.
+
+### Check a receipt someone gave you
+
+1. On the same page, scroll to **Someone sent you a draw? Check it here.**
+2. Paste in the receipt (the whole file, from the first `{` to the last `}`) and press **Check this receipt**. The operator's key is already filled in.
 3. Read the answer:
 
 | You see | It means |
 |---|---|
 | **Verified** | Every check passed. The request came first, and the result follows from it. |
-| **Not fully checked: one live check is still owed** | Everything passed that could be checked offline. One random source needs a live look; the page shows the command that finishes it. |
+| **Not fully checked yet: one live check is still owed** | Everything passed that could be checked offline. One random source needs a live look; the page shows the command that finishes it. |
 | **Partly verified** | The result follows from a real random number, but nothing shows the request came first. |
 | **This receipt does not check out** | Something doesn't add up. It says which step failed. |
 | **This could not be read** | What you pasted isn't a receipt, or the key is wrong. |
@@ -58,7 +65,7 @@ Want to see it work? Two receipts from the live service are in [`examples/`](exa
 
 ---
 
-## Make a draw
+## Make a draw from the command line
 
 You need Guion, the language Lotcast is written in (see [About Guion](#about-guion) below).
 
@@ -185,7 +192,7 @@ There is a machine-readable summary at <https://lotcast.thomasbuild.workers.dev/
 
 ## About Guion
 
-Lotcast is written entirely in [**Guion**](https://rmichaelthomas.github.io/guion/) (say GUY-on), a general-purpose programming language for everyday software: scripts, command-line tools, web services and applications. It's built to be easy to read and hard to get wrong. Guion is young (version 0.8.0 at the time of writing) and its documentation says what's still missing.
+Lotcast is written entirely in [**Guion**](https://rmichaelthomas.github.io/guion/) (say GUY-on), a general-purpose programming language for everyday software: scripts, command-line tools, web services and applications. It's built to be easy to read and hard to get wrong. Guion is young (version 0.9.0 at the time of writing) and its documentation says what's still missing.
 
 Why that matters here: Guion programs run with **no permissions unless you grant them by name**. That's why the commands above spell out each network address: you can see exactly what the program is allowed to do. The page that checks your receipt in the browser is the *same* Guion program, run by Guion's own browser engine.
 

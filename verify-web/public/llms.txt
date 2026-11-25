@@ -2,7 +2,7 @@
 
 > Lotcast is a verifiable draw service for lot-cast divination. It draws I Ching hexagrams and Rider-Waite-Smith tarot cards and returns positions, never meanings, with a receipt anyone can check. The operator cannot quietly re-roll a draw. Written in Guion. Code: Apache-2.0. Positions registry: CC0.
 
-Service and checking page: https://lotcast.thomasbuild.workers.dev
+Service and web page: https://lotcast.thomasbuild.workers.dev
 Source and documentation: https://github.com/rmichaelthomas/lotcast
 Guion (the language it is written in): https://rmichaelthomas.github.io/guion/
 Report a problem: https://github.com/rmichaelthomas/lotcast/issues
@@ -35,7 +35,7 @@ MCP server (runs locally over standard input and output; tools: list_traditions,
 
 Command line (needs Guion): `bin/lotcast draw iching coins --server https://lotcast.thomasbuild.workers.dev --operator-key KEY` and `bin/lotcast verify receipt.json --operator-key KEY`.
 
-Browser: paste a receipt at https://lotcast.thomasbuild.workers.dev. The check runs in the browser; nothing is uploaded.
+Browser: make a draw at https://lotcast.thomasbuild.workers.dev (choose I Ching or tarot, optionally type a question, press Draw; the question stays on the device and the page checks the receipt itself), or paste a receipt someone gave you into the same page. Nothing is uploaded for checking.
 
 ## HTTP API (JSON; errors are {"error": {"code", "message"}})
 

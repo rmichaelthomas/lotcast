@@ -6,6 +6,22 @@
 <title>Lotcast: a draw you can check</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <meta name="description" content="Draw a hexagram or tarot cards. Each draw comes with a receipt proving nobody re-rolled it, and your browser checks it.">
+<link rel="canonical" href="https://lotcast.thomasbuild.workers.dev/">
+<meta name="theme-color" content="#12102a">
+<meta name="color-scheme" content="dark">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Lotcast">
+<meta property="og:url" content="https://lotcast.thomasbuild.workers.dev/">
+<meta property="og:title" content="Lotcast: a draw you can check">
+<meta property="og:description" content="Draw I Ching hexagrams or tarot cards in your browser. Every draw comes with a receipt that proves nobody re-rolled it, not even us.">
+<meta property="og:image" content="https://lotcast.thomasbuild.workers.dev/social.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Lotcast: Ask. Draw. Know it's fair. A hexagram on a paper slip with a red seal reading Verified, not re-rolled.">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebApplication","name":"Lotcast","url":"https://lotcast.thomasbuild.workers.dev/","description":"Draw I Ching hexagrams or tarot cards. Every draw comes with a receipt anyone can check, so nobody can quietly re-roll it.","applicationCategory":"UtilitiesApplication","browserRequirements":"Requires JavaScript and WebAssembly","isAccessibleForFree":true,"license":"https://www.apache.org/licenses/LICENSE-2.0","sameAs":["https://github.com/rmichaelthomas/lotcast"]}
+</script>
 <style>
 @font-face { font-family: Geist; src: url(/fonts/Geist-Variable.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
 @font-face { font-family: "Geist Mono"; src: url(/fonts/GeistMono-Variable.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
@@ -201,6 +217,15 @@ a:hover { color: var(--bone); }
 .site-footer .wrap { padding-top: 40px; padding-bottom: 56px; display: flex; flex-wrap: wrap; gap: 24px; justify-content: space-between; align-items: center; font-size: 15px; color: var(--muted); }
 .site-footer p { margin: 0; }
 .site-footer .made { display: flex; align-items: center; gap: 10px; }
+.site-footer .foot-links { display: flex; flex-wrap: wrap; gap: 8px 24px; width: 100%; padding-top: 24px; border-top: 1px solid var(--rule); }
+.site-footer .foot-links a { color: var(--bone); text-underline-offset: .2em; }
+.site-footer .foot-links a:hover { color: var(--brass); }
+.site-footer .made a { color: var(--bone); text-underline-offset: .2em; }
+.site-footer .made a:hover { color: var(--brass); }
+.site-footer .fine { width: 100%; font-size: 13px; }
+.site-header nav .ext span { font-size: .9em; }
+.nojs { margin: 0; padding: 14px 24px; background: #1c1940; color: var(--bone); border-bottom: 1px solid var(--rule); font-size: 15px; }
+.nojs a { color: var(--brass); }
 .gmark { width: 22px; height: 22px; background: #2148e8; color: #fff; border-radius: 7px 7px 7px 2px; display: inline-grid; place-items: center; font: italic 400 15px/1 Georgia, serif; transform: rotate(-4deg); }
 
 @keyframes lc-turn { to { transform: rotate(360deg); } }
@@ -224,6 +249,7 @@ a:hover { color: var(--bone); }
 </style>
 </head>
 <body data-state="draw">
+<noscript><p class="nojs">This page needs JavaScript to make a draw and to check it in your browser. You can also make and check draws from the command line: <a href="https://github.com/rmichaelthomas/lotcast#make-a-draw-from-the-command-line" rel="noopener">see how on GitHub</a>.</p></noscript>
 <a class="visually-hidden" href="#draw">Skip to the draw</a>
 <header class="site-header">
 <div class="wrap">
@@ -235,6 +261,7 @@ Lotcast</a>
 <a href="#fair">Why it's fair</a>
 <a href="#check">Check a receipt</a>
 <a href="#dev">Developers</a>
+<a class="ext" href="https://github.com/rmichaelthomas/lotcast" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
 </nav>
 </div>
 </header>
@@ -427,7 +454,15 @@ Lotcast</a>
 <footer class="site-footer" id="dev">
 <div class="wrap">
 <section data-ahi="ahi.navigation-journeys.jump-point"><p>Building an app or an AI agent? <a href="/llms.txt">Use Lotcast from code →</a></p></section>
-<p class="made">Made with <span class="gmark" aria-hidden="true">G</span> Guion and AllHereHTML</p>
+<p class="made">Made with <span class="gmark" aria-hidden="true">G</span> <a href="https://rmichaelthomas.github.io/guion/" rel="noopener">Guion</a> and AllHereHTML</p>
+<nav class="foot-links" aria-label="Project">
+<a href="https://github.com/rmichaelthomas/lotcast" rel="noopener">Source on GitHub</a>
+<a href="https://github.com/rmichaelthomas/lotcast#how-it-works-in-plain-words" rel="noopener">How it works</a>
+<a href="https://github.com/rmichaelthomas/lotcast/issues" rel="noopener">Report a problem</a>
+<a href="/operator-key.txt">Operator public key</a>
+<a href="https://github.com/rmichaelthomas/lotcast/blob/main/LICENSE" rel="noopener">License</a>
+</nav>
+<p class="fine">Lotcast shows what was drawn. It never tells you what it means. One operator, no independent witnesses yet. Code is Apache-2.0; the positions registry is CC0.</p>
 </div>
 </footer>
 <script type="module" src="./page.mjs"></script>

@@ -24,7 +24,8 @@ export class Lotcast extends Container<Env> {
   // on the next wake (the service recovers), but staying up lets it finish on time.
   async onActivityExpired(): Promise<void> {
     try {
-      const status = await this.containerFetch(new Request('http://container/v1/status'), this.defaultPort);
+      // The raw port, not containerFetch: containerFetch counts as activity and would keep it awake forever.
+      const status = await this.ctx.container!.getTcpPort(this.defaultPort).fetch('http://container/v1/status');
       const body = (await status.json()) as { pending?: number };
       if (typeof body.pending === 'number' && body.pending > 0) {
         this.renewActivityTimeout();

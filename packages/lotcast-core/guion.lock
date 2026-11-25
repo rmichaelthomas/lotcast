@@ -38,7 +38,7 @@ exports = [
     "src/tsa_pins.gu",
     "src/anchor.gu",
 ]
-sha256 = "37501a0a74fd0e92ae7e146c12a8a7105eef7bdd367a74fadc216ed40af5b76d"
+sha256 = "b006d905ca1ad3a96a3ccc458720fa18af6d36acd6b78017114c37a3b779e783"
 source = "../lotcast-log"
 source_kind = "path"
 version = "0.1.0"

@@ -1,0 +1,40 @@
+[approved-capabilities.beacons]
+clock = true
+network = [
+    "api.drand.sh",
+    "beacon.nist.gov",
+    "drand.cloudflare.com",
+    "random.colorado.edu",
+]
+
+[approved-capabilities.lotcast-core]
+clock = true
+network = ["beacon.nist.gov"]
+
+[approved-capabilities.lotcast-log]
+files = [
+    "read",
+    "write",
+]
+network = [
+    "timestamp.digicert.com",
+    "timestamp.sectigo.com",
+    "freetsa.org",
+]
+
+[capabilities]
+files = ["read"]
+
+[dependencies.lotcast-core]
+path = "../packages/lotcast-core"
+version = "0.1.0"
+
+[dependencies.lotcast-log]
+path = "../packages/lotcast-log"
+version = "0.1.0"
+
+[package]
+entry = "verify.gu"
+exports = []
+name = "lotcast-verify-web"
+version = "0.1.0"

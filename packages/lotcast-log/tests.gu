@@ -452,3 +452,19 @@ fn test_checkpoint_extensions_are_signed_into_the_note() -> Unit:
     assert(appended.added == 1)
     let reopened = open_fresh(dir)
     assert(log_checkpoint(reopened) == log_checkpoint(appended.state))
+
+fn test_parse_digits_reads_plain_numbers_without_the_host() -> Unit:
+    assert(unwrap(parse_digits("0")) == 0)
+    assert(unwrap(parse_digits("42")) == 42)
+    assert(unwrap(parse_digits("1795579310")) == 1795579310)
+    assert(unwrap(parse_digits("999999999999999999")) == 999999999999999999)
+    assert(not is_ok(parse_digits("")))
+    assert(not is_ok(parse_digits("1x")))
+    assert(not is_ok(parse_digits("-1")))
+    assert(not is_ok(parse_digits("1000000000000000000")))
+
+fn test_a_checkpoint_or_epoch_number_too_large_to_hold_is_refused_not_a_crash() -> Unit:
+    let root = base64_encode(crypto_sha256(bytes_from_ints([1])))
+    assert(not is_ok(parse_checkpoint("o\n99999999999999999999\n" + root + "\n")))
+    assert(not is_ok(parse_epoch(["lotcast/epoch 99999999999999999999 5"])))
+    assert(is_ok(parse_epoch(["lotcast/epoch 7 5"])))

@@ -62,7 +62,7 @@ path = "../cli"
 version = "0.1.0"
 
 [environment]
-variables = ["PWD"]
+variables = ["PWD", "LOTCAST_STORE_URL", "LOTCAST_STORE_TOKEN"]
 
 [package]
 name = "lotcast-cli-modes"

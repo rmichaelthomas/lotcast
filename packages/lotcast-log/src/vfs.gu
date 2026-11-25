@@ -7,15 +7,16 @@ import "std:process"
 import "std:text"
 
 # The file layer the service and the log write through. By default it is the local disk. When the
-# environment variable LOTCAST_STORE_URL is set (the Cloudflare deployment sets it to http://store.do),
-# every file lives in a key-value store behind that URL instead, because a Cloudflare container's own
-# disk is erased when it stops. The store keeps files by path:
+# environment variable LOTCAST_STORE_URL is set (the Cloudflare deployment points it at the Worker, which
+# keeps the files in a Durable Object), every file lives in that key-value store instead, because a
+# Cloudflare container's own disk is erased when it stops. If LOTCAST_STORE_TOKEN is set, every request
+# carries it as `Authorization: Bearer TOKEN`. The store keeps files by path:
 #
 #   GET    BASE/f/PATH   the file's bytes, or 404
 #   PUT    BASE/f/PATH   write the file (replacing it); with `If-None-Match: *` only if absent, else 412
 #   DELETE BASE/f/PATH   remove the file, or the directory marker PATH/.dir if there is no such file
 #   GET    BASE/e/PATH   200 if PATH is a file, a directory marker or has files under it, else 404
-#   GET    BASE/l/PATH   a JSON array of the names directly under PATH, 404 if there are none
+#   GET    BASE/l/PATH   a JSON array of the names directly under PATH (empty if there are none)
 #
 # A directory is the marker file PATH/.dir. Paths use only letters, digits and . _ - / (no "..").
 
@@ -53,15 +54,32 @@ record Answer:
     status: Int
     body: Bytes
 
+# A request that gets no answer is retried for up to 40 seconds: when the container has only just
+# started, Cloudflare connects it to the store a moment after the program begins.
 fn call(method: Text, url: Text, headers: Map[Text, Text], body: Bytes) -> Result[Answer, StdError]:
-    let answered = http_request_bytes(method, url, headers, body, 30000)
-    if not is_ok(answered):
-        return Err(vfs_error("the store did not answer: " + method + " " + url))
-    return Ok(Answer(unwrap(answered).status, unwrap(answered).body))
+    var attempt = 0
+    while true:
+        let answered = http_request_bytes(method, url, headers, body, 30000)
+        if is_ok(answered):
+            return Ok(Answer(unwrap(answered).status, unwrap(answered).body))
+        set attempt = attempt + 1
+        if attempt >= 40:
+            match answered:
+                Err(e):
+                    return Err(vfs_error("the store did not answer: " + method + " " + url + " (" + http_error_code(e) + ": " + http_error_message(e) + ")"))
+                Ok(ignored):
+                    return Err(vfs_error("the store did not answer: " + method + " " + url))
+        sleep_ms(1000)
+    return Err(vfs_error("unreachable"))
 
 fn no_headers() -> Map[Text, Text]:
-    let none: Map[Text, Text] = {}
-    return none
+    var headers: Map[Text, Text] = {}
+    match env("LOTCAST_STORE_TOKEN"):
+        Some(token):
+            set headers = map_set(headers, "Authorization", "Bearer " + text_trim(token))
+        None:
+            return headers
+    return headers
 
 pub fn vfs_read_bytes(path: Text) -> Result[Bytes, StdError]:
     let base = vfs_base()
@@ -118,7 +136,7 @@ pub fn vfs_make_dir(path: Text) -> Result[Bool, StdError]:
         if vfs_exists(path) or not is_ok(fs_make_dir(path)):
             return Err(vfs_error("cannot create " + path))
         return Ok(true)
-    var headers: Map[Text, Text] = {}
+    var headers = no_headers()
     set headers = map_set(headers, "If-None-Match", "*")
     let reply = call("PUT", vfs_store_url(base, "/f", path + "/.dir")?, headers, bytes_from_text(""))?
     if reply.status < 200 or reply.status > 299:

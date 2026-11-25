@@ -23,6 +23,6 @@ CMD cp /app/registry/lotcast-registry-v1.json /data/registry.json && guion run -
     --allow-http-host api.drand.sh --allow-http-host drand.cloudflare.com \
     --allow-http-host beacon.nist.gov --allow-http-host random.colorado.edu \
     --allow-http-host timestamp.digicert.com --allow-http-host timestamp.sectigo.com \
-    --allow-http-host freetsa.org serve.gu \
+    --allow-http-host freetsa.org ${LOTCAST_STORE_HOST:+--allow-http-host $LOTCAST_STORE_HOST} serve.gu \
     --host 0.0.0.0 --port ${PORT} --data-dir lotcast --registry registry.json \
     --trust-proxy 1

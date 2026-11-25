@@ -34,7 +34,11 @@ pub fn store_open(root: Text) -> Result[Store, StdError]:
 fn store_names(store: Store, dir: Text) -> Result[List[Text], StdError]:
     let listed = vfs_list(store.root + "/" + dir)
     if not is_ok(listed):
-        return Err(store_error("cannot list " + dir))
+        match listed:
+            Err(e):
+                return Err(store_error("cannot list " + dir + ": " + e.message))
+            Ok(ignored):
+                return Err(store_error("cannot list " + dir))
     var out: List[Text] = []
     for name in sort(unwrap(listed)):
         let size = len(name)

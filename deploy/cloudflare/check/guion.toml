@@ -15,5 +15,9 @@ name = "lotcast-fs-check"
 version = "0.1.0"
 
 [approved-capabilities.lotcast-log]
+environment = ["LOTCAST_STORE_URL", "LOTCAST_STORE_TOKEN"]
 files = ["read", "write"]
 network = ["timestamp.digicert.com", "timestamp.sectigo.com", "freetsa.org"]
+
+[environment]
+variables = ["LOTCAST_STORE_URL", "LOTCAST_STORE_TOKEN"]

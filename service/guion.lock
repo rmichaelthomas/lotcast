@@ -72,7 +72,7 @@ exports = [
     "src/tsa_pins.gu",
     "src/anchor.gu",
 ]
-sha256 = "b0c4f439dca004b38459c7feed9adbb0e47dd13d40f4ea5ebd01c5992a46bce0"
+sha256 = "9b0492db1b6069175167265634e0262a733c5649ba365234759e57d2ea916e92"
 source = "../packages/lotcast-log"
 source_kind = "path"
 version = "0.1.0"
@@ -91,10 +91,10 @@ exports = [
     "src/html.gu",
     "src/static.gu",
 ]
-sha256 = "8f961472ad448adbeba8f027147a3be040d45a4830634c67c56549e708f0a817"
-source = "https://guion-registry.thomasbuild.workers.dev/objects/3eaf1653f4fd4aeec39a1a752608ae3a61032878826ea375db72209e830476a9.tar"
-source_kind = "url"
-version = "0.2.0"
+sha256 = "c8ef503a78baa6560cefb8aa19968d6a74d8d013de273ccd19fd41e74b1a9804"
+source = "../../guion/packages/web"
+source_kind = "path"
+version = "0.3.0"
 
 [native.web.capabilities]
 clock = true

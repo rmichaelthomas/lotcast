@@ -5,6 +5,7 @@ pub import "compute.gu"
 pub import "client.gu"
 pub import "plan.gu"
 pub import "bind.gu"
+pub import "run.gu"
 pub import "commands.gu"
 
 pub fn lotcast_cli_version() -> Text:

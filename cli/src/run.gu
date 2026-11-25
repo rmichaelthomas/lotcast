@@ -1,0 +1,116 @@
+import "std:types"
+import "std:encoding"
+import "std:json"
+import "std:text"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+import "client.gu"
+import "plan.gu"
+import "bind.gu"
+
+# The work of `draw`, `get` and `verify` as values, with nothing printed: the command line and the
+# MCP server both build on these. The network, the clock and the sleep are passed in.
+
+# `verdict` is verified, verified-pending-live, verified-unanchored or invalid.
+pub record Check:
+    verdict: Text
+    detail: Text
+    failed_step: Int
+
+# `status` is complete, pending or anchor-failed.
+pub record Drawn:
+    status: Text
+    id: Text
+    index: Int
+    receipt: Json
+    waiting_on: Json
+    check: Check
+
+pub fn check_value(receipt: Json, operator_key: Bytes, asked: Bool, question: Text, salt: Bytes, live: Bool) -> Check:
+    let verdict = verify_any(receipt, operator_key, tsa_pins(), asked, question, salt)
+    if verdict.result == "verified-pending-live" and live:
+        let confirmed = live_recheck(receipt)
+        if is_ok(confirmed):
+            return Check("verified", "Every step passed offline, and the live chains confirm that these sources still have no pulse for this draw: " + text_join(unwrap(confirmed), ", ") + ".", 0)
+        match confirmed:
+            Err(problem):
+                if problem.code == "E_LOTCAST_PENDING":
+                    return Check("verified-pending-live", problem.message, 0)
+                return Check("invalid", problem.message, 4)
+            Ok(ignored):
+                return Check("invalid", "unreadable", 4)
+    return Check(verdict.result, verdict.detail, verdict.failed_step)
+
+fn none_check() -> Check:
+    return Check("", "", 0)
+
+fn drawn_from(view: Json, key: Bytes, asked: Bool, question: Text, salt: Bytes) -> Drawn:
+    let id = json_as_text(json_get(view, "id"))
+    let index = json_as_int(json_get(view, "index"))
+    let status = json_as_text(json_get(view, "status"))
+    var waiting = json_array()
+    if json_has(view, "waiting_on"):
+        set waiting = json_get(view, "waiting_on")
+    if status == "complete":
+        let receipt = json_get(view, "receipt")
+        return Drawn("complete", id, index, receipt, waiting, check_value(receipt, key, asked, question, salt, false))
+    if status == "anchor-failed":
+        return Drawn("anchor-failed", id, index, json_null(), waiting, none_check())
+    return Drawn("pending", id, index, json_null(), waiting, none_check())
+
+# Polls a draw until it is complete, anchor-failed, or `wait` seconds have passed.
+fn poll(server: Text, id: Text, wait: Int, send: fn(Text, Text, Text) -> Result[Reply, StdError], pause: fn(Int) -> Unit) -> Result[Json, Text]:
+    var waited = 0
+    var last = json_null()
+    while true:
+        let reply = send("GET", server + "/v1/draws/" + id, "")
+        if is_ok(reply) and unwrap(reply).status == 200:
+            set last = unwrap(reply).body
+            let status = json_as_text(json_get(last, "status"))
+            if status == "complete" or status == "anchor-failed":
+                return Ok(last)
+        if waited >= wait:
+            if json_is_null(last):
+                return Err("the service did not answer")
+            return Ok(last)
+        pause(3)
+        set waited = waited + 3
+    return Ok(last)
+
+pub fn run_draw(plan: DrawPlan, key: Bytes, send: fn(Text, Text, Text) -> Result[Reply, StdError], pause: fn(Int) -> Unit, logged: fn(Text, Int) -> Unit) -> Result[Drawn, Text]:
+    let posted = send("POST", plan.server + "/v1/draws", plan.body)
+    if not is_ok(posted):
+        match posted:
+            Err(problem):
+                return Err(problem.message)
+            Ok(ignored):
+                return Err("no answer")
+    let reply = unwrap(posted)
+    if reply.status != 200 and reply.status != 202:
+        return Err("the service refused the request: " + error_message(reply.body))
+    let id_found = json_get_text_safe(reply.body, "id")
+    if not is_ok(id_found):
+        return Err("the service's answer has no id: do not trust this draw")
+    let id = unwrap(id_found)
+    let doubt = binding_problem(reply.body, key, plan.request_json, plan.entry_hash_hex, id)
+    if doubt != "":
+        return Err(doubt + ": do not trust this draw")
+    logged(id, json_as_int(json_get(reply.body, "index")))
+    let view = poll(plan.server, id, plan.wait_seconds, send, pause)?
+    let later = binding_problem(view, key, plan.request_json, plan.entry_hash_hex, id)
+    if later != "":
+        return Err(later + ": do not trust this draw")
+    var salt = bytes_from_ints([])
+    if plan.has_question:
+        let decoded = hex_decode(plan.salt_hex)
+        if not is_ok(decoded):
+            return Err("the salt is not hex")
+        set salt = unwrap(decoded)
+    return Ok(drawn_from(view, key, plan.has_question, plan.question, salt))
+
+pub fn fetch_draw(server: Text, id: Text, key: Bytes, wait: Int, send: fn(Text, Text, Text) -> Result[Reply, StdError], pause: fn(Int) -> Unit, asked: Bool, question: Text, salt: Bytes) -> Result[Drawn, Text]:
+    let view = poll(server, id, wait, send, pause)?
+    let doubt = binding_problem(view, key, "", "", id)
+    if doubt != "":
+        return Err(doubt + ": do not trust this draw")
+    return Ok(drawn_from(view, key, asked, question, salt))

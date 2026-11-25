@@ -538,3 +538,17 @@ fn test_store_lock_marker_that_holds_our_nonce_means_we_took_the_lock() -> Unit:
     assert(vfs_lock_is_ours("abc123", "abc123"))
     assert(not vfs_lock_is_ours("abc123", "zzz999"))
     assert(not vfs_lock_is_ours("abc123", ""))
+
+# ---- vfs: reading and listing a named store (used by the backup); "" means the local disk
+fn test_named_store_with_no_url_reads_and_lists_the_local_disk() -> Unit:
+    let dir = vfs_dir()
+    assert(is_ok(vfs_write_text(dir + "/a.txt", "one")))
+    assert(is_ok(vfs_make_dirs(dir + "/sub")))
+    assert(is_ok(vfs_write_text(dir + "/sub/b.txt", "two")))
+    assert(unwrap(vfs_read_bytes_at("", "", dir + "/a.txt")) == bytes_from_text("one"))
+    let names = unwrap(vfs_list_at("", "", dir))
+    assert(len(names) == 2)
+    assert(len(unwrap(vfs_list_at("", "", dir + "/sub"))) == 1)
+
+fn test_a_store_url_is_built_from_the_given_base_not_the_environment() -> Unit:
+    assert(unwrap(vfs_store_url("https://h.example/internal/store/", "/f", "state/x.json")) == "https://h.example/internal/store/f/state/x.json")

@@ -91,12 +91,13 @@ Docker on the machine that deploys.
   Set it with `printf '%s' "$SEED" | npx wrangler secret put LOTCAST_OPERATOR_KEY`. A secret cannot be read
   back, so keep the seed somewhere safe too: if it is lost, the log's identity is lost. The public half
   is at `GET /v1/operator`, in the README, and on the checking page (`verify-web/public/operator-key.txt`).
-- **Backup.** There is no backup command yet. What is public is copyable: `GET /v1/log/...` serves the
-  log's tiles and checkpoint, so anyone can keep a copy of the log (it is `lotcast audit` input), and every
-  receipt a user holds checks on its own. What is not public is the operator's own copy of the receipts and
-  request files: they exist only in the Durable Object's database. Cloudflare's point-in-time recovery for
-  SQLite Durable Objects is the safety net for that database; it is a restore you do from code, not a
-  scheduled export. Keep the operator seed somewhere safe as well (see above).
+- **Backup.** `lotcast backup` copies the whole store (the log, the draws, the receipts) from the Durable
+  Object to a folder on your machine, and is safe to run again any time:
+  `cd cli && guion run --file-root ~/.lotcast --allow-http-host lotcast.thomasbuild.workers.dev lotcast.gu backup --server https://lotcast.thomasbuild.workers.dev --key-file operator-seed.hex --to backup`.
+  The seed file is used only to derive the token the Worker checks and is never sent; the rate-limit files
+  are not copied; the copy holds no secret, but keep it private anyway (it has every question hash and
+  receipt). A receipt in the copy verifies with `lotcast verify`. Cloudflare's point-in-time recovery for
+  SQLite Durable Objects is a second safety net. Keep the operator seed itself somewhere safe too (see above).
 - **Idle.** The Durable Object checks on every alarm (every few minutes while the container runs) and stops
   the container after 30 minutes (`IDLE_MINUTES`) without an outside request, but not while `GET /v1/status`
   reports a pending draw. If the service cannot be asked, the container is kept (it is stopped only after five

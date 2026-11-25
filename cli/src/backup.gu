@@ -1,0 +1,70 @@
+import "std:types"
+import "std:crypto"
+import "std:encoding"
+import "std:fs"
+import "std:process"
+import "std:text"
+import "pkg:lotcast-log/src/lib.gu"
+
+# lotcast backup: copy every file of the service's store (the log, the draws and the receipts) to a local
+# folder. The store lives in the Cloudflare Durable Object and is reached through the Worker's authenticated
+# /internal/store route; the token is derived from the operator seed exactly as the Worker derives it. The
+# rate-limit files (a salt and per-client counters) are not copied: they are not records.
+
+# The bearer token the Worker expects: sha256("lotcast-store:" + seed), in hex. The seed is the text
+# of the 64 hex characters, as stored in the Worker secret.
+pub fn backup_token(seed_text: Text) -> Text:
+    return hex_encode(crypto_sha256(bytes_from_text("lotcast-store:" + text_trim(seed_text))))
+
+pub fn backup_skip(relative: Text) -> Bool:
+    return relative == "state/rate_salt" or (len(relative) >= 11 and text_slice(relative, 0, 11) == "state/rate/")
+
+fn join(root: Text, relative: Text) -> Text:
+    if relative == "":
+        return root
+    if root == "":
+        return relative
+    return root + "/" + relative
+
+# Paths (relative to `root`) of every file below it. A name with nothing listed under it is a file.
+pub fn backup_walk(base: Text, token: Text, root: Text, relative: Text) -> Result[List[Text], StdError]:
+    let names = vfs_list_at(base, token, join(root, relative))?
+    var out: List[Text] = []
+    for name in names:
+        let child = join(relative, name)
+        if backup_skip(child):
+            continue
+        let kids = vfs_list_at(base, token, join(root, child))
+        if is_ok(kids) and len(unwrap(kids)) > 0:
+            let inner = backup_walk(base, token, root, child)?
+            for path in inner:
+                set out = list_push(out, path)
+        else:
+            set out = list_push(out, child)
+    return Ok(out)
+
+fn parent_of(path: Text) -> Text:
+    var i = len(path) - 1
+    while i >= 0:
+        if text_slice(path, i, i + 1) == "/":
+            return text_slice(path, 0, i)
+        set i = i - 1
+    return ""
+
+# Copies every file below `from_root` in the named store to `to_root` on this machine (a later run
+# overwrites with the newer copy). Returns how many files were copied. A file that cannot be read (it was
+# removed while the backup ran, or it is a lock directory) is named on stderr and not counted.
+pub fn backup_copy(base: Text, token: Text, from_root: Text, to_root: Text) -> Result[Int, StdError]:
+    let paths = backup_walk(base, token, from_root, "")?
+    var copied = 0
+    for relative in paths:
+        let data = vfs_read_bytes_at(base, token, join(from_root, relative))
+        if not is_ok(data):
+            eprint("not copied (removed or a directory): " + relative)
+            continue
+        let parent = parent_of(relative)
+        if parent != "":
+            let made = vfs_make_dirs(join(to_root, parent))?
+        let written = vfs_write_bytes(join(to_root, relative), unwrap(data))?
+        set copied = copied + 1
+    return Ok(copied)

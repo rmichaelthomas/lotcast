@@ -49,7 +49,7 @@ fn nist() -> Result[Text, Text]:
         if id != cert_id:
             return Err("the NIST pulses name more than one certificate")
         set pulses = json_push(pulses, pulse)
-    let cert = fetch_text("https://beacon.nist.gov/beacon/2.0/certificate/" + ascii_lower(cert_id))?
+    let cert = fetch_text("https://beacon.nist.gov/beacon/2.0/certificate/" + text_lower(cert_id))?
     var doc = json_object()
     set doc = json_set(doc, "certificate_pem", json_text(cert))
     set doc = json_set(doc, "pulses", pulses)

@@ -1,0 +1,19 @@
+[capabilities]
+files = [
+    "read",
+    "write",
+]
+
+[dependencies.lotcast-log]
+path = "../../../packages/lotcast-log"
+version = "0.1.0"
+
+[package]
+entry = "fs_check.gu"
+exports = []
+name = "lotcast-fs-check"
+version = "0.1.0"
+
+[approved-capabilities.lotcast-log]
+files = ["read", "write"]
+network = ["timestamp.digicert.com", "timestamp.sectigo.com", "freetsa.org"]

@@ -71,6 +71,21 @@ fn test_unknown_route_is_404_and_wrong_method_is_405() -> Unit:
     assert(call(app, "GET", "/v1/nothing", "").status == 404)
     assert(call(app, "DELETE", "/v1/traditions", "").status == 405)
 
+fn test_status_counts_pending_draws() -> Unit:
+    let root = temp_root()
+    let app = make_app(root, 0)
+    let empty = call(app, "GET", "/v1/status", "")
+    assert(empty.status == 200)
+    assert(json_as_int(json_get(json_body(empty), "pending")) == 0)
+    let queued = call(app, "POST", "/v1/draws", nonce_body(7))
+    assert(queued.status == 202)
+    let one = call(app, "GET", "/v1/status", "")
+    assert(json_as_int(json_get(json_body(one), "pending")) == 1)
+    let store = unwrap(store_open(root))
+    let marked = store_put_json(store, "active/abc.json", json_object())
+    let two = call(app, "GET", "/v1/status", "")
+    assert(json_as_int(json_get(json_body(two), "pending")) == 2)
+
 fn test_post_draws_queues_and_answers_202_with_what_it_waits_on_when_no_writer_runs() -> Unit:
     let root = temp_root()
     let app = make_app(root, 0)

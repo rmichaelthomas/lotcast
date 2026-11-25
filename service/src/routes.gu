@@ -144,6 +144,16 @@ fn h_verify(request: Request) -> Result[Response, HttpFailure]:
 
 # The operator's public key, for clients that pin it (first contact is trust on first use: pin it
 # out of band for anything that matters).
+# How many draws the service has not finished: requests waiting to be logged plus logged draws whose
+# receipts are not complete. The Cloudflare wrapper reads this before it lets the container sleep.
+fn h_status(request: Request) -> Result[Response, HttpFailure]:
+    let opened = store_open(header_of(request, "x-lotcast-data"))
+    if not is_ok(opened):
+        return Ok(error_response(ApiError(500, "E_INTERNAL", "the data directory cannot be opened")))
+    let store = unwrap(opened)
+    let count = len(store_inbox_ids(store)) + len(store_active_ids(store))
+    return Ok(json_response(200, json_set(json_object(), "pending", json_int(count))))
+
 fn h_operator(request: Request) -> Result[Response, HttpFailure]:
     let key = text_trim(operator_key_hex(request))
     if key == "":
@@ -214,7 +224,7 @@ fn after(config: Map[Text, Text], request: Request, response: Response) -> Resul
 # The whole application for a configuration. `wait_ms` is how long POST /v1/draws waits for the
 # writer to log the request before answering 503.
 pub fn app_build(cfg: Config, wait_ms: Int) -> Result[App, HttpFailure]:
-    let made = router([route("GET", "/v1/traditions", h_traditions), route("GET", "/v1/registry", h_registry), route("GET", "/v1/sources", h_sources), route("POST", "/v1/draws", h_post_draw), route("GET", "/v1/draws/{id}", h_get_draw), route("GET", "/v1/draws/{id}/receipt", h_get_receipt), route("POST", "/v1/verify", h_verify), route("GET", "/v1/operator", h_operator)])?
+    let made = router([route("GET", "/v1/traditions", h_traditions), route("GET", "/v1/registry", h_registry), route("GET", "/v1/sources", h_sources), route("POST", "/v1/draws", h_post_draw), route("GET", "/v1/draws/{id}", h_get_draw), route("GET", "/v1/draws/{id}/receipt", h_get_receipt), route("POST", "/v1/verify", h_verify), route("GET", "/v1/operator", h_operator), route("GET", "/v1/status", h_status)])?
     var settings: Map[Text, Text] = {}
     set settings = map_set(settings, "x-lotcast-data", cfg.data_dir)
     set settings = map_set(settings, "x-lotcast-registry", cfg.registry_file)

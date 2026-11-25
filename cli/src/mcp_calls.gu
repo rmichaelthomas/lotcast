@@ -1,0 +1,482 @@
+import "std:types"
+import "std:encoding"
+import "std:json"
+import "std:text"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-service/src/lib.gu"
+import "client.gu"
+import "plan.gu"
+import "run.gu"
+import "home.gu"
+import "mcp_rpc.gu"
+
+# The six MCP tools. The HTTP call, the sleep and the randomness are passed in so each tool runs
+# without a network. The server and the operator key come from the local config only, never from
+# a tool argument: the model controls arguments. Nothing here prints.
+
+fn fail(code: Text, message: Text) -> Json:
+    return tool_result(code + ": " + message, true)
+
+# "" when every key of `args` is one of `allowed`, else the first stranger.
+fn stray_key(args: Json, allowed: List[Text]) -> Text:
+    for k in object_keys(args):
+        var found = false
+        for a in allowed:
+            if a == k:
+                set found = true
+        if not found:
+            return k
+    return ""
+
+fn arg_text(args: Json, key: Text) -> Result[Text, Text]:
+    if not json_has(args, key):
+        return Err(key + " is required")
+    let v = json_get_text_safe(args, key)
+    if not is_ok(v):
+        return Err(key + " must be text")
+    return Ok(unwrap(v))
+
+fn arg_seconds(args: Json, fallback: Int) -> Result[Int, Text]:
+    if not json_has(args, "wait_seconds"):
+        return Ok(fallback)
+    let v = json_get_int_safe(args, "wait_seconds")
+    if not is_ok(v) or unwrap(v) < 0 or unwrap(v) > 600:
+        return Err("wait_seconds must be a whole number from 0 to 600")
+    return Ok(unwrap(v))
+
+# ---------------------------------------------------------------- the operator key
+
+fn decode_key(hex: Text) -> Result[Bytes, Text]:
+    let d = hex_decode(hex)
+    if not is_ok(d) or len(unwrap(d)) != 32:
+        return Err("the operator key must be 32 bytes of hex")
+    return Ok(unwrap(d))
+
+# The key for the configured server: from config.json, else the one pinned before, else the
+# service's own (trust on first use), which is then pinned. A change is refused.
+fn operator_key(h: McpHome, cfg: McpConfig, send: fn(Text, Text, Text) -> Result[Reply, StdError]) -> Result[Bytes, Text]:
+    var hex = cfg.operator_key_hex
+    if hex == "":
+        set hex = home_pinned_key(h, cfg.server)
+    if hex == "":
+        let reply = send("GET", cfg.server + "/v1/operator", "")
+        if not is_ok(reply):
+            match reply:
+                Err(problem):
+                    return Err("E_SERVER: " + problem.message)
+                Ok(ignored):
+                    return Err("E_SERVER: no answer")
+        if unwrap(reply).status != 200:
+            return Err("E_SERVER: the service does not publish an operator key")
+        let seen = json_get_text_safe(unwrap(reply).body, "public_key")
+        if not is_ok(seen):
+            return Err("E_SERVER: the operator key the service published is unreadable")
+        set hex = unwrap(seen)
+    let key = decode_key(hex)?
+    let pinned = home_pin_key(h, cfg.server, hex)
+    if not is_ok(pinned):
+        match pinned:
+            Err(why):
+                return Err("E_KEY_CHANGED: " + why)
+            Ok(ignored):
+                return Err("E_KEY_CHANGED")
+    return Ok(key)
+
+# ---------------------------------------------------------------- results
+
+fn names_of(outcome: Json) -> Json:
+    var names = json_object()
+    if json_has(outcome, "hexagram") and json_has(outcome, "relating"):
+        let all = hexagram_names()
+        let a = json_get_int_safe(outcome, "hexagram")
+        let b = json_get_int_safe(outcome, "relating")
+        if is_ok(a) and unwrap(a) >= 1 and unwrap(a) <= len(all):
+            set names = json_set(names, "hexagram", json_text(all[unwrap(a) - 1]))
+        if is_ok(b) and unwrap(b) >= 1 and unwrap(b) <= len(all):
+            set names = json_set(names, "relating", json_text(all[unwrap(b) - 1]))
+    return names
+
+fn drawn_result(d: Drawn, sealed: Bool) -> Json:
+    var out = json_set(json_object(), "status", json_text(d.status))
+    set out = json_set(out, "id", json_text(d.id))
+    set out = json_set(out, "index", json_int(d.index))
+    set out = json_set(out, "sealed", json_bool(sealed))
+    if d.status == "complete":
+        let outcome = json_get(d.receipt, "outcome")
+        set out = json_set(out, "positions", outcome)
+        set out = json_set(out, "names", names_of(outcome))
+        set out = json_set(out, "verdict", json_text(d.check.verdict))
+        set out = json_set(out, "detail", json_text(d.check.detail))
+        if d.check.verdict == "invalid":
+            set out = json_set(out, "failed_step", json_int(d.check.failed_step))
+            return json_set(out, "error", json_text("the receipt did not verify: do not use these positions"))
+        return out
+    if d.status == "anchor-failed":
+        return json_set(out, "error", json_text("the epoch's timestamps did not arrive in time, so this request has no receipt; draw again"))
+    set out = json_set(out, "waiting_on", d.waiting_on)
+    return json_set(out, "next", json_text("use get_draw with this id"))
+
+fn is_failure(result: Json) -> Bool:
+    return json_has(result, "error")
+
+# ---------------------------------------------------------------- draw / get_draw
+
+fn option_args(args: Json) -> Result[List[Text], Text]:
+    var out: List[Text] = []
+    if not json_has(args, "options"):
+        return Ok(out)
+    let o = json_get_safe(args, "options")
+    if not is_ok(o) or not is_object(unwrap(o)):
+        return Err("options must be an object")
+    let obj = unwrap(o)
+    for k in object_keys(obj):
+        let v = json_get(obj, k)
+        var t = ""
+        let as_text = json_text_safe(v)
+        let as_int = json_int_safe(v)
+        let as_bool = json_bool_safe(v)
+        if is_ok(as_text):
+            set t = unwrap(as_text)
+        else:
+            if is_ok(as_int):
+                set t = int_to_text(unwrap(as_int))
+            else:
+                if is_ok(as_bool):
+                    if unwrap(as_bool):
+                        set t = "true"
+                    else:
+                        set t = "false"
+                else:
+                    return Err("option " + k + " must be text, a number or true or false")
+        set out = list_push(out, k + "=" + t)
+    return Ok(out)
+
+fn source_args(args: Json) -> Result[List[Text], Text]:
+    var out: List[Text] = []
+    if not json_has(args, "sources"):
+        return Ok(out)
+    let s = json_get_safe(args, "sources")
+    if not is_ok(s) or not is_array(unwrap(s)):
+        return Err("sources must be a list of source ids")
+    var ids: List[Text] = []
+    for i in range(0, json_len(unwrap(s))):
+        let item = json_text_safe(unwrap(json_index_safe(unwrap(s), i)))
+        if not is_ok(item):
+            return Err("sources must be a list of source ids")
+        set ids = list_push(ids, unwrap(item))
+    return Ok(["--sources", text_join(ids, ",")])
+
+fn tool_draw(h: McpHome, cfg: McpConfig, args: Json, send: fn(Text, Text, Text) -> Result[Reply, StdError], pause: fn(Int) -> Unit, random: fn(Int) -> Bytes) -> Json:
+    let stray = stray_key(args, ["tradition", "method", "options", "question", "seal", "sources", "wait_seconds"])
+    if stray != "":
+        return fail("E_ARGUMENT", "unknown argument: " + stray)
+    if cfg.sign_requests:
+        return fail("E_SUBJECT_KEY_UNSUPPORTED", "signed subject keys are not available yet; set sign_requests to false in config.json")
+    let tradition = arg_text(args, "tradition")
+    let method = arg_text(args, "method")
+    if not is_ok(tradition):
+        return fail("E_ARGUMENT", err_text(tradition))
+    if not is_ok(method):
+        return fail("E_ARGUMENT", err_text(method))
+    var question = ""
+    var asked = false
+    if json_has(args, "question"):
+        let q = arg_text(args, "question")
+        if not is_ok(q):
+            return fail("E_ARGUMENT", err_text(q))
+        set question = unwrap(q)
+        set asked = true
+    var seal = "none"
+    if asked:
+        set seal = "hash"
+    if json_has(args, "seal"):
+        let s = arg_text(args, "seal")
+        if not is_ok(s):
+            return fail("E_ARGUMENT", err_text(s))
+        set seal = unwrap(s)
+    if seal == "tlock":
+        return fail("E_TLOCK_UNSUPPORTED", "timelocked questions are not available yet; use seal hash")
+    if seal != "hash" and seal != "none":
+        return fail("E_ARGUMENT", "seal must be hash, tlock or none")
+    if seal == "hash" and not asked:
+        return fail("E_ARGUMENT", "seal hash needs a question")
+    if seal == "none" and asked:
+        return fail("E_ARGUMENT", "a question needs seal hash (the default); it is never sent in the clear")
+    let opts = option_args(args)
+    if not is_ok(opts):
+        return fail("E_ARGUMENT", err_list(opts))
+    let srcs = source_args(args)
+    if not is_ok(srcs):
+        return fail("E_ARGUMENT", err_list(srcs))
+    let wait = arg_seconds(args, 180)
+    if not is_ok(wait):
+        return fail("E_ARGUMENT", err_int(wait))
+    var argv: List[Text] = [unwrap(tradition), unwrap(method)]
+    for o in unwrap(opts):
+        set argv = list_push(argv, o)
+    if asked:
+        set argv = list_push(argv, "--question")
+        set argv = list_push(argv, question)
+    for a in unwrap(srcs):
+        set argv = list_push(argv, a)
+    set argv = list_push(argv, "--wait")
+    set argv = list_push(argv, int_to_text(unwrap(wait)))
+    set argv = list_push(argv, "--server")
+    set argv = list_push(argv, cfg.server)
+    let planned = plan_draw(argv, random(32), random(32))
+    if not is_ok(planned):
+        return fail("E_ARGUMENT", err_plan(planned))
+    let plan = unwrap(planned)
+    let key = operator_key(h, cfg, send)
+    if not is_ok(key):
+        return fail("E_SERVER", err_bytes(key))
+    let id = text_slice(plan.entry_hash_hex, 0, 32)
+    if asked:
+        let kept = home_save_sealed(h, Sealed(id, question, plan.salt_hex, plan.request_json, plan.entry_hash_hex))
+        if not is_ok(kept):
+            return fail("E_STORE", err_bool(kept) + " (nothing was sent)")
+    let drawn = run_draw(plan, unwrap(key), send, pause, no_log)
+    if not is_ok(drawn):
+        return fail("E_DRAW", err_drawn(drawn))
+    return finish_drawn(h, unwrap(drawn), asked)
+
+fn no_log(id: Text, index: Int) -> Unit:
+    let nothing = id
+
+fn err_text(r: Result[Text, Text]) -> Text:
+    match r:
+        Err(why):
+            return why
+        Ok(ignored):
+            return ""
+
+fn err_list(r: Result[List[Text], Text]) -> Text:
+    match r:
+        Err(why):
+            return why
+        Ok(ignored):
+            return ""
+
+fn err_int(r: Result[Int, Text]) -> Text:
+    match r:
+        Err(why):
+            return why
+        Ok(ignored):
+            return ""
+
+fn err_plan(r: Result[DrawPlan, Text]) -> Text:
+    match r:
+        Err(why):
+            return why
+        Ok(ignored):
+            return ""
+
+fn err_bytes(r: Result[Bytes, Text]) -> Text:
+    match r:
+        Err(why):
+            return why
+        Ok(ignored):
+            return ""
+
+fn err_bool(r: Result[Bool, Text]) -> Text:
+    match r:
+        Err(why):
+            return why
+        Ok(ignored):
+            return ""
+
+fn err_drawn(r: Result[Drawn, Text]) -> Text:
+    match r:
+        Err(why):
+            return why
+        Ok(ignored):
+            return ""
+
+fn err_json(r: Result[Json, Text]) -> Text:
+    match r:
+        Err(why):
+            return why
+        Ok(ignored):
+            return ""
+
+
+fn finish_drawn(h: McpHome, d: Drawn, sealed: Bool) -> Json:
+    if d.status == "complete":
+        let saved = home_save_receipt(h, d.id, d.receipt)
+    let out = drawn_result(d, sealed)
+    return tool_json(out, is_failure(out))
+
+fn tool_get_draw(h: McpHome, cfg: McpConfig, args: Json, send: fn(Text, Text, Text) -> Result[Reply, StdError], pause: fn(Int) -> Unit) -> Json:
+    let stray = stray_key(args, ["id", "wait_seconds"])
+    if stray != "":
+        return fail("E_ARGUMENT", "unknown argument: " + stray)
+    let id = arg_text(args, "id")
+    if not is_ok(id):
+        return fail("E_ARGUMENT", err_text(id))
+    if not is_draw_id(unwrap(id)):
+        return fail("E_ARGUMENT", "id must be 32 lowercase hex characters")
+    let wait = arg_seconds(args, 0)
+    if not is_ok(wait):
+        return fail("E_ARGUMENT", err_int(wait))
+    let key = operator_key(h, cfg, send)
+    if not is_ok(key):
+        return fail("E_SERVER", err_bytes(key))
+    var asked = false
+    var question = ""
+    var salt = bytes_from_ints([])
+    let sealed = home_load_sealed(h, unwrap(id))
+    if is_ok(sealed):
+        let decoded = hex_decode(unwrap(sealed).salt_hex)
+        if is_ok(decoded):
+            set asked = true
+            set question = unwrap(sealed).question
+            set salt = unwrap(decoded)
+    let drawn = fetch_draw(cfg.server, unwrap(id), unwrap(key), unwrap(wait), send, pause, asked, question, salt)
+    if not is_ok(drawn):
+        return fail("E_DRAW", err_drawn(drawn))
+    return finish_drawn(h, unwrap(drawn), asked)
+
+# ---------------------------------------------------------------- verify_receipt / open_sealed
+
+fn receipt_of(h: McpHome, args: Json) -> Result[Json, Text]:
+    let given = json_get_safe(args, "receipt")
+    if not is_ok(given):
+        return Err("receipt is required")
+    if is_object(unwrap(given)):
+        return Ok(unwrap(given))
+    let t = json_text_safe(unwrap(given))
+    if not is_ok(t):
+        return Err("receipt must be a JSON object, JSON text or a path inside the lotcast home")
+    var body = unwrap(t)
+    if text_slice(text_trim(body), 0, 1) != "{":
+        let read = home_read_file(h, body)?
+        set body = read
+    let parsed = json_parse(body)
+    if not is_ok(parsed) or not is_object(unwrap(parsed)):
+        return Err("the receipt is not a JSON object")
+    return Ok(unwrap(parsed))
+
+fn tool_verify(h: McpHome, cfg: McpConfig, args: Json) -> Json:
+    let stray = stray_key(args, ["receipt", "question", "salt"])
+    if stray != "":
+        return fail("E_ARGUMENT", "unknown argument: " + stray)
+    let receipt = receipt_of(h, args)
+    if not is_ok(receipt):
+        return fail("E_BAD_RECEIPT", err_json(receipt))
+    let has_q = json_has(args, "question")
+    if has_q != json_has(args, "salt"):
+        return fail("E_ARGUMENT", "question and salt go together")
+    var question = ""
+    var salt = bytes_from_ints([])
+    if has_q:
+        let q = arg_text(args, "question")
+        let s = arg_text(args, "salt")
+        if not is_ok(q) or not is_ok(s):
+            return fail("E_ARGUMENT", "question and salt must be text")
+        let decoded = hex_decode(unwrap(s))
+        if not is_ok(decoded):
+            return fail("E_ARGUMENT", "the salt is not hex")
+        set question = unwrap(q)
+        set salt = unwrap(decoded)
+    var key = bytes_from_ints([])
+    let log = json_get_safe(unwrap(receipt), "log")
+    if is_ok(log) and not json_is_null(unwrap(log)):
+        var hex = cfg.operator_key_hex
+        if hex == "":
+            set hex = home_pinned_key(h, cfg.server)
+        if hex == "":
+            return fail("E_KEY_UNKNOWN", "no operator key is known for " + cfg.server + ": draw once first, or set operator_key in config.json")
+        let k = decode_key(hex)
+        if not is_ok(k):
+            return fail("E_ARGUMENT", err_bytes(k))
+        set key = unwrap(k)
+    let c = check_value(unwrap(receipt), key, has_q, question, salt, false)
+    var out = json_set(json_object(), "verdict", json_text(c.verdict))
+    set out = json_set(out, "detail", json_text(c.detail))
+    if c.verdict == "invalid":
+        set out = json_set(out, "failed_step", json_int(c.failed_step))
+    return tool_json(out, c.verdict == "invalid")
+
+fn tool_open_sealed(h: McpHome, args: Json) -> Json:
+    let stray = stray_key(args, ["id"])
+    if stray != "":
+        if stray == "ciphertext":
+            return fail("E_TLOCK_UNSUPPORTED", "timelocked questions are not available yet")
+        return fail("E_ARGUMENT", "unknown argument: " + stray)
+    let id = arg_text(args, "id")
+    if not is_ok(id):
+        return fail("E_ARGUMENT", err_text(id))
+    if not is_draw_id(unwrap(id)):
+        return fail("E_ARGUMENT", "id must be 32 lowercase hex characters")
+    let sealed = home_load_sealed(h, unwrap(id))
+    if not is_ok(sealed):
+        return fail("E_NOT_FOUND", "no sealed question for " + unwrap(id) + " was made from this machine")
+    let receipt = home_load_receipt(h, unwrap(id))
+    if not is_ok(receipt):
+        return fail("E_PENDING", "the draw is not complete yet; use get_draw first")
+    let salt = hex_decode(unwrap(sealed).salt_hex)
+    if not is_ok(salt) or len(unwrap(salt)) != 32:
+        return fail("E_NOT_FOUND", "the stored salt is damaged")
+    let commit = hex_encode(question_commit(unwrap(sealed).question, unwrap(salt)))
+    let theirs = json_get_text_safe(json_get(json_get(unwrap(receipt), "request"), "question"), "commit")
+    if not is_ok(theirs) or unwrap(theirs) != commit:
+        return fail("E_MISMATCH", "the stored question does not match the receipt's commitment")
+    var out = json_set(json_object(), "question", json_text(unwrap(sealed).question))
+    set out = json_set(out, "salt", json_text(unwrap(sealed).salt_hex))
+    return tool_json(out, false)
+
+# ---------------------------------------------------------------- list_traditions / describe_method
+
+fn fetch_traditions(cfg: McpConfig, send: fn(Text, Text, Text) -> Result[Reply, StdError]) -> Result[Json, Text]:
+    let reply = send("GET", cfg.server + "/v1/traditions", "")
+    if not is_ok(reply):
+        match reply:
+            Err(problem):
+                return Err(problem.message)
+            Ok(ignored):
+                return Err("no answer")
+    if unwrap(reply).status != 200:
+        return Err("the service answered " + int_to_text(unwrap(reply).status))
+    return Ok(unwrap(reply).body)
+
+fn tool_describe(cfg: McpConfig, args: Json, send: fn(Text, Text, Text) -> Result[Reply, StdError]) -> Json:
+    let stray = stray_key(args, ["tradition", "method"])
+    if stray != "":
+        return fail("E_ARGUMENT", "unknown argument: " + stray)
+    let tradition = arg_text(args, "tradition")
+    let method = arg_text(args, "method")
+    if not is_ok(tradition) or not is_ok(method):
+        return fail("E_ARGUMENT", "tradition and method are required text")
+    let doc = fetch_traditions(cfg, send)
+    if not is_ok(doc):
+        return fail("E_SERVER", err_json(doc))
+    let methods = json_get(unwrap(doc), "methods")
+    for i in range(0, json_len(methods)):
+        let m = unwrap(json_index_safe(methods, i))
+        if json_as_text(json_get(m, "tradition")) == unwrap(tradition) and json_as_text(json_get(m, "method")) == unwrap(method):
+            return tool_json(m, false)
+    return fail("E_NOT_FOUND", "no method " + unwrap(tradition) + "/" + unwrap(method))
+
+fn tool_list(cfg: McpConfig, args: Json, send: fn(Text, Text, Text) -> Result[Reply, StdError]) -> Json:
+    let stray = stray_key(args, [])
+    if stray != "":
+        return fail("E_ARGUMENT", "unknown argument: " + stray)
+    let doc = fetch_traditions(cfg, send)
+    if not is_ok(doc):
+        return fail("E_SERVER", err_json(doc))
+    return tool_json(unwrap(doc), false)
+
+pub fn call_tool(h: McpHome, cfg: McpConfig, name: Text, args: Json, send: fn(Text, Text, Text) -> Result[Reply, StdError], pause: fn(Int) -> Unit, random: fn(Int) -> Bytes) -> Json:
+    if name == "list_traditions":
+        return tool_list(cfg, args, send)
+    if name == "describe_method":
+        return tool_describe(cfg, args, send)
+    if name == "draw":
+        return tool_draw(h, cfg, args, send, pause, random)
+    if name == "get_draw":
+        return tool_get_draw(h, cfg, args, send, pause)
+    if name == "verify_receipt":
+        return tool_verify(h, cfg, args)
+    if name == "open_sealed":
+        return tool_open_sealed(h, args)
+    return fail("E_ARGUMENT", "unknown tool: " + name)

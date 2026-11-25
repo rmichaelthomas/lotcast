@@ -2,6 +2,11 @@ import "std:types"
 import "std:fs"
 import "std:json"
 import "std:text"
+import "std:crypto"
+import "std:encoding"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-log/src/lib.gu"
+import "pkg:lotcast-service/src/lib.gu"
 import "src/lib.gu"
 
 fn main() -> Int:
@@ -114,3 +119,261 @@ fn test_no_mcp_source_prints_to_stdout() -> Unit:
     for path in ["src/mcp_tools.gu", "src/run.gu", "src/home.gu"]:
         let src = unwrap(read_text(path))
         assert(text_find(src, "print(", 0) < 0)
+
+# ---------------------------------------------------------------- the tools
+
+fn fresh_home() -> McpHome:
+    return unwrap(home_open(unwrap(fs_temp_dir("lotcast-mcp")) + "/home"))
+
+fn fixture_receipt() -> Json:
+    return unwrap(json_parse(unwrap(read_text("fixtures/receipt.json"))))
+
+fn fixture_key_hex() -> Text:
+    return text_trim(unwrap(read_text("fixtures/operator-key.hex")))
+
+fn fixture_hash() -> Text:
+    return json_as_text(json_get(json_get(fixture_receipt(), "log"), "entry_hash"))
+
+fn fixture_id() -> Text:
+    return text_slice(fixture_hash(), 0, 32)
+
+fn cfg_with(key_hex: Text) -> McpConfig:
+    return McpConfig("http://svc", key_hex, false)
+
+fn view_of_fixture() -> Json:
+    let r = fixture_receipt()
+    var v = json_object()
+    set v = json_set(v, "id", json_text(fixture_id()))
+    set v = json_set(v, "index", json_get(json_get(r, "log"), "index"))
+    set v = json_set(v, "entry_hash", json_text(fixture_hash()))
+    set v = json_set(v, "promise", json_get(r, "promise"))
+    set v = json_set(v, "epoch", json_int(359111470))
+    set v = json_set(v, "status", json_text("complete"))
+    return json_set(v, "receipt", r)
+
+fn send_fixture(method: Text, url: Text, body: Text) -> Result[Reply, StdError]:
+    return Ok(Reply(200, view_of_fixture()))
+
+fn send_never(method: Text, url: Text, body: Text) -> Result[Reply, StdError]:
+    assert(false)
+    return Ok(Reply(500, json_object()))
+
+fn no_pause(n: Int) -> Unit:
+    let nothing = n
+
+fn fixed_random(n: Int) -> Bytes:
+    var raw: List[Int] = []
+    for i in range(0, n):
+        set raw = list_push(raw, 7)
+    return bytes_from_ints(raw)
+
+fn seed_bytes() -> Bytes:
+    return bytes_from_ints([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32])
+
+fn operator_hex() -> Text:
+    return hex_encode(unwrap(crypto_ed25519_public_key(seed_bytes())))
+
+fn pending_view_for(hash: Bytes) -> Json:
+    let epoch = 5
+    let promise = unwrap(make_promise("lotcast.test/log", 0, hash, epoch, "lotcast.test/log", seed_bytes()))
+    var v = json_object()
+    set v = json_set(v, "id", json_text(text_slice(hex_encode(hash), 0, 32)))
+    set v = json_set(v, "index", json_int(0))
+    set v = json_set(v, "entry_hash", json_text(hex_encode(hash)))
+    set v = json_set(v, "promise", json_text(promise))
+    set v = json_set(v, "epoch", json_int(epoch))
+    set v = json_set(v, "status", json_text("pending"))
+    return json_set(v, "waiting_on", json_array())
+
+fn the_hash(body: Text) -> Bytes:
+    let req = unwrap(parse_draw_request(bytes_from_text(body), 1795556000))
+    return unwrap(entry_hash(req))
+
+# A service that answers any draw: its views are built from the request posted last, which with
+# fixed randomness is always the same request, so GET rebuilds it from the planned body.
+fn posted_body() -> Text:
+    let plan = unwrap(plan_draw(["iching", "coins", "--question", "a secret question", "--sources", "drand-quicknet", "--wait", "0", "--server", "http://svc"], fixed_random(32), fixed_random(32)))
+    return plan.body
+
+fn send_service(method: Text, url: Text, body: Text) -> Result[Reply, StdError]:
+    if method == "GET" and text_find(url, "/v1/operator", 0) >= 0:
+        return Ok(Reply(200, json_set(json_object(), "public_key", json_text(operator_hex()))))
+    if method == "GET" and text_find(url, "/v1/traditions", 0) >= 0:
+        var m = json_set(json_set(json_object(), "tradition", json_text("iching")), "method", json_text("coins"))
+        return Ok(Reply(200, json_set(json_object(), "methods", json_push(json_array(), m))))
+    if method == "POST":
+        assert(text_find(body, "secret", 0) < 0)
+        assert(text_find(body, "question", 0) < 0 or text_find(body, "commitment", 0) >= 0)
+        return Ok(Reply(202, pending_view_for(the_hash(body))))
+    return Ok(Reply(200, pending_view_for(the_hash(posted_body()))))
+
+fn send_post_fails(method: Text, url: Text, body: Text) -> Result[Reply, StdError]:
+    if method == "POST":
+        return Err(std_error("E_CLIENT", "down"))
+    return send_service(method, url, body)
+
+fn draw_args() -> Json:
+    var a = json_set(json_object(), "tradition", json_text("iching"))
+    set a = json_set(a, "method", json_text("coins"))
+    set a = json_set(a, "question", json_text("a secret question"))
+    set a = json_set(a, "sources", json_push(json_array(), json_text("drand-quicknet")))
+    return json_set(a, "wait_seconds", json_int(0))
+
+fn text_of(result: Json) -> Text:
+    return json_as_text(json_get(unwrap(json_index_safe(json_get(result, "content"), 0)), "text"))
+
+fn failed(result: Json) -> Bool:
+    return json_as_bool(json_get(result, "isError"))
+
+fn operator_cfg() -> McpConfig:
+    return McpConfig("http://svc", operator_hex(), false)
+
+fn test_draw_pending_returns_id_and_waiting_on_and_hides_the_question() -> Unit:
+    let h = fresh_home()
+    let r = call_tool(h, operator_cfg(), "draw", draw_args(), send_service, no_pause, fixed_random)
+    assert(not failed(r))
+    let out = unwrap(json_parse(text_of(r)))
+    assert(json_as_text(json_get(out, "status")) == "pending")
+    assert(json_as_bool(json_get(out, "sealed")))
+    assert(json_len(json_get(out, "waiting_on")) == 0)
+    assert(text_find(text_of(r), "a secret question", 0) < 0)
+    assert(text_find(text_of(r), "salt", 0) < 0)
+
+fn test_draw_keeps_the_question_locally_under_the_draw_id() -> Unit:
+    let h = fresh_home()
+    let r = call_tool(h, operator_cfg(), "draw", draw_args(), send_service, no_pause, fixed_random)
+    let id = json_as_text(json_get(unwrap(json_parse(text_of(r))), "id"))
+    assert(unwrap(home_load_sealed(h, id)).question == "a secret question")
+
+fn test_draw_saves_the_salt_before_the_post() -> Unit:
+    let h = fresh_home()
+    let r = call_tool(h, operator_cfg(), "draw", draw_args(), send_post_fails, no_pause, fixed_random)
+    assert(failed(r))
+    let id = text_slice(unwrap(entry_hash_of_posted()), 0, 32)
+    assert(is_ok(home_load_sealed(h, id)))
+
+fn entry_hash_of_posted() -> Result[Text, Text]:
+    return Ok(hex_encode(the_hash(posted_body())))
+
+fn test_tlock_and_subject_keys_are_refused_before_any_network_call() -> Unit:
+    let h = fresh_home()
+    var a = json_set(draw_args(), "seal", json_text("tlock"))
+    assert(text_find(text_of(call_tool(h, operator_cfg(), "draw", a, send_never, no_pause, fixed_random)), "E_TLOCK_UNSUPPORTED", 0) == 0)
+    let signing = McpConfig("http://svc", operator_hex(), true)
+    assert(text_find(text_of(call_tool(h, signing, "draw", draw_args(), send_never, no_pause, fixed_random)), "E_SUBJECT_KEY_UNSUPPORTED", 0) == 0)
+    assert(text_find(text_of(call_tool(h, operator_cfg(), "open_sealed", json_set(json_object(), "ciphertext", json_text("x")), send_never, no_pause, fixed_random)), "E_TLOCK_UNSUPPORTED", 0) == 0)
+
+fn test_draw_argument_errors_are_named_and_nothing_is_sent() -> Unit:
+    let h = fresh_home()
+    let cfg = operator_cfg()
+    var nested = json_set(draw_args(), "options", json_set(json_object(), "count", json_array()))
+    assert(text_find(text_of(call_tool(h, cfg, "draw", nested, send_never, no_pause, fixed_random)), "E_ARGUMENT", 0) == 0)
+    var wide = json_set(draw_args(), "wait_seconds", json_int(601))
+    assert(text_find(text_of(call_tool(h, cfg, "draw", wide, send_never, no_pause, fixed_random)), "E_ARGUMENT", 0) == 0)
+    var none_with_question = json_set(draw_args(), "seal", json_text("none"))
+    assert(text_find(text_of(call_tool(h, cfg, "draw", none_with_question, send_never, no_pause, fixed_random)), "E_ARGUMENT", 0) == 0)
+    var hash_without = json_set(json_set(json_object(), "tradition", json_text("iching")), "method", json_text("coins"))
+    set hash_without = json_set(hash_without, "seal", json_text("hash"))
+    assert(text_find(text_of(call_tool(h, cfg, "draw", hash_without, send_never, no_pause, fixed_random)), "E_ARGUMENT", 0) == 0)
+
+fn test_a_model_cannot_choose_the_server_or_the_operator_key() -> Unit:
+    let h = fresh_home()
+    for field in ["server", "operator_key"]:
+        var a = json_set(draw_args(), field, json_text("http://evil"))
+        assert(text_find(text_of(call_tool(h, operator_cfg(), "draw", a, send_never, no_pause, fixed_random)), "E_ARGUMENT", 0) == 0)
+    var v = json_set(json_set(json_object(), "receipt", fixture_receipt()), "operator_key", json_text(fixture_key_hex()))
+    assert(text_find(text_of(call_tool(h, cfg_with(fixture_key_hex()), "verify_receipt", v, send_never, no_pause, fixed_random)), "E_ARGUMENT", 0) == 0)
+
+fn test_the_first_operator_key_is_pinned_and_a_change_is_refused() -> Unit:
+    let h = fresh_home()
+    let first = call_tool(h, McpConfig("http://svc", "", false), "draw", draw_args(), send_service, no_pause, fixed_random)
+    assert(not failed(first))
+    assert(home_pinned_key(h, "http://svc") == operator_hex())
+    let other = McpConfig("http://svc", fixture_key_hex(), false)
+    let second = call_tool(h, other, "draw", draw_args(), send_service, no_pause, fixed_random)
+    assert(failed(second))
+    assert(text_find(text_of(second), "changed", 0) >= 0)
+
+fn test_get_draw_completes_and_resumes_after_a_restart() -> Unit:
+    let h = fresh_home()
+    let args = json_set(json_object(), "id", json_text(fixture_id()))
+    let r = call_tool(h, cfg_with(fixture_key_hex()), "get_draw", args, send_fixture, no_pause, fixed_random)
+    assert(not failed(r))
+    let out = unwrap(json_parse(text_of(r)))
+    assert(json_as_text(json_get(out, "verdict")) == "verified")
+    assert(json_as_int(json_get(json_get(out, "positions"), "hexagram")) == 17)
+    assert(json_as_text(json_get(json_get(out, "names"), "hexagram")) != "")
+    let again = McpHome(h.root)
+    assert(is_ok(home_load_receipt(again, fixture_id())))
+    let r2 = call_tool(again, cfg_with(fixture_key_hex()), "get_draw", args, send_fixture, no_pause, fixed_random)
+    assert(not failed(r2))
+
+fn test_get_draw_rejects_a_bad_id_without_the_network() -> Unit:
+    let h = fresh_home()
+    let r = call_tool(h, cfg_with(fixture_key_hex()), "get_draw", json_set(json_object(), "id", json_text("../../etc/passwd")), send_never, no_pause, fixed_random)
+    assert(text_find(text_of(r), "E_ARGUMENT", 0) == 0)
+
+fn test_verify_receipt_takes_an_object_json_text_or_a_home_path() -> Unit:
+    let h = fresh_home()
+    let cfg = cfg_with(fixture_key_hex())
+    let by_object = call_tool(h, cfg, "verify_receipt", json_set(json_object(), "receipt", fixture_receipt()), send_never, no_pause, fixed_random)
+    assert(json_as_text(json_get(unwrap(json_parse(text_of(by_object))), "verdict")) == "verified")
+    let by_text = call_tool(h, cfg, "verify_receipt", json_set(json_object(), "receipt", json_text(json_stringify(fixture_receipt()))), send_never, no_pause, fixed_random)
+    assert(not failed(by_text))
+    assert(is_ok(home_save_receipt(h, fixture_id(), fixture_receipt())))
+    let by_path = call_tool(h, cfg, "verify_receipt", json_set(json_object(), "receipt", json_text("receipts/" + fixture_id() + ".json")), send_never, no_pause, fixed_random)
+    assert(not failed(by_path))
+
+fn test_verify_receipt_refuses_a_path_outside_the_home() -> Unit:
+    let h = fresh_home()
+    let cfg = cfg_with(fixture_key_hex())
+    for path in ["../fixtures/receipt.json", "/etc/passwd", "fixtures/receipt.json"]:
+        let r = call_tool(h, cfg, "verify_receipt", json_set(json_object(), "receipt", json_text(path)), send_never, no_pause, fixed_random)
+        assert(failed(r))
+
+fn test_verify_receipt_invalid_names_the_step() -> Unit:
+    let h = fresh_home()
+    let changed = json_set(fixture_receipt(), "outcome", json_set(json_object(), "hexagram", json_int(1)))
+    let r = call_tool(h, cfg_with(fixture_key_hex()), "verify_receipt", json_set(json_object(), "receipt", changed), send_never, no_pause, fixed_random)
+    assert(failed(r))
+    let out = unwrap(json_parse(text_of(r)))
+    assert(json_as_text(json_get(out, "verdict")) == "invalid")
+    assert(json_as_int(json_get(out, "failed_step")) > 0)
+
+fn test_verify_receipt_without_a_known_key_says_so() -> Unit:
+    let h = fresh_home()
+    let r = call_tool(h, McpConfig("http://svc", "", false), "verify_receipt", json_set(json_object(), "receipt", fixture_receipt()), send_never, no_pause, fixed_random)
+    assert(text_find(text_of(r), "E_KEY_UNKNOWN", 0) == 0)
+
+fn sealed_receipt(commit_hex: Text) -> Json:
+    let question = json_set(json_set(json_object(), "mode", json_text("hash")), "commit", json_text(commit_hex))
+    return json_set(json_object(), "request", json_set(json_object(), "question", question))
+
+fn test_open_sealed_matches_pending_and_mismatch() -> Unit:
+    let h = fresh_home()
+    let id = "0123456789abcdef0123456789abcdef"
+    let salt = fixed_random(32)
+    assert(is_ok(home_save_sealed(h, Sealed(id, "what now?", hex_encode(salt), "{}", "ab"))))
+    let args = json_set(json_object(), "id", json_text(id))
+    assert(text_find(text_of(call_tool(h, operator_cfg(), "open_sealed", args, send_never, no_pause, fixed_random)), "E_PENDING", 0) == 0)
+    assert(is_ok(home_save_receipt(h, id, sealed_receipt(hex_encode(question_commit("what now?", salt))))))
+    let ok = call_tool(h, operator_cfg(), "open_sealed", args, send_never, no_pause, fixed_random)
+    assert(json_as_text(json_get(unwrap(json_parse(text_of(ok))), "question")) == "what now?")
+    assert(is_ok(home_save_receipt(h, id, sealed_receipt("00"))))
+    assert(text_find(text_of(call_tool(h, operator_cfg(), "open_sealed", args, send_never, no_pause, fixed_random)), "E_MISMATCH", 0) == 0)
+    let unknown = json_set(json_object(), "id", json_text("ffffffffffffffffffffffffffffffff"))
+    assert(text_find(text_of(call_tool(h, operator_cfg(), "open_sealed", unknown, send_never, no_pause, fixed_random)), "E_NOT_FOUND", 0) == 0)
+
+fn test_list_traditions_and_describe_method() -> Unit:
+    let h = fresh_home()
+    let listed = call_tool(h, operator_cfg(), "list_traditions", json_object(), send_service, no_pause, fixed_random)
+    assert(json_len(json_get(unwrap(json_parse(text_of(listed))), "methods")) == 1)
+    var a = json_set(json_object(), "tradition", json_text("iching"))
+    set a = json_set(a, "method", json_text("coins"))
+    assert(not failed(call_tool(h, operator_cfg(), "describe_method", a, send_service, no_pause, fixed_random)))
+    set a = json_set(a, "method", json_text("nope"))
+    assert(text_find(text_of(call_tool(h, operator_cfg(), "describe_method", a, send_service, no_pause, fixed_random)), "E_NOT_FOUND", 0) == 0)
+    assert(text_find(text_of(call_tool(h, operator_cfg(), "no_such_tool", json_object(), send_service, no_pause, fixed_random)), "E_ARGUMENT", 0) == 0)
+
+fn test_the_tool_source_never_prints() -> Unit:
+    assert(text_find(unwrap(read_text("src/mcp_calls.gu")), "print(", 0) < 0)

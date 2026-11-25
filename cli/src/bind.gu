@@ -74,6 +74,10 @@ pub fn binding_problem(view: Json, operator_key: Bytes, expected_request: Text, 
         return "the service answered with a draw for a different entry than " + id
     if not check_promise(unwrap(promise), operator_key, unwrap(index), seen, unwrap(epoch)):
         return "the promise is not the operator's signature over this index, entry and epoch"
-    if json_as_text(json_get(view, "status")) == "complete":
-        return check_binding(json_get(view, "receipt"), expected_request, seen, unwrap(promise), unwrap(index))
+    let status = json_get_text_safe(view, "status")
+    if is_ok(status) and unwrap(status) == "complete":
+        let receipt = json_get_safe(view, "receipt")
+        if not is_ok(receipt):
+            return "the service says the draw is complete but sent no receipt"
+        return check_binding(unwrap(receipt), expected_request, seen, unwrap(promise), unwrap(index))
     return ""

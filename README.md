@@ -73,7 +73,7 @@ the first index where one differs.
 
 ```
 cd service && guion test && guion test tests_routes.gu    # the service (tests_live.gu makes a real stamp)
-cd cli && guion test && guion test tests_home.gu && guion test tests_mcp.gu
+cd cli && guion test && guion test tests_home.gu && guion test tests_mcp.gu && (cd ../cli-modes && guion test)
 ```
 
 

@@ -15,6 +15,9 @@ import "src/lib.gu"
 fn pause(n: Int) -> Unit:
     let slept = sleep_ms(n * 1000)
 
+fn now() -> Int:
+    return unix_time_ms() // 1000
+
 fn random(n: Int) -> Bytes:
     return unwrap(crypto_random_bytes(n))
 
@@ -38,13 +41,13 @@ fn main() -> Int:
     set a = json_set(a, "question", json_text("Is this a live test?"))
     set a = json_set(a, "sources", json_push(json_array(), json_text("drand-quicknet")))
     set a = json_set(a, "wait_seconds", json_int(150))
-    let r = call_tool(h, cfg, "draw", a, send, pause, random)
+    let r = call_tool(h, cfg, "draw", a, send, pause, now, random)
     let out = unwrap(json_parse(text_of(r)))
     assert(json_as_text(json_get(out, "verdict")) == "verified")
     let id = json_as_text(json_get(out, "id"))
-    let again = call_tool(h, cfg, "get_draw", json_set(json_object(), "id", json_text(id)), send, pause, random)
+    let again = call_tool(h, cfg, "get_draw", json_set(json_object(), "id", json_text(id)), send, pause, now, random)
     assert(json_as_text(json_get(unwrap(json_parse(text_of(again))), "verdict")) == "verified")
-    let opened = call_tool(h, cfg, "open_sealed", json_set(json_object(), "id", json_text(id)), send, pause, random)
+    let opened = call_tool(h, cfg, "open_sealed", json_set(json_object(), "id", json_text(id)), send, pause, now, random)
     assert(json_as_text(json_get(unwrap(json_parse(text_of(opened))), "question")) == "Is this a live test?")
     print("live mcp ok " + id)
     return 0

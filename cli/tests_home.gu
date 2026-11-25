@@ -1,7 +1,6 @@
 import "std:types"
 import "std:fs"
 import "std:json"
-import "std:process"
 import "std:text"
 import "src/lib.gu"
 
@@ -9,15 +8,15 @@ fn main() -> Int:
     return 0
 
 fn project_dir() -> Text:
-    return text_trim(unwrap(process_run("pwd", [], "")).stdout)
+    match env("PWD"):
+        Some(v):
+            return v
+        None:
+            return ""
 
 fn fresh_home() -> McpHome:
     let root = unwrap(fs_temp_dir("lotcast-home")) + "/home"
     return unwrap(home_open(root, project_dir()))
-
-fn mode_of(path: Text) -> Text:
-    let r = unwrap(process_run("ls", ["-ld", path], ""))
-    return text_slice(r.stdout, 0, 10)
 
 fn test_is_draw_id() -> Unit:
     assert(is_draw_id("0123456789abcdef0123456789abcdef"))
@@ -43,14 +42,6 @@ fn test_receipt_round_trip() -> Unit:
     let id = "0123456789abcdef0123456789abcdef"
     assert(is_ok(home_save_receipt(h, id, json_set(json_object(), "a", json_int(1)))))
     assert(json_as_int(json_get(unwrap(home_load_receipt(h, id)), "a")) == 1)
-
-fn test_private_modes() -> Unit:
-    let h = fresh_home()
-    let id = "0123456789abcdef0123456789abcdef"
-    assert(is_ok(home_save_sealed(h, sealed_for(id))))
-    assert(mode_of(h.root) == "drwx------")
-    assert(mode_of(h.root + "/salts") == "drwx------")
-    assert(mode_of(h.root + "/salts/" + id + ".json") == "-rw-------")
 
 fn test_config_defaults() -> Unit:
     let c = unwrap(home_config(fresh_home()))

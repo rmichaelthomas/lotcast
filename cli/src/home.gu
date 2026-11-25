@@ -1,4 +1,6 @@
 import "std:types"
+import "std:crypto"
+import "std:encoding"
 import "std:fs"
 import "std:json"
 import "std:process"
@@ -74,17 +76,40 @@ fn make_private_dir(absolute: Text, path: Text) -> Result[Bool, Text]:
         return Err("cannot create " + path)
     return private(absolute, path, "700")
 
+# Proves that `absolute` really is the file root before anything is chmodded: a marker made through
+# the relative path (which Guion resolves against the file root) must be found at the absolute one.
+fn root_probe(absolute: Text) -> Result[Bool, Text]:
+    if absolute == "":
+        return Ok(true)
+    if text_slice(absolute, 0, 1) != "/":
+        return Err("--home-path must be an absolute path")
+    let marker = "./.lotcast-root-probe"
+    let wrote = write_text(marker, "x")
+    if not is_ok(wrote):
+        return Err("cannot write in the file root")
+    let ran = process_run("chmod", ["600", absolute + "/.lotcast-root-probe"], "")
+    let gone = fs_remove(marker)
+    if not is_ok(ran) or unwrap(ran).exit_code != 0:
+        return Err(absolute + " is not the file root (run from the lotcast home with --file-root . or pass its absolute path as --home-path)")
+    return Ok(true)
+
 pub fn home_open(root: Text, absolute: Text) -> Result[McpHome, Text]:
+    let proven = root_probe(absolute)?
     let made_dir = make_private_dir(absolute, root)?
     let made_receipts = make_private_dir(absolute, root + "/receipts")?
     let made_salts = make_private_dir(absolute, root + "/salts")?
+    let made_pins = make_private_dir(absolute, root + "/pinned")?
     return Ok(McpHome(root, absolute))
 
 fn write_private(absolute: Text, path: Text, text: Text) -> Result[Bool, Text]:
     let wrote = write_text_atomic(path, text)
     if not is_ok(wrote):
         return Err("cannot write " + path)
-    return private(absolute, path, "600")
+    let locked = private(absolute, path, "600")
+    if not is_ok(locked):
+        let gone = fs_remove(path)
+        return locked
+    return Ok(true)
 
 fn read_json(path: Text) -> Result[Json, Text]:
     let body = read_text(path)
@@ -163,26 +188,34 @@ pub fn home_config(h: McpHome) -> Result[McpConfig, Text]:
         set sign = unwrap(b)
     return Ok(McpConfig(server, key, sign))
 
-# The first operator key seen for a server is kept; a different one later is refused.
+fn norm_server(server: Text) -> Text:
+    var out = server
+    while len(out) > 0 and text_slice(out, len(out) - 1, len(out)) == "/":
+        set out = text_slice(out, 0, len(out) - 1)
+    return out
+
+fn pin_path(h: McpHome, server: Text) -> Text:
+    return h.root + "/pinned/" + text_slice(hex_encode(crypto_sha512(bytes_from_text(norm_server(server)))), 0, 32) + ".json"
+
+# The first operator key seen for a server is kept (one file per server, so two instances sharing a
+# home never overwrite each other's pins); a different one later is refused.
 pub fn home_pin_key(h: McpHome, server: Text, key_hex: Text) -> Result[Bool, Text]:
-    let path = h.root + "/pinned.json"
-    var pins = json_object()
+    let path = pin_path(h, server)
     let there = fs_exists(path)
     if is_ok(there) and unwrap(there):
-        set pins = read_json(path)?
-    if json_has(pins, server):
-        let seen = json_get_text_safe(pins, server)
-        if not is_ok(seen) or unwrap(seen) != key_hex:
-            return Err("the operator key for " + server + " changed (pinned " + json_as_text(json_get(pins, server)) + ", now " + key_hex + "); delete pinned.json only if you trust the change")
+        let pinned = home_pinned_key(h, server)
+        if pinned != key_hex:
+            return Err("the operator key for " + norm_server(server) + " changed (pinned " + pinned + ", now " + key_hex + "); delete its file in pinned/ only if you trust the change")
         return Ok(true)
-    set pins = json_set(pins, server, json_text(key_hex))
-    return write_private(h.absolute, path, json_stringify(pins))
+    var j = json_set(json_object(), "server", json_text(norm_server(server)))
+    set j = json_set(j, "operator_key", json_text(key_hex))
+    return write_private(h.absolute, path, json_stringify(j))
 
 pub fn home_pinned_key(h: McpHome, server: Text) -> Text:
-    let pins = read_json(h.root + "/pinned.json")
-    if not is_ok(pins) or not json_has(unwrap(pins), server):
+    let j = read_json(pin_path(h, server))
+    if not is_ok(j):
         return ""
-    let v = json_get_text_safe(unwrap(pins), server)
+    let v = json_get_text_safe(unwrap(j), "operator_key")
     if not is_ok(v):
         return ""
     return unwrap(v)

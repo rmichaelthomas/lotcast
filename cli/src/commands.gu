@@ -122,6 +122,9 @@ fn real_send(method: Text, url: Text, body: Text) -> Result[Reply, StdError]:
 fn real_pause(n: Int) -> Unit:
     sleep_seconds(n)
 
+fn real_now() -> Int:
+    return unix_time_ms() // 1000
+
 # Prints the finished receipt and the verdict; returns the exit code. The verdict goes to stderr so
 # stdout stays the receipt alone.
 fn finish(d: Drawn) -> Int:
@@ -173,7 +176,7 @@ pub fn cmd_draw(all: List[Text]) -> Int:
                 return 2
     if plan.has_question:
         eprint("salt=" + plan.salt_hex)
-    let drawn = run_draw(plan, unwrap(key), real_send, real_pause, log_to_stderr)
+    let drawn = run_draw(plan, unwrap(key), real_send, real_pause, real_now, log_to_stderr)
     if not is_ok(drawn):
         match drawn:
             Err(why):
@@ -208,7 +211,7 @@ pub fn cmd_get(all: List[Text]) -> Int:
         if not is_ok(n) or unwrap(n) < 0:
             return say_error("--wait takes seconds")
         set wait = unwrap(n)
-    let drawn = fetch_draw(server, f.positional[0], unwrap(key), wait, real_send, real_pause, false, "", bytes_from_ints([]))
+    let drawn = fetch_draw(server, f.positional[0], unwrap(key), wait, real_send, real_pause, real_now, "", "", false, "", bytes_from_ints([]))
     if not is_ok(drawn):
         match drawn:
             Err(why):
@@ -353,7 +356,7 @@ fn mcp_call(name: Text, arguments: Json) -> Json:
                 return tool_result("E_CONFIG", true)
     let c = unwrap(loaded)
     let cfg = McpConfig(flag_one(unwrap(f), "--server", c.server), flag_one(unwrap(f), "--operator-key", c.operator_key_hex), c.sign_requests)
-    return call_tool(h, cfg, name, arguments, real_send, real_pause, mcp_random)
+    return call_tool(h, cfg, name, arguments, real_send, real_pause, real_now, mcp_random)
 
 pub fn cmd_mcp(all: List[Text]) -> Int:
     let parsed = parse_flags(all, ["--home", "--home-path", "--server", "--operator-key"], [])

@@ -1,0 +1,75 @@
+[approved-capabilities.beacons]
+clock = true
+network = [
+    "api.drand.sh",
+    "beacon.nist.gov",
+    "drand.cloudflare.com",
+    "random.colorado.edu",
+]
+
+[approved-capabilities.lotcast-cli]
+clock = true
+files = [
+    "read",
+    "write",
+]
+network = [
+    "api.drand.sh",
+    "beacon.nist.gov",
+    "drand.cloudflare.com",
+    "freetsa.org",
+    "random.colorado.edu",
+    "timestamp.digicert.com",
+    "timestamp.sectigo.com",
+]
+
+[approved-capabilities.lotcast-core]
+clock = true
+network = ["beacon.nist.gov"]
+
+[approved-capabilities.lotcast-service]
+clock = true
+files = [
+    "read",
+    "write",
+]
+network = [
+    "api.drand.sh",
+    "beacon.nist.gov",
+    "drand.cloudflare.com",
+    "freetsa.org",
+    "random.colorado.edu",
+    "timestamp.digicert.com",
+    "timestamp.sectigo.com",
+]
+
+[approved-capabilities.web]
+clock = true
+files = [
+    "read",
+    "write",
+]
+network = ["127.0.0.1"]
+
+[capabilities]
+files = [
+    "read",
+    "write",
+]
+
+[dependencies.lotcast-cli]
+path = "../cli"
+version = "0.1.0"
+
+[environment]
+variables = ["PWD"]
+
+[package]
+name = "lotcast-cli-modes"
+version = "0.1.0"
+
+[process]
+commands = ["ls", "chmod"]
+
+[runtime]
+output_limit_bytes = 2000000000

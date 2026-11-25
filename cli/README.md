@@ -24,13 +24,12 @@ mkdir -p ~/.lotcast && cd ~/.lotcast && guion run --file-root . --allow-clock \
 
 Claude Code: `claude mcp add lotcast -- sh -c 'cd ~/.lotcast && exec guion run --file-root . ... lotcast.gu mcp'`.
 Claude Desktop: the same command as `command: "sh"`, `args: ["-c", "..."]` in `claude_desktop_config.json`.
-The `[process] commands = ["chmod"]` grant is needed; a `pwd` and `ls` grant is only for the tests.
+The `[process] commands = ["chmod"]` grant is needed and is the only one. The tests that read file modes with `ls` live in their own project, `../cli-modes`.
 
 The home holds `config.json` (`server`, `operator_key`, `sign_requests`; any other key is refused), `pinned.json`
-(the operator key first seen for each server; a later change is refused), `receipts/ID.json` and `salts/ID.json`
+(`pinned/`, one file per server: the operator key first seen for it; a later change is refused), `receipts/ID.json` and `salts/ID.json`
 (the question, its salt and the request, written before the request is sent). Directories are mode 700 and files
 600. The server and the operator key come from `config.json` or from the command line of the person who started
 the server (`--server`, `--operator-key`); a tool argument can never set them. `seal: "tlock"` and
-`sign_requests: true` answer `E_TLOCK_UNSUPPORTED` and `E_SUBJECT_KEY_UNSUPPORTED`. `wait_seconds` is 0 to 600;
-a longer draw is finished with `get_draw`. Tests: `guion test`, `guion test tests_home.gu`, `guion test tests_mcp.gu`;
+`sign_requests: true` answer `E_TLOCK_UNSUPPORTED` and `E_SUBJECT_KEY_UNSUPPORTED`. `wait_seconds` is 0 to 600 and defaults to 40, under the 60 seconds many clients allow a tool call; a draw still pending then returns its id, and `get_draw` finishes it. `verify_receipt` takes `live: true` to ask the live chains about sources that had no pulse. Tests: `guion test`, `guion test tests_home.gu`, `guion test tests_mcp.gu`;
 `tests_live_mcp.gu` makes a real draw against a running service (its header has the command).

@@ -88,7 +88,7 @@ function call(entry, args) {
 }
 
 test('a draw is planned in the browser VM: the question is sealed and never sent', () => {
-  const a = call('draw_plan', ['tarot', 'rws', '{"count":"3","reversals":"true"}', 'Will it rain?', '000102030405060708090a0b0c0d0e0f', '11'.repeat(32)]);
+  const a = call('draw_plan', ['tarot', 'rws', '{"count":"3","reversals":"true"}', 'Will it rain?', '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f', '11'.repeat(32)]);
   const plan = JSON.parse(a.value);
   assert.match(plan.body, /"commitment"/);
   assert.doesNotMatch(plan.body, /Will it rain\?/);

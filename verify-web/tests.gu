@@ -87,7 +87,7 @@ fn repeat(piece: Text, n: Int) -> Text:
     return out
 
 fn nonce_hex() -> Text:
-    return "000102030405060708090a0b0c0d0e0f"
+    return "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 
 fn salt_hex() -> Text:
     return repeat("11", 32)
@@ -104,9 +104,9 @@ fn test_draw_plan_seals_the_question_and_never_sends_it() -> Unit:
     assert(json_as_bool(json_get(p, "asked")))
 
 # Made once with the command line: plan_draw(["tarot","rws","count=3","reversals=true","--question","Will it rain?"],
-# nonce 00..0f, salt 32 bytes of 0x11).entry_hash_hex
+# nonce 00..1f, salt 32 bytes of 0x11).entry_hash_hex
 fn cli_entry_hash() -> Text:
-    return "305763565102c08a7051219fc466bd759553ebaa0c5b3dd96fe43d82f2e8807bd0c21bb1e930c5b616c50af2aba0a0480d6d567c39463bce06a9f329e82be311"
+    return "837d3fcc98f85e0837e949886c77218d742b7f820109237e8b1af0dfa5c1c09672c7529c44d0643b8216ff4d8dd8c95f429251b1d78fc0e67dc3be7e47997f9f"
 
 fn test_draw_plan_matches_the_cli() -> Unit:
     assert(json_as_text(json_get(plan_of("Will it rain?"), "entry_hash")) == cli_entry_hash())

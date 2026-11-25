@@ -66,7 +66,7 @@ async function readJson(res) {
 // choice = { tradition, method, options: {..text}, question }
 export async function startDraw(choice, deps) {
   const { vm, fetch, random, store, operatorKey } = deps;
-  const nonceHex = hex(random(16));
+  const nonceHex = hex(random(32));
   const saltHex = hex(random(32));
   const question = choice.question ?? '';
   const plan = JSON.parse(vm('draw_plan', [choice.tradition, choice.method, JSON.stringify(choice.options ?? {}), question, nonceHex, saltHex]));

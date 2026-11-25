@@ -64,6 +64,7 @@ test('startDraw never sends the question', async () => {
   const body = JSON.parse(sent.body);
   assert.equal('question' in body, false);
   assert.ok(body.commitment);
+  assert.equal(body.nonce.length, 64, 'the service wants a 32-byte nonce');
   assert.equal(sent.body.includes('Will it rain?'), false);
 });
 

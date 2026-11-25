@@ -31,8 +31,8 @@ fn options_of(options_json: Text) -> Result[Map[Text, Text], Text]:
 pub fn plan_for_draw(tradition: Text, method: Text, options_json: Text, question: Text, nonce_hex: Text, salt_hex: Text) -> Text:
     let nonce = hex_decode(nonce_hex)
     let salt = hex_decode(salt_hex)
-    if not is_ok(nonce) or len(unwrap(nonce)) != 16:
-        return plan_error("the nonce must be 32 hex characters")
+    if not is_ok(nonce) or len(unwrap(nonce)) != 32:
+        return plan_error("the nonce must be 64 hex characters (32 bytes)")
     if not is_ok(salt) or len(unwrap(salt)) != 32:
         return plan_error("the salt must be 64 hex characters")
     let options = options_of(options_json)

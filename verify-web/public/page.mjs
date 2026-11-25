@@ -94,8 +94,6 @@ function setState(state) {
   $('draw').hidden = state !== 'draw';
   $('waiting').hidden = state !== 'waiting';
   $('result').hidden = state !== 'result';
-  const where = state === 'draw' ? 'draw' : state;
-  if (location.hash === '' || ['#draw', '#waiting', '#result'].includes(location.hash)) history.replaceState(null, '', `#${where}`);
   window.scrollTo({ top: 0 });
 }
 

@@ -8,3 +8,9 @@
 ## R2 mounted at /data
 
 Not run yet: it needs a scratch R2 bucket (`lotcast-check`) in Rob's Cloudflare account.
+
+## Worker and container, run locally with `wrangler dev` (2026-11-24)
+
+- `/` serves the checking page; `/v1/...` reaches the container through the Durable Object; `GET /v1/status` answers `{"pending":N}`.
+- A drand-only `lotcast draw` through the Worker came back `verified`; a two-source draw (drand and NIST) stayed pending, then completed.
+- **Not verifiable locally:** `wrangler dev` never stopped the container, with or without the "stay awake while a draw is pending" code, even after the idle timer (20 s) had long passed. So that behaviour is unproven until it is tried on Cloudflare (Task 3).

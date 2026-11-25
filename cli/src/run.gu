@@ -91,7 +91,6 @@ fn poll(server: Text, id: Text, wait: Int, send: fn(Text, Text, Text) -> Result[
         set slept = slept + 3
     return Ok(last)
 
-# The draw as the POST left it: logged and promised, nothing known yet.
 fn error_text(r: Result[Json, Text]) -> Text:
     match r:
         Err(message):
@@ -99,6 +98,7 @@ fn error_text(r: Result[Json, Text]) -> Text:
         Ok(ignored):
             return ""
 
+# The draw as the POST left it: logged and promised, nothing known yet.
 fn logged_only(id: Text, index: Int) -> Drawn:
     return Drawn("pending", id, index, json_null(), json_array(), none_check())
 

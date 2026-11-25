@@ -2,7 +2,6 @@ import "std:types"
 import "std:encoding"
 import "std:fs"
 import "std:http_response"
-import "std:http_static"
 import "std:json"
 import "std:text"
 import "pkg:web/src/lib.gu"
@@ -180,26 +179,39 @@ fn log_path_ok(rest: Text) -> Bool:
             return false
     return true
 
+# The content type of a public log file, by its kind: the checkpoint and the epoch notes are text, the
+# anchors are JSON, the tiles are bytes.
+pub fn log_content_type(rest: Text) -> Text:
+    if rest == "checkpoint" or (len(rest) >= 6 and text_slice(rest, 0, 6) == "epoch/"):
+        return "text/plain; charset=utf-8"
+    if len(rest) >= 7 and text_slice(rest, 0, 7) == "anchor/":
+        return "application/json"
+    return "application/octet-stream"
+
+# Answers GET /v1/log/... from the log directory, read through the file layer: on Cloudflare the log lives
+# in the Worker's store, not on the container's disk, so a static-file server cannot see it.
 fn serve_log(request: Request) -> Response:
     let rest = text_slice(request.path, len("/v1/log/"), len(request.path))
     if not log_path_ok(rest):
         return error_response(ApiError(404, "E_NOT_FOUND", "no such log file"))
-    let inner = Request(request.method, "/" + rest, request.query, request.headers, request.body, request.params)
-    match static_serve(inner, header_of(request, "x-lotcast-data") + "/log"):
-        Err(failure):
-            return error_response(ApiError(failure.status, "E_NOT_FOUND", "no such log file"))
-        Ok(response):
-            if rest == "checkpoint":
-                match response_set_header(response, "Content-Type", "text/plain; charset=utf-8"):
-                    Ok(typed):
-                        match response_set_header(typed, "Cache-Control", "no-cache"):
-                            Ok(fresh):
-                                return fresh
-                            Err(ignored):
-                                return typed
-                    Err(ignored):
-                        return response
+    if request.method != "GET" and request.method != "HEAD":
+        return error_response(ApiError(405, "E_METHOD", "the log is read-only"))
+    let data = vfs_read_bytes(header_of(request, "x-lotcast-data") + "/log/" + rest)
+    if not is_ok(data):
+        return error_response(ApiError(404, "E_NOT_FOUND", "no such log file"))
+    var response = response_bytes(200, unwrap(data))
+    match response_set_header(response, "Content-Type", log_content_type(rest)):
+        Ok(typed):
+            set response = typed
+        Err(ignored):
             return response
+    if rest == "checkpoint":
+        match response_set_header(response, "Cache-Control", "no-cache"):
+            Ok(fresh):
+                return fresh
+            Err(ignored):
+                return response
+    return response
 
 # ---------------------------------------------------------------- layers
 

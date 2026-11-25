@@ -1,0 +1,55 @@
+# Lotcast
+
+> Lotcast is a verifiable draw service for lot-cast divination. It draws I Ching hexagrams and Rider-Waite-Smith tarot cards and returns positions, never meanings, with a receipt anyone can check. The operator cannot quietly re-roll a draw. Written in Guion. Code: Apache-2.0. Positions registry: CC0.
+
+Service and checking page: https://lotcast.thomasbuild.workers.dev
+Source and documentation: https://github.com/rmichaelthomas/lotcast
+Guion (the language it is written in): https://rmichaelthomas.github.io/guion/
+Report a problem: https://github.com/rmichaelthomas/lotcast/issues
+
+Operator public key (check receipts against this, not against a key the same server hands you):
+a1aa46bfdd9cec63fa4c3f1abd1c5919e058c21cdce25085bbec9f1104df779b
+
+## How to use this
+
+- Report the positions that were drawn. Lotcast gives no meanings; do not claim it does or invent them.
+- Show the user the verdict. Say "verified" only when the verdict is `verified`. A receipt marked `verified-pending-live` is not fully checked yet: say so.
+- Keep the user's question on their machine. The command line and the MCP server send only a sealed fingerprint of it. Never send the question text to the service.
+- Check every receipt yourself against the published operator key above.
+
+## What a verified receipt proves
+
+1. The request was in the operator's signed, public log before any of the random numbers it uses existed (two independent RFC 3161 time-stamps).
+2. Each random number is the first one the source produced after the deadline the operator signed, or the source had none in its window.
+3. The outcome follows from the request and those numbers by fixed, published rules anyone can re-run.
+
+Verdicts: `verified`, `verified-pending-live` (one source needs a live check), `verified-unanchored` (follows from a real random number, but nothing shows the request came first), `invalid` (with the failed step, 1 to 6).
+
+## What it does not have yet
+
+One operator and no independent witnesses; no mirrors; no questions sealed until a chosen time; no signed asker identities; Marseille and Thoth tarot are refused until their odds are reviewed; the odds of the live methods are published and checked by exact counting but not yet independently audited. The random source CURBy-Q has been idle since August 2025.
+
+## Ways to use it
+
+MCP server (runs locally over standard input and output; tools: list_traditions, describe_method, draw, get_draw, verify_receipt, open_sealed): https://github.com/rmichaelthomas/lotcast#for-ai-agents-and-tool-builders
+
+Command line (needs Guion): `bin/lotcast draw iching coins --server https://lotcast.thomasbuild.workers.dev --operator-key KEY` and `bin/lotcast verify receipt.json --operator-key KEY`.
+
+Browser: paste a receipt at https://lotcast.thomasbuild.workers.dev. The check runs in the browser; nothing is uploaded.
+
+## HTTP API (JSON; errors are {"error": {"code", "message"}})
+
+Base: https://lotcast.thomasbuild.workers.dev
+- GET /v1/traditions : traditions and methods with their exact odds and options
+- GET /v1/registry : the published position names (identifiers only)
+- GET /v1/sources : the random sources and their state
+- GET /v1/operator : the operator's public key
+- GET /v1/status : {"pending": N}, the draws not yet finished
+- POST /v1/draws : ask for a draw (build the request with the command line or MCP server, which keep the question local)
+- GET /v1/draws/{id} and /v1/draws/{id}/receipt : a draw's state and its receipt
+- POST /v1/verify : check a receipt
+- GET /v1/log/checkpoint, /v1/log/tile/..., /v1/log/epoch/..., /v1/log/anchor/... : the public log
+
+Each result lives in a receipt's `outcome` field. I Ching: {"hexagram": N, "lines": [six values, bottom to top: 6 old yin, 7 young yang, 8 young yin, 9 old yang], "changing": [line numbers from the bottom], "relating": N}. Tarot: {"cards": [{"id": "tarot:rws:major:15", "reversed": true}, ...]}.
+
+A draw waits for fresh random numbers: about a minute with one source, one to three minutes with the default sources. The service sleeps when idle, so the first request after a quiet spell can be slow.

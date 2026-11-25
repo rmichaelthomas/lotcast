@@ -42,10 +42,9 @@ fn call_with(app: App, method: Text, path: Text, body: Text, headers: List[Heade
 fn body_of(r: Response) -> Text:
     return unwrap(encoding_utf8_decode(r.body.data))
 
-# The bytes of a file-backed response (the server sends them in blocks; this reads the first one).
+# The bytes of a response body.
 fn file_bytes(r: Response) -> Bytes:
-    let plan = unwrap(unwrap(response_file_plan(r)))
-    return unwrap(response_file_block(plan, 0))
+    return r.body.data
 
 fn json_body(r: Response) -> Json:
     return unwrap(json_parse(body_of(r)))
@@ -233,3 +232,12 @@ fn test_verify_accepts_a_body_larger_than_a_draw_request() -> Unit:
         set big = big + "0123456789"
     let r = call(app, "POST", "/v1/verify", big + "\"}}")
     assert(r.status == 200)
+
+# ---- the public log is read through the file layer (on Cloudflare it lives in the store, not on disk)
+fn test_log_files_are_served_with_the_content_type_of_their_kind() -> Unit:
+    assert(log_content_type("checkpoint") == "text/plain; charset=utf-8")
+    assert(log_content_type("epoch/index") == "text/plain; charset=utf-8")
+    assert(log_content_type("epoch/359117698") == "text/plain; charset=utf-8")
+    assert(log_content_type("anchor/7.json") == "application/json")
+    assert(log_content_type("tile/0/000") == "application/octet-stream")
+    assert(log_content_type("tile/entries/000") == "application/octet-stream")

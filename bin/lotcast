@@ -1,0 +1,17 @@
+#!/bin/sh
+# Runs the lotcast command with the permissions it needs (Guion asks for each one by name).
+#
+#   bin/lotcast draw iching coins --server URL --operator-key KEY
+#   bin/lotcast verify receipt.json --operator-key KEY
+#
+# It can read the files in the folder you run it from, make the network calls a draw needs
+# (the service you name, and the public random-number sources), and read the clock. Nothing else.
+# Set LOTCAST_SERVER_HOST if you use a service other than the one in the README.
+set -e
+here=$(cd "$(dirname "$0")/.." && pwd)
+host="${LOTCAST_SERVER_HOST:-lotcast.thomasbuild.workers.dev}"
+exec guion run --allow-clock --file-root "$PWD" \
+    --allow-http-host "$host" \
+    --allow-http-host api.drand.sh --allow-http-host drand.cloudflare.com \
+    --allow-http-host beacon.nist.gov --allow-http-host random.colorado.edu \
+    "$here/cli/lotcast.gu" "$@"

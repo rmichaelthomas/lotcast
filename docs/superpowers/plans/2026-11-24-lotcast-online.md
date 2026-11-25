@@ -6,18 +6,20 @@
 
 **In plain words:** the drawing, the receipts and the checking already work on a laptop. This plan does four things: (1) prove Cloudflare can keep Lotcast's records safe, (2) put the service online, (3) publish the key people check receipts against, (4) add a checking page. Nothing else.
 
-**Architecture:** The existing Guion service (`lotcast serve`) runs unchanged inside a Cloudflare Container. A Cloudflare Worker in front starts it and passes requests to it. The log lives in an R2 bucket so it survives restarts. The checking page is static files on Cloudflare Pages: Guion's browser VM (`guion_vm.wasm`) running a compiled Guion verifier.
+**Architecture:** The existing Guion service (`lotcast serve`) runs unchanged inside a Cloudflare Container. A Cloudflare Worker in front starts it and passes requests to it, and also serves the checking page as static files, so everything lives at one address: the `*.workers.dev` address Cloudflare assigns to the Worker. The log lives in an R2 bucket so it survives restarts. The checking page runs Guion's own browser VM (`guion_vm.wasm`) and Guion's own playground loader (`site/src/playground/loader.mjs`) on a compiled Guion verifier.
 
-**Tech stack:** Guion 0.8.0; Cloudflare Containers (`durable_object` scheduling policy), Workers, R2, Pages; `wrangler`.
+**Tech stack:** Guion 0.8.0; Cloudflare Containers (`durable_object` scheduling policy), Workers (with static assets), R2; `wrangler`.
 
 **Spec:** `~/hunchery/docs/explore/agent-divination-tools/03-draw-service-design.md` §8.1, §8.4, §9, as amended by Task 0 (Railway replaced by Cloudflare; the "paranoid layer" taken out of scope).
 
-## Decisions Rob makes (asked, not assumed)
+## Decisions (Rob, 2026-11-24)
 
-- **Cloudflare plan.** Containers need the Workers Paid plan (USD 5 a month, with included usage). Confirm before Task 3.
-- **Address.** A subdomain of a domain Rob already has on Cloudflare, or the free `*.workers.dev` / `*.pages.dev` address. Asked at Task 3.
-- **Two small pieces of JavaScript.** Cloudflare only starts a Container from a Worker, and a web page can only load WebAssembly from JavaScript. So there are two short glue files that are not Guion: the Worker (about 60 lines) and the page loader (about 80 lines). All logic stays in Guion; the glue only starts things and passes bytes. This is an exception to "everything is Guion" and needs Rob's OK.
-- **Go-live.** Nothing is deployed to Rob's Cloudflare account until he says go (Task 3, step 1).
+- **Cloudflare plan:** Rob has the Workers Paid plan.
+- **Address:** the `*.workers.dev` address Cloudflare assigns to the Worker (Rob's usual). No custom domain.
+- **JavaScript:** reuse what Guion already has instead of writing new glue.
+  - *Checking page:* Guion's playground already runs Guion in the browser with `loader.mjs` and a prebuilt `guion_vm.wasm` (sizes and hashes in `site/public/playground/wasm.build.json`). Its `run()` is fixed to `main` with no arguments, so a small Guion PR adds `entry`, `arguments` and `allowRaisedSteps` to it, with a test in `site/tests/`. Lotcast then uses Guion's loader and VM unchanged, pinned by hash. The page's own script is only the wiring of a text box and a button to that loader.
+  - *Worker:* stays a short JavaScript file, the same pattern as Guion's own registry Worker (`registry/src/worker.js`). Why not Guion: Cloudflare only starts a Container from Worker code calling Cloudflare's Durable Object and Container APIs, and Guion's browser VM has no host access (no network, no files, no JavaScript imports), so it cannot make those calls. The Worker decides nothing: it starts the one container, forwards requests, and serves the static files.
+- **Go-live:** nothing is deployed to Rob's Cloudflare account until he says go (Task 3, step 1).
 
 ## Out of scope (decided 2026-11-24)
 
@@ -68,7 +70,7 @@ The service writes its log as files: it writes a temporary file and renames it o
 
 ### Task 3: Go live (on Rob's go)
 
-- [ ] **Step 1:** Ask Rob: Workers Paid plan on, which address, OK to deploy. Stop until he answers.
+- [ ] **Step 1:** Ask Rob for the go to deploy (plan and address are decided). Stop until he answers.
 - [ ] **Step 2:** Create the R2 bucket, put the operator key with `wrangler secret put LOTCAST_OPERATOR_KEY` (generated on Rob's machine with `lotcast serve --new-key` and never printed in the chat), deploy with `wrangler deploy`.
 - [ ] **Step 3:** From outside: `lotcast draw iching coins --server https://ADDRESS` with drand only, then with the default three sources; both `verified`. `lotcast mcp` with that server in `config.json`: a draw through it `verified`.
 - [ ] **Step 4:** `docs/operations.md` "Deploying on Cloudflare": the commands, where the key lives, how to back up (one command that copies the bucket, for example `rclone sync r2:lotcast-log r2:lotcast-log-backup`, run on a schedule Rob chooses), and how to read the container's logs.
@@ -79,13 +81,15 @@ The service writes its log as files: it writes a temporary file and renames it o
 
 ### Task 5: The checking page
 
-**Files:** create `verify-web/verify.gu` (entry `verify_page(receipt: Text, operator_key_hex: Text) -> Json` calling the existing `verify_any`, returning `{verdict, detail, failed_step, steps}`), `verify-web/tests.gu`, `verify-web/index.html`, `verify-web/loader.js` (glue), `verify-web/build.md`.
+**Files:** in Guion: `site/src/playground/loader.mjs` (`run(modules, artifact, limits, {entry, arguments})` and `allowRaisedSteps`), `site/tests/playground.test.mjs`. In lotcast: `verify-web/verify.gu` (entry `verify_page(receipt: Text, operator_key_hex: Text) -> Json` calling the existing `verify_any`, returning `{verdict, detail, failed_step, steps}`), `verify-web/tests.gu`, `verify-web/index.html` (with its few lines of wiring), `verify-web/vendor/` (Guion's `loader.mjs` and `guion_vm.wasm`, copied at a pinned commit with their SHA-256), `verify-web/build.md`.
+
+- [ ] **Step 0 (Guion):** Test first in `site/tests/playground.test.mjs`: `run()` with `entry` and typed `Text` arguments calls that function and returns its value; `allowRaisedSteps` with `steps` above 10,000 is passed through; the old call (no options) behaves exactly as before. Then the change, Guion PR, merge.
 
 - [ ] **Step 1: Tests first** (native Guion): the three fixture receipts give `verified`; a changed outcome gives `invalid` at step 5; the CURBy-Q receipt gives `verified-pending-live` with a sentence telling the reader it is not fully checked; non-JSON gives a clear error, not a crash.
-- [ ] **Step 2:** Build the artifact with `guion build verify-web/verify.gu`; it must be under 1 MiB. Build `guion_vm.wasm` from the Guion 0.8.0 source (`crates/vm-wasm`).
+- [ ] **Step 2:** Build the artifact with `guion build verify-web/verify.gu`; it must be under 1 MiB. Take `guion_vm.wasm` from Guion's playground build and check its SHA-256 against `wasm.build.json`.
 - [ ] **Step 3:** Measure the steps a full receipt takes in the browser VM and set the page's budget to that plus headroom (`allowRaisedSteps`, below the 50,000,000 ceiling). A test runs the artifact through the wasm module in Node with the fixtures and checks it gives the same answers as the native run.
 - [ ] **Step 4:** The page: paste or drop a receipt, see the verdict and each step in plain words. The operator key is filled in from the published one. A receipt that needs a live check says "verified except for a live check" and shows the one command that finishes it.
-- [ ] **Step 5:** Deploy to Pages with Rob's go (same answer as Task 3 covers it), and link it from the service's root page and the README.
+- [ ] **Step 5:** Served by the Worker as static assets at the same `workers.dev` address (`/` is the page, `/v1/...` is the service), deployed with Task 3's go, and linked from the README.
 
 ### Final
 

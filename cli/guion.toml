@@ -91,10 +91,13 @@ url = "https://guion-registry.thomasbuild.workers.dev/objects/3eaf1653f4fd4aeec3
 version = "0.2.0"
 
 [environment]
-variables = ["LOTCAST_OPERATOR_KEY"]
+variables = ["LOTCAST_OPERATOR_KEY", "HOME", "LOTCAST_HOME"]
 
 [package]
 entry = "src/lib.gu"
 exports = ["src/lib.gu"]
 name = "lotcast-cli"
 version = "0.1.0"
+
+[process]
+commands = ["chmod", "ls"]

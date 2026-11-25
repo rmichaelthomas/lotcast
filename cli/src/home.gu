@@ -1,0 +1,196 @@
+import "std:types"
+import "std:fs"
+import "std:json"
+import "std:process"
+import "std:text"
+import "pkg:lotcast-core/src/lib.gu"
+import "pkg:lotcast-service/src/lib.gu"
+
+# The local home of `lotcast mcp` (default ~/.lotcast): receipts, the question and salt of every
+# sealed draw, a config file and the operator key pinned for each server. Nothing here is ever sent
+# to a service. The directories are made private (chmod 700) before anything is written in them and
+# each secret file is chmod 600 after it is written; Guion has no file-mode call, so this goes
+# through the `[process] commands = ["chmod"]` grant.
+
+pub record McpHome:
+    root: Text
+
+pub record McpConfig:
+    server: Text
+    operator_key_hex: Text
+    sign_requests: Bool
+
+pub record Sealed:
+    id: Text
+    question: Text
+    salt_hex: Text
+    request_json: Text
+    entry_hash_hex: Text
+
+fn lower_hex_char(c: Text) -> Bool:
+    return text_find("0123456789abcdef", c, 0) >= 0 and len(c) == 1
+
+pub fn is_draw_id(id: Text) -> Bool:
+    if len(id) != 32:
+        return false
+    for c in text_chars(id):
+        if not lower_hex_char(c):
+            return false
+    return true
+
+fn private(path: Text, mode: Text) -> Result[Bool, Text]:
+    let ran = process_run("chmod", [mode, path], "")
+    if not is_ok(ran):
+        match ran:
+            Err(problem):
+                return Err("cannot make " + path + " private (chmod " + mode + "): " + problem.message + "; add chmod to [process] commands")
+            Ok(ignored):
+                return Err("chmod failed")
+    if unwrap(ran).exit_code != 0:
+        return Err("chmod " + mode + " " + path + " failed: " + unwrap(ran).stderr)
+    return Ok(true)
+
+fn make_private_dir(path: Text) -> Result[Bool, Text]:
+    let there = fs_exists(path)
+    if is_ok(there) and unwrap(there):
+        return private(path, "700")
+    let made = fs_make_dir(path)
+    if not is_ok(made):
+        return Err("cannot create " + path)
+    return private(path, "700")
+
+pub fn home_open(root: Text) -> Result[McpHome, Text]:
+    let made_dir = make_private_dir(root)?
+    let made_receipts = make_private_dir(root + "/receipts")?
+    let made_salts = make_private_dir(root + "/salts")?
+    return Ok(McpHome(root))
+
+fn write_private(path: Text, text: Text) -> Result[Bool, Text]:
+    let wrote = write_text_atomic(path, text)
+    if not is_ok(wrote):
+        return Err("cannot write " + path)
+    return private(path, "600")
+
+fn read_json(path: Text) -> Result[Json, Text]:
+    let body = read_text(path)
+    if not is_ok(body):
+        return Err("not found")
+    let parsed = json_parse(unwrap(body))
+    if not is_ok(parsed):
+        return Err(path + " is not JSON")
+    return Ok(unwrap(parsed))
+
+pub fn home_save_receipt(h: McpHome, id: Text, receipt: Json) -> Result[Bool, Text]:
+    if not is_draw_id(id):
+        return Err("not a draw id")
+    return write_private(h.root + "/receipts/" + id + ".json", json_stringify(receipt))
+
+pub fn home_load_receipt(h: McpHome, id: Text) -> Result[Json, Text]:
+    if not is_draw_id(id):
+        return Err("not a draw id")
+    return read_json(h.root + "/receipts/" + id + ".json")
+
+pub fn home_save_sealed(h: McpHome, s: Sealed) -> Result[Bool, Text]:
+    if not is_draw_id(s.id):
+        return Err("not a draw id")
+    var j = json_object()
+    set j = json_set(j, "id", json_text(s.id))
+    set j = json_set(j, "question", json_text(s.question))
+    set j = json_set(j, "salt", json_text(s.salt_hex))
+    set j = json_set(j, "request", json_text(s.request_json))
+    set j = json_set(j, "entry_hash", json_text(s.entry_hash_hex))
+    return write_private(h.root + "/salts/" + s.id + ".json", json_stringify(j))
+
+pub fn home_load_sealed(h: McpHome, id: Text) -> Result[Sealed, Text]:
+    if not is_draw_id(id):
+        return Err("not a draw id")
+    let j = read_json(h.root + "/salts/" + id + ".json")?
+    let q = json_get_text_safe(j, "question")
+    let s = json_get_text_safe(j, "salt")
+    let r = json_get_text_safe(j, "request")
+    let e = json_get_text_safe(j, "entry_hash")
+    if not is_ok(q) or not is_ok(s) or not is_ok(r) or not is_ok(e):
+        return Err("the sealed record for " + id + " is damaged")
+    return Ok(Sealed(id, unwrap(q), unwrap(s), unwrap(r), unwrap(e)))
+
+fn known_config_key(k: Text) -> Bool:
+    return k == "server" or k == "operator_key" or k == "sign_requests"
+
+pub fn home_config(h: McpHome) -> Result[McpConfig, Text]:
+    let path = h.root + "/config.json"
+    let there = fs_exists(path)
+    if not is_ok(there) or not unwrap(there):
+        return Ok(McpConfig("http://127.0.0.1:8080", "", false))
+    let j = read_json(path)?
+    if not is_object(j):
+        return Err("config.json is not an object")
+    for k in object_keys(j):
+        if not known_config_key(k):
+            return Err("config.json has an unknown key: " + k)
+    var server = "http://127.0.0.1:8080"
+    var key = ""
+    var sign = false
+    if json_has(j, "server"):
+        let v = json_get_text_safe(j, "server")
+        if not is_ok(v):
+            return Err("config.json: server is not text")
+        set server = unwrap(v)
+    if json_has(j, "operator_key"):
+        let v = json_get_text_safe(j, "operator_key")
+        if not is_ok(v):
+            return Err("config.json: operator_key is not text")
+        set key = unwrap(v)
+    if json_has(j, "sign_requests"):
+        let v = json_get_safe(j, "sign_requests")
+        let b = json_bool_safe(unwrap(v))
+        if not is_ok(b):
+            return Err("config.json: sign_requests is not true or false")
+        set sign = unwrap(b)
+    return Ok(McpConfig(server, key, sign))
+
+# The first operator key seen for a server is kept; a different one later is refused.
+pub fn home_pin_key(h: McpHome, server: Text, key_hex: Text) -> Result[Bool, Text]:
+    let path = h.root + "/pinned.json"
+    var pins = json_object()
+    let there = fs_exists(path)
+    if is_ok(there) and unwrap(there):
+        set pins = read_json(path)?
+    if json_has(pins, server):
+        let seen = json_get_text_safe(pins, server)
+        if not is_ok(seen) or unwrap(seen) != key_hex:
+            return Err("the operator key for " + server + " changed (pinned " + json_as_text(json_get(pins, server)) + ", now " + key_hex + "); delete pinned.json only if you trust the change")
+        return Ok(true)
+    set pins = json_set(pins, server, json_text(key_hex))
+    return write_private(path, json_stringify(pins))
+
+pub fn home_pinned_key(h: McpHome, server: Text) -> Text:
+    let pins = read_json(h.root + "/pinned.json")
+    if not is_ok(pins) or not json_has(unwrap(pins), server):
+        return ""
+    let v = json_get_text_safe(unwrap(pins), server)
+    if not is_ok(v):
+        return ""
+    return unwrap(v)
+
+fn clean_relative(p: Text) -> Bool:
+    if len(p) == 0 or text_slice(p, 0, 1) == "/":
+        return false
+    if text_find(p, "\\", 0) >= 0:
+        return false
+    for part in text_split(p, "/"):
+        if part == ".." or part == "":
+            return false
+    return true
+
+# A file inside the home, by relative path only.
+pub fn home_read_file(h: McpHome, relative: Text) -> Result[Text, Text]:
+    if not clean_relative(relative):
+        return Err("the path must be relative to the lotcast home and stay inside it")
+    let path = h.root + "/" + relative
+    let kind = fs_kind(path)
+    if not is_ok(kind) or unwrap(kind) != "file":
+        return Err("not a regular file in the lotcast home: " + relative)
+    let body = read_text(path)
+    if not is_ok(body):
+        return Err("cannot read " + relative)
+    return Ok(unwrap(body))

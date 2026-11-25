@@ -1,0 +1,95 @@
+import "std:types"
+import "std:fs"
+import "std:json"
+import "std:process"
+import "std:text"
+import "src/lib.gu"
+
+fn main() -> Int:
+    return 0
+
+fn fresh_home() -> McpHome:
+    let root = unwrap(fs_temp_dir("lotcast-home")) + "/home"
+    return unwrap(home_open(root))
+
+fn mode_of(path: Text) -> Text:
+    let r = unwrap(process_run("ls", ["-ld", path], ""))
+    return text_slice(r.stdout, 0, 10)
+
+fn test_is_draw_id() -> Unit:
+    assert(is_draw_id("0123456789abcdef0123456789abcdef"))
+    assert(not is_draw_id("0123456789abcdef0123456789abcde"))
+    assert(not is_draw_id("0123456789abcdef0123456789abcdeff"))
+    assert(not is_draw_id("0123456789ABCDEF0123456789abcdef"))
+    assert(not is_draw_id("../../etc/passwd0123456789abcdef"))
+    assert(not is_draw_id(""))
+
+fn sealed_for(id: Text) -> Sealed:
+    return Sealed(id, "will I move?", "ab", "{}", "cd")
+
+fn test_sealed_round_trip() -> Unit:
+    let h = fresh_home()
+    let id = "0123456789abcdef0123456789abcdef"
+    assert(is_ok(home_save_sealed(h, sealed_for(id))))
+    let back = unwrap(home_load_sealed(h, id))
+    assert(back.question == "will I move?")
+    assert(back.salt_hex == "ab")
+
+fn test_receipt_round_trip() -> Unit:
+    let h = fresh_home()
+    let id = "0123456789abcdef0123456789abcdef"
+    assert(is_ok(home_save_receipt(h, id, json_set(json_object(), "a", json_int(1)))))
+    assert(json_as_int(json_get(unwrap(home_load_receipt(h, id)), "a")) == 1)
+
+fn test_private_modes() -> Unit:
+    let h = fresh_home()
+    let id = "0123456789abcdef0123456789abcdef"
+    assert(is_ok(home_save_sealed(h, sealed_for(id))))
+    assert(mode_of(h.root) == "drwx------")
+    assert(mode_of(h.root + "/salts") == "drwx------")
+    assert(mode_of(h.root + "/salts/" + id + ".json") == "-rw-------")
+
+fn test_config_defaults() -> Unit:
+    let c = unwrap(home_config(fresh_home()))
+    assert(c.server == "http://127.0.0.1:8080")
+    assert(c.operator_key_hex == "")
+    assert(not c.sign_requests)
+
+fn test_config_reads_and_names_unknown_keys() -> Unit:
+    let h = fresh_home()
+    assert(is_ok(write_text(h.root + "/config.json", "{\"server\": \"http://x\", \"sign_requests\": true}")))
+    let c = unwrap(home_config(h))
+    assert(c.server == "http://x")
+    assert(c.sign_requests)
+    assert(is_ok(write_text(h.root + "/config.json", "{\"servr\": \"http://x\"}")))
+    match home_config(h):
+        Err(why):
+            assert(text_find(why, "servr", 0) >= 0)
+        Ok(ignored):
+            assert(false)
+
+fn test_pin_first_use_then_mismatch() -> Unit:
+    let h = fresh_home()
+    assert(is_ok(home_pin_key(h, "http://x", "aa")))
+    assert(is_ok(home_pin_key(h, "http://x", "aa")))
+    assert(not is_ok(home_pin_key(h, "http://x", "bb")))
+    assert(is_ok(home_pin_key(h, "http://y", "bb")))
+    assert(home_pinned_key(h, "http://x") == "aa")
+    assert(home_pinned_key(h, "http://z") == "")
+
+fn test_read_file_refuses_escape() -> Unit:
+    let h = fresh_home()
+    assert(is_ok(write_text(h.root + "/receipts/r.json", "{}")))
+    assert(is_ok(home_read_file(h, "receipts/r.json")))
+    assert(not is_ok(home_read_file(h, "../x")))
+    assert(not is_ok(home_read_file(h, "/etc/passwd")))
+    assert(not is_ok(home_read_file(h, "receipts/../../b")))
+    assert(not is_ok(home_read_file(h, "a\\b")))
+    assert(not is_ok(home_read_file(h, "receipts")))
+    assert(not is_ok(home_read_file(h, "")))
+
+fn test_load_refuses_bad_id() -> Unit:
+    let h = fresh_home()
+    assert(not is_ok(home_load_sealed(h, "../../x")))
+    assert(not is_ok(home_load_receipt(h, "../../x")))
+    assert(not is_ok(home_save_receipt(h, "../x", json_object())))

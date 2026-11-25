@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { loadModules, run } from './public/loader.mjs';
-import { makeVm, startDraw, pollDraw, progress, resumePending, loadRegistry, MESSAGES, PENDING_KEY } from './public/draw-flow.mjs';
+import { makeVm, startDraw, pollDraw, progress, resumePending, resumeLast, forgetLast, loadRegistry, chooseOperatorKey, MESSAGES, PENDING_KEY, LAST_KEY } from './public/draw-flow.mjs';
 
 const modules = await loadModules(null, await readFile('public/guion_vm.wasm'));
 const artifact = new Uint8Array(await readFile('public/verify.gub'));
@@ -103,8 +103,8 @@ test('pending is saved before polling and resumePending returns it', async () =>
   assert.equal(pending.startedAt, 1234);
   assert.equal(pending.salt_hex.length, 64);
   assert.equal(pending.id, pending.entry_hash.slice(0, 32));
-  assert.deepEqual(resumePending(store), pending);
-  assert.equal(resumePending(memoryStore()), null);
+  assert.deepEqual(resumePending(store, 1234), pending);
+  assert.equal(resumePending(memoryStore(), 1234), null);
 });
 
 test('polling reports progress then verifies', async () => {
@@ -115,7 +115,7 @@ test('polling reports progress then verifies', async () => {
     reply(200, pendingView([{ source: 'curby-rng' }, { source: 'nist-beacon-2' }])),
     reply(200, fixtureView),
   ]);
-  deps.store.setItem(PENDING_KEY, 'x');
+  deps.store.setItem(PENDING_KEY, JSON.stringify(fixturePending()));
   const seen = [];
   const out = await pollDraw(fixturePending(), deps, (p) => seen.push(p));
   assert.deepEqual(seen.map((p) => [p.logged, p.stamped, p.sourcesIn, p.done]), [
@@ -129,7 +129,7 @@ test('polling reports progress then verifies', async () => {
 
 test('anchor-failed clears pending and shows no outcome', async () => {
   const { deps } = pollDeps([reply(200, { ...fixtureView, status: 'anchor-failed', waiting_on: [], receipt: undefined })]);
-  deps.store.setItem(PENDING_KEY, 'x');
+  deps.store.setItem(PENDING_KEY, JSON.stringify(fixturePending()));
   const out = await pollDraw(fixturePending(), deps);
   assert.deepEqual(out, { kind: 'anchor-failed', message: MESSAGES['anchor-failed'] });
   assert.equal('outcome' in out, false);
@@ -150,7 +150,7 @@ test('after ten minutes the visitor is told it is still waiting, polling goes on
   let clock = 0;
   const sleeps = [];
   const store = memoryStore();
-  store.setItem(PENDING_KEY, 'x');
+  store.setItem(PENDING_KEY, JSON.stringify(fixturePending()));
   const told = [];
   const out = await pollDraw(fixturePending(), { vm, fetch, store, operatorKey, now: () => clock, sleep: async (ms) => { sleeps.push(ms); clock += ms; } }, () => {}, (message) => told.push([message, clock]));
   assert.equal(out.verdict.verdict, 'verified');
@@ -169,7 +169,7 @@ test('a queued 202 reply is not distrusted: pending is saved without an index an
   const pending = await startDraw(choice, { vm, fetch, random: bytes, store, operatorKey, now: () => 5 });
   assert.equal(pending.kind, undefined, JSON.stringify(pending));
   assert.equal(pending.index, null);
-  assert.deepEqual(resumePending(store), pending);
+  assert.deepEqual(resumePending(store, 5), pending);
   // Polling: still queued, then the complete view for the same entry.
   const view = { ...fixtureView };
   const p = { ...pending, id: view.id, request_json: JSON.stringify(view.receipt.request), entry_hash: view.entry_hash, question: '' };
@@ -180,10 +180,10 @@ test('a queued 202 reply is not distrusted: pending is saved without an index an
 
 test('a registry that cannot be loaded does not lose a finished draw: pending is kept', async () => {
   const { deps } = pollDraw_deps([reply(200, fixtureView)], { prepare: async () => { throw new Error('registry returned 502'); } });
-  deps.store.setItem(PENDING_KEY, 'x');
+  deps.store.setItem(PENDING_KEY, JSON.stringify(fixturePending()));
   const out = await pollDraw(fixturePending(), deps);
   assert.deepEqual(out, { kind: 'unreachable', message: MESSAGES.unreachable });
-  assert.equal(deps.store.getItem(PENDING_KEY), 'x');
+  assert.ok(deps.store.getItem(PENDING_KEY), 'pending kept');
 });
 
 test('loadRegistry checks the status instead of parsing an error page', async () => {
@@ -209,4 +209,103 @@ test('a draw picked up again after a long absence is looked at once, and may be 
   const { deps } = pollDeps([reply(200, fixtureView)], { now: () => 3 * 60 * 60 * 1000 });
   const out = await pollDraw(fixturePending(), deps);
   assert.equal(out.verdict.verdict, 'verified');
+});
+
+const WEEK = 7 * 24 * 60 * 60 * 1000;
+
+test('the operator key for drawing falls back to the one typed into the check box', () => {
+  const k = 'a1'.repeat(32);
+  assert.equal(chooseOperatorKey(k, ''), k);
+  assert.equal(chooseOperatorKey('', ` ${k.toUpperCase()} `), k);
+  assert.equal(chooseOperatorKey('', 'not a key'), '');
+  assert.equal(chooseOperatorKey(k, 'b2'.repeat(32)), k, 'the published key wins');
+});
+
+test('an untrusted answer while polling clears pending, so the error is not served on every reload', async () => {
+  const bad = { ...fixtureView, promise: fixtureView.promise.replace('lotcast.example', 'lotcast.exampla') };
+  const { deps } = pollDeps([reply(200, bad)]);
+  deps.store.setItem(PENDING_KEY, JSON.stringify(fixturePending()));
+  assert.equal((await pollDraw(fixturePending(), deps)).kind, 'untrusted');
+  assert.equal(deps.store.getItem(PENDING_KEY), null);
+  const notJson = pollDeps([{ ok: true, status: 200, text: async () => '<html>' }]);
+  notJson.deps.store.setItem(PENDING_KEY, JSON.stringify(fixturePending()));
+  assert.equal((await pollDraw(fixturePending(), notJson.deps)).kind, 'untrusted');
+  assert.equal(notJson.deps.store.getItem(PENDING_KEY), null);
+});
+
+test('three 404s in a row mean the draw is gone: not-found, pending cleared; a 404 then success starts the count again', async () => {
+  const gone = pollDeps([reply(404, {}), reply(404, {}), reply(404, {})]);
+  gone.deps.store.setItem(PENDING_KEY, JSON.stringify(fixturePending()));
+  const out = await pollDraw(fixturePending(), gone.deps);
+  assert.deepEqual(out, { kind: 'not-found', message: "Lotcast can't find this draw any more, so nothing more will arrive. You can draw again." });
+  assert.equal(gone.deps.store.getItem(PENDING_KEY), null);
+  const waiting = reply(200, { ...fixtureView, status: 'pending', waiting_on: [{ source: 'curby-rng' }], receipt: undefined, poll_after_ms: 2000 });
+  const blip = pollDeps([reply(404, {}), reply(404, {}), waiting, reply(404, {}), reply(404, {}), reply(200, fixtureView)]);
+  assert.equal((await pollDraw(fixturePending(), blip.deps)).verdict.verdict, 'verified');
+});
+
+test("finishing one tab's draw leaves another tab's newer pending draw alone", async () => {
+  const { deps } = pollDeps([reply(200, fixtureView)]);
+  const other = { ...fixturePending(), id: 'b'.repeat(32), startedAt: 99 };
+  deps.store.setItem(PENDING_KEY, JSON.stringify(other));
+  const out = await pollDraw(fixturePending(), deps);
+  assert.equal(out.verdict.verdict, 'verified');
+  assert.deepEqual(JSON.parse(deps.store.getItem(PENDING_KEY)), other);
+});
+
+test("a view with a different index than the one promised is untrusted", async () => {
+  const { deps } = pollDeps([reply(200, fixtureView)]);
+  const out = await pollDraw({ ...fixturePending(), index: fixtureView.index + 1 }, deps);
+  assert.equal(out.kind, 'untrusted');
+  assert.match(out.message, /changed the draw's place in the log/);
+});
+
+test('a completed draw survives a reload with its question and salt, until it is forgotten', async () => {
+  const fresh = pollDeps([reply(200, fixtureView)]);
+  fresh.deps.store.setItem(PENDING_KEY, JSON.stringify(fixturePending()));
+  fresh.deps.now = () => 1000;
+  const done = await pollDraw(fixturePending(), fresh.deps);
+  assert.equal(done.verdict.verdict, 'verified');
+  assert.equal(fresh.deps.store.getItem(PENDING_KEY), null);
+  const last = resumeLast(fresh.deps.store, 2000);
+  assert.deepEqual([last.id, last.index, last.question, last.salt_hex, last.finishedAt], [fixtureView.id, fixtureView.index, '', '11'.repeat(32), 1000]);
+  assert.equal(last.receipt.log.index, fixtureView.index);
+  assert.equal(last.verdict.verdict, 'verified');
+  forgetLast(fresh.deps.store);
+  assert.equal(resumeLast(fresh.deps.store, 2000), null);
+  assert.equal(fresh.deps.store.getItem(LAST_KEY), null);
+});
+
+test('a finished draw with a question keeps the question and salt for a reload', async () => {
+  // The fixture receipt carries no commitment, so the question check is stubbed to pass here; the
+  // real question check is covered by the Guion tests.
+  const asVerified = (entry, args) => (entry === 'verify_draw' ? JSON.stringify({ verdict: 'verified', detail: '', failed_step: 0, not_checked: [] }) : vm(entry, args));
+  const { deps } = pollDeps([reply(200, fixtureView)], { vm: asVerified });
+  const asked = { ...fixturePending(), question: 'Will it rain?', salt_hex: '22'.repeat(32) };
+  deps.store.setItem(PENDING_KEY, JSON.stringify(asked));
+  await pollDraw(asked, deps);
+  const last = resumeLast(deps.store, 0);
+  assert.equal(last.question, 'Will it rain?');
+  assert.equal(last.salt_hex, '22'.repeat(32));
+});
+
+test('a draw that does not check out is not kept for a reload', async () => {
+  const { deps } = pollDeps([reply(200, fixtureView)]);
+  const asked = { ...fixturePending(), question: 'Will it rain?', salt_hex: '22'.repeat(32) };
+  deps.store.setItem(PENDING_KEY, JSON.stringify(asked));
+  const out = await pollDraw(asked, deps);
+  assert.equal(out.verdict.verdict, 'invalid');
+  assert.equal(deps.store.getItem(LAST_KEY), null);
+  assert.equal(deps.store.getItem(PENDING_KEY), null);
+});
+
+test('records older than seven days are dropped on load', () => {
+  const store = memoryStore();
+  store.setItem(LAST_KEY, JSON.stringify({ id: 'a', finishedAt: 0, receipt: {}, verdict: {}, question: 'q', salt_hex: 's' }));
+  assert.equal(resumeLast(store, WEEK - 1)?.id, 'a');
+  assert.equal(resumeLast(store, WEEK + 1), null);
+  assert.equal(store.getItem(LAST_KEY), null);
+  store.setItem(PENDING_KEY, JSON.stringify({ ...fixturePending(), startedAt: 0 }));
+  assert.equal(resumePending(store, WEEK + 1), null);
+  assert.equal(store.getItem(PENDING_KEY), null);
 });

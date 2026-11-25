@@ -263,7 +263,7 @@ Lotcast</a>
 <p>Six lines, built from coin tosses nobody controls. You get a hexagram, and the one it changes to.</p>
 <label class="stack">Your question, if you have one
 <textarea id="q-iching" rows="3" placeholder="Hold it in mind, or write it here."></textarea>
-<span class="help">It never leaves this device. Only a sealed fingerprint is sent.</span></label>
+<span class="help">It never leaves this device. Only a sealed fingerprint is sent. It's kept in this browser until you draw again or choose Forget.</span></label>
 </div>
 <div class="panel panel-tarot">
 <p>Cards from the Rider–Waite–Smith deck, shuffled by chance nobody controls.</p>
@@ -274,7 +274,7 @@ Lotcast</a>
 </div>
 <label class="stack">Your question, if you have one
 <textarea id="q-tarot" rows="3" placeholder="Hold it in mind, or write it here."></textarea>
-<span class="help">It never leaves this device. Only a sealed fingerprint is sent.</span></label>
+<span class="help">It never leaves this device. Only a sealed fingerprint is sent. It's kept in this browser until you draw again or choose Forget.</span></label>
 </div>
 <div class="panel" style="padding-top:20px">
 <p id="draw-note" class="note" role="alert"></p>
@@ -350,6 +350,7 @@ Lotcast</a>
 <button type="button" class="btn solid" id="save-receipt">Save receipt</button>
 <button type="button" class="btn" id="save-question" hidden>Save my question (private)</button>
 <button type="button" class="btn quiet" id="draw-again">Draw again</button>
+<button type="button" class="btn quiet" id="forget">Forget this draw on this device</button>
 </div>
 <details class="more" data-ahi="ahi.reveals-discoveries.foldout">
 <summary>Receipt details</summary>

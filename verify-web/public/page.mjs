@@ -2,7 +2,7 @@
 // hexagram or the cards, the Save buttons, resume on load, and the check-a-receipt box.
 // Everything that needs trust runs in Guion (verify.gub); see draw-flow.mjs.
 import { loadModules, run } from './loader.mjs';
-import { makeVm, startDraw, pollDraw, resumePending, loadRegistry, STEPS } from './draw-flow.mjs';
+import { makeVm, startDraw, pollDraw, resumePending, resumeLast, forgetLast, loadRegistry, chooseOperatorKey, STEPS } from './draw-flow.mjs';
 import { hexagram, cards, cardFace } from './names.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -35,6 +35,8 @@ function start() {
 }
 
 let operatorKey = '';
+// The key a draw is checked against: the published one, else one typed into the check box.
+const currentKey = () => chooseOperatorKey(operatorKey, $('key').value);
 const keyReady = fetch(new URL('operator-key.txt', import.meta.url))
   .then((r) => (r.ok ? r.text() : ''))
   .then((t) => { const k = t.trim(); if (/^[0-9a-f]{64}$/.test(k)) operatorKey = k; })
@@ -280,13 +282,31 @@ $('save-question').addEventListener('click', () => {
     download(`lotcast-question-${lastDraw.index}.json`, `${JSON.stringify({ draw: lastDraw.index, question: lastDraw.question, salt: lastDraw.salt }, null, 2)}\n`);
   }
 });
-$('draw-again').addEventListener('click', () => { $('draw-note').textContent = ''; setState('draw'); });
+$('draw-again').addEventListener('click', () => { forgetLast(store); lastDraw = null; $('draw-note').textContent = ''; setState('draw'); });
+$('forget').addEventListener('click', () => { forgetLast(store); lastDraw = null; $('draw-note').textContent = ''; setState('draw'); });
+
+// The draw that finished last on this device, shown again after a reload. The check is run again
+// rather than trusting the stored verdict.
+async function showKept(last) {
+  const { vm } = await start();
+  await keyReady;
+  const key = currentKey();
+  const verdict = key === '' ? last.verdict : JSON.parse(vm('verify_draw', [JSON.stringify(last.receipt), key, last.question, last.salt_hex]));
+  if (verdict.verdict === 'invalid' || verdict.verdict === 'unreadable') {
+    forgetLast(store);
+    $('draw-note').textContent = `Do not trust this draw: ${verdict.detail}`;
+    setState('draw');
+    return;
+  }
+  await ensureRegistry();
+  await showResult({ receipt: last.receipt, outcome: last.receipt.outcome, verdict }, { index: last.index, question: last.question, salt_hex: last.salt_hex });
+}
 
 // ---------------------------------------------------------------- drawing
 async function deps() {
   const { vm } = await start();
   await keyReady;
-  return { vm, fetch: (...a) => fetch(...a), random: (n) => crypto.getRandomValues(new Uint8Array(n)), store, operatorKey, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), now: () => Date.now(), prepare: ensureRegistry };
+  return { vm, fetch: (...a) => fetch(...a), random: (n) => crypto.getRandomValues(new Uint8Array(n)), store, operatorKey: currentKey(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)), now: () => Date.now(), prepare: ensureRegistry };
 }
 
 async function follow(pending) {
@@ -321,9 +341,9 @@ $('draw-form').addEventListener('submit', async (event) => {
   button.disabled = true;
   button.textContent = 'Sealing…';
   try {
-    if (operatorKey === '') await keyReady;
-    if (operatorKey === '') {
-      $('draw-note').textContent = "This page has no operator key to check draws against, so it can't make one. Paste the key from the Lotcast README under Check a receipt, then try again.";
+    await keyReady;
+    if (currentKey() === '') {
+      $('draw-note').textContent = "This page has no operator key to check draws against, so it can't make one. Paste the key from the Lotcast README under Check a receipt (Change the key), then try again.";
       return;
     }
     const d = await deps();
@@ -406,7 +426,13 @@ keyReady.then(() => {
 loadTraditions();
 start().catch(() => {});
 const resumed = resumePending(store);
-if (resumed) {
+const kept = resumed ? null : resumeLast(store);
+if (kept) {
+  showKept(kept).catch((error) => {
+    $('draw-note').textContent = `The page could not show your last draw. (${error.message ?? error})`;
+    setState('draw');
+  });
+} else if (resumed) {
   const t = $(`t-${resumed.tradition}`);
   if (t) t.checked = true;
   follow(resumed).catch((error) => {

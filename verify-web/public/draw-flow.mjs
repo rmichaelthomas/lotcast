@@ -4,6 +4,8 @@
 
 export const STEPS = 5000000; // the same budget the checker uses
 export const PENDING_KEY = 'lotcast:pending';
+export const LAST_KEY = 'lotcast:last';
+const WEEK = 7 * 24 * 60 * 60 * 1000;
 export const LIVE_SOURCES = ['curby-rng', 'drand-quicknet', 'nist-beacon-2'];
 const TEN_MINUTES = 10 * 60 * 1000;
 const FIRST_BACKOFF = 2000;
@@ -14,6 +16,7 @@ export const MESSAGES = {
   'rate-limited': 'Lotcast is getting a lot of requests from this connection. Try again in a minute.',
   unreachable: "Couldn't reach Lotcast. Check your connection and try again.",
   'anchor-failed': "This draw couldn't be time-stamped, so nothing was drawn. You can draw again.",
+  'not-found': "Lotcast can't find this draw any more, so nothing more will arrive. You can draw again.",
   'still-waiting': 'Your draw is still waiting for random numbers. Leave this page open, or come back later on this device.',
 };
 
@@ -45,19 +48,60 @@ export function progress(view) {
   };
 }
 
-export function resumePending(store) {
+function readRecord(store, key) {
   try {
-    const raw = store.getItem(PENDING_KEY);
+    const raw = store.getItem(key);
     if (!raw) return null;
-    const pending = JSON.parse(raw);
-    return pending && typeof pending.id === 'string' ? pending : null;
+    const record = JSON.parse(raw);
+    return record && typeof record.id === 'string' ? record : null;
   } catch {
     return null;
   }
 }
 
-function clearPending(store) {
-  try { store.removeItem(PENDING_KEY); } catch { /* storage may be unavailable */ }
+function remove(store, key) {
+  try { store.removeItem(key); } catch { /* storage may be unavailable */ }
+}
+
+// A pending draw waiting on this device. One older than a week is dropped.
+export function resumePending(store, now = Date.now()) {
+  const pending = readRecord(store, PENDING_KEY);
+  if (pending && now - pending.startedAt > WEEK) {
+    remove(store, PENDING_KEY);
+    return null;
+  }
+  return pending;
+}
+
+// The draw that finished last on this device, kept so a reload shows it again (and the question and
+// salt can still be saved). One older than a week is dropped.
+export function resumeLast(store, now = Date.now()) {
+  const last = readRecord(store, LAST_KEY);
+  if (last && now - last.finishedAt > WEEK) {
+    remove(store, LAST_KEY);
+    return null;
+  }
+  return last;
+}
+
+export const forgetLast = (store) => remove(store, LAST_KEY);
+
+// Only this draw's own record: another tab may have a newer draw pending.
+function clearPending(store, id) {
+  try {
+    const raw = store.getItem(PENDING_KEY);
+    if (raw === null) return;
+    let stored = null;
+    try { stored = JSON.parse(raw); } catch { /* a damaged record is removed */ }
+    if (stored === null || stored.id === id) store.removeItem(PENDING_KEY);
+  } catch { /* storage may be unavailable */ }
+}
+
+// The key a draw is checked against: the one the page publishes, else one typed into the check box.
+export function chooseOperatorKey(published, typed) {
+  if (/^[0-9a-f]{64}$/.test(published ?? '')) return published;
+  const t = (typed ?? '').trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(t) ? t : '';
 }
 
 // A queued view has no index or promise yet: there is nothing to check and nothing to show.
@@ -128,6 +172,12 @@ export async function pollDraw(pending, deps, onProgress = () => {}, onStillWait
     told = true;
     onStillWaiting(MESSAGES['still-waiting']);
   };
+  let notFound = 0;
+  const distrust = (problem) => {
+    // The answer is wrong for this draw however often it is asked again: do not serve it on every reload.
+    clearPending(store, pending.id);
+    return untrusted(problem);
+  };
   for (;;) {
     let res;
     let text;
@@ -137,6 +187,15 @@ export async function pollDraw(pending, deps, onProgress = () => {}, onStillWait
     } catch {
       res = null;
     }
+    if (res && res.status === 404) {
+      notFound += 1;
+      if (notFound >= 3) {
+        clearPending(store, pending.id);
+        return failure('not-found', MESSAGES['not-found']);
+      }
+    } else {
+      notFound = 0;
+    }
     if (!res || text === null) {
       tellOnce();
       await sleep(told ? SLOW_POLL : backoff);
@@ -145,14 +204,25 @@ export async function pollDraw(pending, deps, onProgress = () => {}, onStillWait
     }
     backoff = FIRST_BACKOFF;
     let view;
-    try { view = JSON.parse(text); } catch { return untrusted("the service's answer is not JSON"); }
+    try { view = JSON.parse(text); } catch { return distrust("the service's answer is not JSON"); }
     if (!queued(view)) {
       const problem = vm('check_view', [text, operatorKey, pending.request_json, pending.entry_hash]);
-      if (problem !== '') return untrusted(problem);
+      if (problem !== '') return distrust(problem);
+      // The index the service promised is the index of this draw, every time it is asked.
+      if (pending.index != null && view.index !== pending.index) {
+        return distrust("the service changed the draw's place in the log");
+      }
+      if (pending.index == null) {
+        pending.index = view.index;
+        const stored = readRecord(store, PENDING_KEY);
+        if (stored && stored.id === pending.id) {
+          try { store.setItem(PENDING_KEY, JSON.stringify({ ...stored, index: view.index })); } catch { /* optional */ }
+        }
+      }
     }
     onProgress(progress(view), view);
     if (view.status === 'anchor-failed') {
-      clearPending(store);
+      clearPending(store, pending.id);
       return failure('anchor-failed', MESSAGES['anchor-failed']);
     }
     if (view.status === 'complete') {
@@ -162,7 +232,12 @@ export async function pollDraw(pending, deps, onProgress = () => {}, onStillWait
         try { await deps.prepare(); } catch { return failure('unreachable', MESSAGES.unreachable); }
       }
       const verdict = JSON.parse(vm('verify_draw', [JSON.stringify(view.receipt), operatorKey, pending.question, pending.salt_hex]));
-      clearPending(store);
+      // The finished draw stays on this device so a reload shows it again; see resumeLast.
+      const checksOut = verdict.verdict !== 'invalid' && verdict.verdict !== 'unreadable';
+      try {
+        if (checksOut) store.setItem(LAST_KEY, JSON.stringify({ id: pending.id, index: view.index, receipt: view.receipt, verdict, question: pending.question, salt_hex: pending.salt_hex, finishedAt: now() }));
+      } catch { /* the draw is shown now even if it cannot be kept */ }
+      clearPending(store, pending.id);
       return { receipt: view.receipt, outcome: view.receipt.outcome, verdict };
     }
     tellOnce();

@@ -88,3 +88,14 @@ test('the page keeps the wording of the checker headlines', async () => {
   assert.match(script, /'verified-pending-live': \['pending', 'Not fully checked yet/);
   assert.match(script, /'verified-unanchored': \['pending', 'Partly verified/);
 });
+
+test('the question help says how long it is kept and how to forget it', () => {
+  const helps = [...html.matchAll(/<span class="help">([^<]*never leaves this device[^<]*)<\/span>/g)].map((m) => m[1]);
+  assert.equal(helps.length, 2, 'one under each question field');
+  for (const h of helps) assert.equal(h, "It never leaves this device. Only a sealed fingerprint is sent. It's kept in this browser until you draw again or choose Forget.");
+});
+
+test('the result area has a Forget this draw on this device control, next to Draw again', () => {
+  assert.match(html, /<button type="button" class="btn quiet" id="forget">Forget this draw on this device<\/button>/);
+  assert.ok(html.indexOf('id="forget"') > html.indexOf('id="draw-again"'));
+});

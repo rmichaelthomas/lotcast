@@ -452,3 +452,89 @@ fn test_checkpoint_extensions_are_signed_into_the_note() -> Unit:
     assert(appended.added == 1)
     let reopened = open_fresh(dir)
     assert(log_checkpoint(reopened) == log_checkpoint(appended.state))
+
+fn test_parse_digits_reads_plain_numbers_without_the_host() -> Unit:
+    assert(unwrap(parse_digits("0")) == 0)
+    assert(unwrap(parse_digits("42")) == 42)
+    assert(unwrap(parse_digits("1795579310")) == 1795579310)
+    assert(unwrap(parse_digits("999999999999999999")) == 999999999999999999)
+    assert(not is_ok(parse_digits("")))
+    assert(not is_ok(parse_digits("1x")))
+    assert(not is_ok(parse_digits("-1")))
+    assert(not is_ok(parse_digits("1000000000000000000")))
+
+fn test_a_checkpoint_or_epoch_number_too_large_to_hold_is_refused_not_a_crash() -> Unit:
+    let root = base64_encode(crypto_sha256(bytes_from_ints([1])))
+    assert(not is_ok(parse_checkpoint("o\n99999999999999999999\n" + root + "\n")))
+    assert(not is_ok(parse_epoch(["lotcast/epoch 99999999999999999999 5"])))
+    assert(is_ok(parse_epoch(["lotcast/epoch 7 5"])))
+
+# ---- vfs: the file layer the service and log write through (local disk unless LOTCAST_STORE_URL is set)
+
+fn vfs_dir() -> Text:
+    return unwrap(fs_temp_dir("lotcast-vfs"))
+
+fn test_vfs_write_read_overwrite_and_exists_on_local_disk() -> Unit:
+    let dir = vfs_dir()
+    assert(not vfs_exists(dir + "/a.txt"))
+    assert(is_ok(vfs_write_bytes(dir + "/a.txt", bytes_from_text("one"))))
+    assert(vfs_exists(dir + "/a.txt"))
+    assert(unwrap(vfs_read_bytes(dir + "/a.txt")) == bytes_from_text("one"))
+    assert(is_ok(vfs_write_text(dir + "/a.txt", "two")))
+    assert(unwrap(vfs_read_text(dir + "/a.txt")) == "two")
+    assert(not is_ok(vfs_read_bytes(dir + "/missing")))
+
+fn test_vfs_make_dir_fails_when_it_exists_and_remove_releases_it() -> Unit:
+    let dir = vfs_dir()
+    assert(is_ok(vfs_make_dir(dir + "/lock")))
+    assert(not is_ok(vfs_make_dir(dir + "/lock")))
+    assert(vfs_remove(dir + "/lock"))
+    assert(is_ok(vfs_make_dir(dir + "/lock")))
+
+fn test_vfs_list_names_the_children_and_make_dirs_builds_the_path() -> Unit:
+    let dir = vfs_dir()
+    assert(is_ok(vfs_make_dirs(dir + "/x/y/z")))
+    assert(is_ok(vfs_write_text(dir + "/x/one.json", "1")))
+    assert(is_ok(vfs_write_text(dir + "/x/two.json", "2")))
+    let names = unwrap(vfs_list(dir + "/x"))
+    assert(len(names) == 3)
+    assert(not is_ok(vfs_list(dir + "/nope")))
+
+fn test_vfs_store_key_accepts_plain_paths_and_refuses_the_rest() -> Unit:
+    assert(unwrap(vfs_store_url("http://store.do", "/f", "lotcast/log/tile/0/000")) == "http://store.do/f/lotcast/log/tile/0/000")
+    assert(unwrap(vfs_store_url("http://store.do/", "/f", "a/b.json")) == "http://store.do/f/a/b.json")
+    assert(not is_ok(vfs_store_url("http://store.do", "/f", "a/../b")))
+    assert(not is_ok(vfs_store_url("http://store.do", "/f", "a b")))
+    assert(not is_ok(vfs_store_url("http://store.do", "/f", "a?b")))
+    assert(not is_ok(vfs_store_url("http://store.do", "/f", "")))
+
+# ---- vfs in store mode: what an answer from the store means (a failed call is never "absent")
+fn verdict_word(status: Int) -> Text:
+    match vfs_exists_verdict(status):
+        Some(there):
+            if there:
+                return "yes"
+            return "no"
+        None:
+            return "undecided"
+
+fn test_store_exists_answer_200_is_yes_404_is_no_and_anything_else_is_undecided() -> Unit:
+    assert(verdict_word(200) == "yes")
+    assert(verdict_word(404) == "no")
+    assert(verdict_word(500) == "undecided")
+    assert(verdict_word(503) == "undecided")
+    assert(verdict_word(403) == "undecided")
+
+fn test_store_retries_server_errors_but_not_answers_that_are_final() -> Unit:
+    assert(vfs_retryable(500))
+    assert(vfs_retryable(502))
+    assert(vfs_retryable(503))
+    assert(not vfs_retryable(200))
+    assert(not vfs_retryable(404))
+    assert(not vfs_retryable(412))
+    assert(not vfs_retryable(403))
+
+fn test_store_lock_marker_that_holds_our_nonce_means_we_took_the_lock() -> Unit:
+    assert(vfs_lock_is_ours("abc123", "abc123"))
+    assert(not vfs_lock_is_ours("abc123", "zzz999"))
+    assert(not vfs_lock_is_ours("abc123", ""))

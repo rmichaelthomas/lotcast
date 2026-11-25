@@ -1,0 +1,67 @@
+# The checking page's entry point. It runs in Guion's browser VM, which has no network, files or clock,
+# so it only does the offline half of the check: exactly what `verify_receipt.gu` does without --live.
+#
+# verify_page(receipt, operator_key_hex) returns JSON text:
+#   {"verdict": "verified" | "verified-pending-live" | "verified-unanchored" | "invalid" | "unreadable",
+#    "detail": "...", "failed_step": 0..6, "not_checked": [step numbers]}
+import "std:types"
+import "std:json"
+import "std:text"
+import "std:encoding"
+import "pkg:lotcast-log/src/lib.gu"
+import "pkg:lotcast-core/src/lib.gu"
+
+fn main() -> Int:
+    return 0
+
+fn answer(verdict: Text, detail: Text, failed_step: Int, not_checked: List[Int]) -> Text:
+    var list = json_array()
+    for n in not_checked:
+        set list = json_push(list, json_int(n))
+    var out = json_object()
+    set out = json_set(out, "verdict", json_text(verdict))
+    set out = json_set(out, "detail", json_text(detail))
+    set out = json_set(out, "failed_step", json_int(failed_step))
+    set out = json_set(out, "not_checked", list)
+    return json_stringify(out)
+
+fn unreadable(detail: Text) -> Text:
+    let none: List[Int] = []
+    return answer("unreadable", detail, 0, none)
+
+fn step_name(step: Int) -> Text:
+    if step == 1:
+        return "the entry and the operator's promise"
+    if step == 2:
+        return "the log's checkpoint and proof"
+    if step == 3:
+        return "the time-stamps"
+    if step == 4:
+        return "the beacon pulses"
+    if step == 5:
+        return "the outcome"
+    if step == 6:
+        return "the question"
+    return ""
+
+# The sentence the page shows for an invalid receipt. A step number outside 1 to 6 is not named.
+pub fn failure_sentence(step: Int, detail: Text) -> Text:
+    let name = step_name(step)
+    if name == "":
+        return "It does not check out: " + detail
+    return "It failed at step " + int_to_text(step) + ", " + name + ": " + detail
+
+pub fn verify_page(receipt: Text, operator_key_hex: Text) -> Text:
+    let parsed = json_parse(receipt)
+    if not is_ok(parsed):
+        return unreadable("That is not JSON. Paste the whole receipt file, from the first { to the last }.")
+    let doc = unwrap(parsed)
+    if not is_object(doc):
+        return unreadable("That is JSON, but not a receipt: a receipt is one JSON object.")
+    let decoded = hex_decode(text_trim(operator_key_hex))
+    if not is_ok(decoded) or len(unwrap(decoded)) != 32:
+        return unreadable("The operator key must be 64 hex characters (32 bytes).")
+    let verdict = verify_any(doc, unwrap(decoded), tsa_pins(), false, "", bytes_from_ints([]))
+    if verdict.result == "invalid":
+        return answer("invalid", failure_sentence(verdict.failed_step, verdict.detail), verdict.failed_step, verdict.not_checked)
+    return answer(verdict.result, verdict.detail, 0, verdict.not_checked)

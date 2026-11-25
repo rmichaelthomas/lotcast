@@ -32,9 +32,13 @@ pub fn store_open(root: Text) -> Result[Store, StdError]:
 
 # `*.json` file names in a subdirectory, without the extension (temporary files are skipped).
 fn store_names(store: Store, dir: Text) -> Result[List[Text], StdError]:
-    let listed = fs_list_dir(store.root + "/" + dir)
+    let listed = vfs_list(store.root + "/" + dir)
     if not is_ok(listed):
-        return Err(store_error("cannot list " + dir))
+        match listed:
+            Err(e):
+                return Err(store_error("cannot list " + dir + ": " + e.message))
+            Ok(ignored):
+                return Err(store_error("cannot list " + dir))
     var out: List[Text] = []
     for name in sort(unwrap(listed)):
         let size = len(name)
@@ -43,12 +47,12 @@ fn store_names(store: Store, dir: Text) -> Result[List[Text], StdError]:
     return Ok(out)
 
 pub fn store_put_json(store: Store, relative: Text, value: Json) -> Result[Bool, StdError]:
-    if not is_ok(write_text_atomic(store.root + "/" + relative, json_stringify(value))):
+    if not is_ok(vfs_write_text(store.root + "/" + relative, json_stringify(value))):
         return Err(store_error("cannot write " + relative))
     return Ok(true)
 
 pub fn store_get_json(store: Store, relative: Text) -> Result[Json, StdError]:
-    let body = read_text(store.root + "/" + relative)
+    let body = vfs_read_text(store.root + "/" + relative)
     if not is_ok(body):
         return Err(store_error("cannot read " + relative))
     let parsed = json_parse(unwrap(body))
@@ -57,10 +61,7 @@ pub fn store_get_json(store: Store, relative: Text) -> Result[Json, StdError]:
     return Ok(unwrap(parsed))
 
 pub fn store_has(store: Store, relative: Text) -> Bool:
-    let r = fs_exists(store.root + "/" + relative)
-    if not is_ok(r):
-        return false
-    return unwrap(r)
+    return vfs_exists(store.root + "/" + relative)
 
 # The first 32 hex characters of the entry hash name a draw.
 pub fn draw_id(entry_hash: Bytes) -> Text:
@@ -106,7 +107,7 @@ pub fn store_inbox_ids(store: Store) -> List[Text]:
     return unwrap(names)
 
 pub fn store_remove_inbox(store: Store, id: Text) -> Bool:
-    return is_ok(fs_remove(store.root + "/inbox/" + id + ".json"))
+    return vfs_remove(store.root + "/inbox/" + id + ".json")
 
 # Draws the watcher still has to finish (a marker per draw, removed when its receipt exists or its
 # epoch is void), so a pass does not walk every draw ever made.
@@ -117,5 +118,12 @@ pub fn store_active_ids(store: Store) -> List[Text]:
         return none
     return unwrap(names)
 
+# Requests waiting to be logged plus logged draws not yet complete, or an error when either list cannot
+# be read: "cannot tell" must never be reported as "none".
+pub fn store_pending_count(store: Store) -> Result[Int, StdError]:
+    let inbox = store_names(store, "inbox")?
+    let active = store_names(store, "active")?
+    return Ok(len(inbox) + len(active))
+
 pub fn store_clear_active(store: Store, id: Text) -> Bool:
-    return is_ok(fs_remove(store.root + "/active/" + id + ".json"))
+    return vfs_remove(store.root + "/active/" + id + ".json")

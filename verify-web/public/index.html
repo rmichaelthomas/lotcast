@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lotcast: check a receipt</title>
+<style>
+  :root { color-scheme: light dark; --ink: #1b1b1f; --paper: #fbfaf7; --line: #cfcabd; --ok: #1d6b3a; --warn: #8a5a00; --bad: #a3231f; }
+  @media (prefers-color-scheme: dark) { :root { --ink: #ecebe6; --paper: #17171a; --line: #3a3a40; --ok: #62c283; --warn: #e0b04a; --bad: #ff8b84; } }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.55 system-ui, sans-serif; }
+  main { max-width: 46rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+  p.lede { margin-top: 0; }
+  label { display: block; font-weight: 600; margin: 1.25rem 0 .35rem; }
+  textarea, input[type=text] { width: 100%; box-sizing: border-box; font: 13px/1.4 ui-monospace, monospace; background: transparent; color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: .6rem; }
+  textarea { min-height: 11rem; }
+  button { font: inherit; padding: .55rem 1.1rem; border-radius: 6px; border: 1px solid var(--ink); background: var(--ink); color: var(--paper); cursor: pointer; margin-top: 1rem; }
+  button:disabled { opacity: .5; cursor: progress; }
+  #result { margin-top: 1.75rem; border-left: 5px solid var(--line); padding: .25rem 0 .25rem 1rem; }
+  #result[data-state=verified] { border-color: var(--ok); }
+  #result[data-state=pending] { border-color: var(--warn); }
+  #result[data-state=invalid], #result[data-state=unreadable] { border-color: var(--bad); }
+  #headline { font-size: 1.25rem; font-weight: 700; margin: 0; }
+  code, pre { font-family: ui-monospace, monospace; font-size: .85rem; }
+  pre { white-space: pre-wrap; border: 1px solid var(--line); border-radius: 6px; padding: .6rem; }
+  details { margin-top: 2rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+  ol li { margin: .25rem 0; }
+  small { color: color-mix(in srgb, var(--ink) 65%, transparent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Check a Lotcast receipt</h1>
+  <p class="lede">A receipt is the file Lotcast gave you with your draw. Paste it here to see whether it holds up. The check runs in this page, on your device: the receipt is not sent anywhere.</p>
+
+  <label for="receipt">Receipt (the whole file, or drop the file on the box)</label>
+  <textarea id="receipt" spellcheck="false" placeholder='{"anchor": { ... }, "log": { ... }, ...}'></textarea>
+
+  <label for="key">Operator key <small>(64 hex characters; the key the service's log is signed with)</small></label>
+  <input type="text" id="key" spellcheck="false" autocomplete="off">
+  <small id="key-note"></small>
+
+  <button id="check" type="button" disabled>Check this receipt</button>
+
+  <section id="result" hidden aria-live="polite">
+    <p id="headline"></p>
+    <p id="detail"></p>
+    <div id="owed" hidden></div>
+  </section>
+
+  <details>
+    <summary>What does the check look at?</summary>
+    <p>Six steps, in order. The first one that fails is named.</p>
+    <ol>
+      <li><b>Entry and promise.</b> Your request is the one that went into the log, and the operator signed a promise to answer it in a named time slot.</li>
+      <li><b>Log.</b> The log's signed checkpoint contains that entry.</li>
+      <li><b>Timestamps.</b> Two independent time-stamp authorities stamped that checkpoint, so it existed before the random numbers did.</li>
+      <li><b>Sources.</b> Each public randomness beacon pulse in the receipt is genuine, and is the first one after the deadline.</li>
+      <li><b>Outcome.</b> The result follows from the request, the checkpoint and those numbers by a fixed method anyone can re-run.</li>
+      <li><b>Question.</b> If you asked a question, the receipt holds only a commitment to it; this page does not check it, because the question stays on your device. <code>lotcast verify</code> does.</li>
+    </ol>
+    <p>This page checks the offline half only. It cannot ask a beacon whether it has since published a pulse for your draw, so a receipt that depends on an idle source is marked "verified except for a live check".</p>
+  </details>
+</main>
+<script type="module">
+import { loadModules, run } from './loader.mjs';
+
+const $ = (id) => document.getElementById(id);
+const MAX_TEXT = 65536;
+const STEPS = 5000000; // measured: about 120,000 to 260,000 for the test receipts
+
+const fetchBytes = async (name) => {
+  const r = await fetch(new URL(name, import.meta.url));
+  if (!r.ok) throw new Error(`${name} returned ${r.status}`);
+  return new Uint8Array(await r.arrayBuffer());
+};
+
+let ready = null;
+function start() {
+  ready ??= Promise.all([fetchBytes('guion_vm.wasm'), fetchBytes('verify.gub')])
+    .then(async ([vm, artifact]) => ({ modules: await loadModules(null, vm), artifact }))
+    .catch((e) => { ready = null; throw e; });
+  return ready;
+}
+
+const show = (state, headline, detail, owed) => {
+  const box = $('result');
+  box.hidden = false;
+  box.dataset.state = state;
+  $('headline').textContent = headline;
+  $('detail').textContent = detail;
+  $('owed').hidden = !owed;
+  $('owed').replaceChildren();
+  if (owed) {
+    const p = document.createElement('p');
+    p.textContent = 'To finish the check, run this on your computer (Guion 0.8 or later):';
+    const pre = document.createElement('pre');
+    pre.textContent = owed;
+    $('owed').append(p, pre);
+  }
+};
+
+const HEADLINES = {
+  verified: ['verified', 'Verified.'],
+  'verified-pending-live': ['pending', 'Not fully checked: one live check is still owed.'],
+  'verified-unanchored': ['pending', 'Partly verified: the result follows from a real random number, but nothing shows the request came first.'],
+  invalid: ['invalid', 'This receipt does not check out.'],
+  unreadable: ['unreadable', 'This could not be read.'],
+};
+
+
+async function check() {
+  const receipt = $('receipt').value.trim();
+  const key = $('key').value.trim();
+  if (receipt.length > MAX_TEXT) {
+    show('unreadable', 'This could not be read.', `The receipt is ${receipt.length.toLocaleString('en-US')} characters; this page takes at most ${MAX_TEXT.toLocaleString('en-US')}. Use lotcast verify on your computer instead.`);
+    return;
+  }
+  $('check').disabled = true;
+  $('headline').textContent = 'Checking…';
+  $('result').hidden = false;
+  try {
+    const { modules, artifact } = await start();
+    const out = run(modules, artifact, { steps: STEPS, allowRaisedSteps: true }, { entry: 'verify_page', arguments: [receipt, key] });
+    if (!out.ok) {
+      show('unreadable', 'The checker stopped.', `${out.code}: ${out.message}`);
+      return;
+    }
+    const answer = JSON.parse(out.value);
+    const [state, headline] = HEADLINES[answer.verdict] ?? ['unreadable', 'Unexpected answer.'];
+    let detail = answer.detail;
+    const owed = answer.verdict === 'verified-pending-live'
+      ? `lotcast verify RECEIPT.json --operator-key ${key} --live`
+      : '';
+    show(state, headline, detail, owed);
+  } catch (error) {
+    show('unreadable', 'The checker did not load.', `Check your connection and try again. (${error.message ?? error})`);
+  } finally {
+    $('check').disabled = false;
+  }
+}
+
+$('check').addEventListener('click', check);
+const sync = () => { $('check').disabled = $('receipt').value.trim() === '' || $('key').value.trim() === ''; };
+$('receipt').addEventListener('input', sync);
+$('key').addEventListener('input', sync);
+$('receipt').addEventListener('dragover', (e) => e.preventDefault());
+$('receipt').addEventListener('drop', async (e) => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file) { $('receipt').value = await file.text(); sync(); }
+});
+
+// The published operator key, if this deployment ships one next to the page.
+fetch(new URL('operator-key.txt', import.meta.url)).then((r) => (r.ok ? r.text() : '')).then((t) => {
+  const key = t.trim();
+  if (/^[0-9a-f]{64}$/.test(key)) {
+    $('key').value = key;
+    $('key-note').textContent = 'Filled in from the key this service published. For an independent check, compare it with the key in the Lotcast README before you trust the result.';
+    sync();
+  } else {
+    $('key-note').textContent = 'Paste the key from the Lotcast README.';
+  }
+}).catch(() => { $('key-note').textContent = 'Paste the key from the Lotcast README.'; });
+start().catch(() => {});
+</script>
+</body>
+</html>

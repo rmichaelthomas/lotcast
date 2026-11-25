@@ -62,14 +62,17 @@ path = "../cli"
 version = "0.1.0"
 
 [environment]
-variables = ["PWD"]
+variables = ["PWD", "LOTCAST_STORE_URL", "LOTCAST_STORE_TOKEN"]
 
 [package]
 name = "lotcast-cli-modes"
 version = "0.1.0"
 
 [process]
-commands = ["ls", "chmod"]
+commands = [
+    "ls",
+    "chmod",
+]
 
 [runtime]
 output_limit_bytes = 2000000000

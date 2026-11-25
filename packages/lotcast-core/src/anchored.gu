@@ -86,7 +86,10 @@ fn check_entry_and_promise(receipt: Json, log: Json, entry_hash_bytes: Bytes, op
         return Err("the promise names a different index or entry")
     if not all_digits(lines[3]) or (len(lines[3]) > 1 and text_slice(lines[3], 0, 1) == "0"):
         return Err("the promise epoch is not a plain decimal number")
-    return Ok(unwrap(text_parse_int(lines[3])))
+    let epoch = parse_digits(lines[3])
+    if not is_ok(epoch):
+        return Err("the promise epoch is not a plain decimal number")
+    return Ok(unwrap(epoch))
 
 # Step 2: the checkpoint is the operator's, is the epoch the promise named, and holds the entry at
 # the stated index.

@@ -46,7 +46,7 @@ fn log_dir(store: Store) -> Text:
 
 # The highest epoch with a closed-epoch file, or -1.
 fn highest_closed(store: Store) -> Int:
-    let listed = fs_list_dir(store.root + "/epochs")
+    let listed = vfs_list(store.root + "/epochs")
     var best = -1
     if is_ok(listed):
         for name in unwrap(listed):
@@ -189,7 +189,7 @@ fn close_epoch(w: Writer, open: Json) -> Result[Writer, StdError]:
     set closed = json_set(closed, "entries", items)
     let saved = store_put_json(w.store, "epochs/" + int_to_text(epoch) + ".json", closed)?
     let published = publish_epoch(w.store, epoch, state.checkpoint)?
-    let removed = fs_remove(w.store.root + "/state/open.json")
+    let removed = vfs_remove(w.store.root + "/state/open.json")
     return Ok(Writer(w.store, w.origin, w.seed, w.public, w.epoch_seconds, w.stamp_budget, epoch, state))
 
 # Moves the inbox into the current epoch: the intent first, then a draw record (with its promise) for

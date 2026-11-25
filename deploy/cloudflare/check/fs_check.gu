@@ -1,0 +1,113 @@
+# Checks that a directory behaves like the disk the Lotcast service expects: it writes files the way
+# the service does (a temporary file renamed over the old one), uses a directory as a lock, lists
+# directories, and keeps a signed log across a reopen.
+# Run: guion run --file-root DIR fs_check.gu CHECKDIR   (CHECKDIR is relative to DIR; use "." for DIR itself)
+import "std:types"
+import "std:process"
+import "std:text"
+import "std:fs"
+import "std:crypto"
+import "std:encoding"
+import "pkg:lotcast-log/src/lib.gu"
+import "pkg:lotcast-log/src/encode.gu"
+
+fn seed() -> Bytes:
+    return unwrap(hex_decode("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"))
+
+fn report(name: Text, ok: Bool, detail: Text) -> Int:
+    if ok:
+        print("ok    " + name)
+        return 0
+    print("FAIL  " + name + ": " + detail)
+    return 1
+
+fn check_atomic_overwrite(dir: Text) -> Int:
+    var i = 0
+    while i < 200:
+        let body = text_bytes("version-" + int_to_text(i))
+        let put = put_file(dir, "a/b/state.json", body)
+        if not is_ok(put):
+            return report("atomic overwrite", false, "write " + int_to_text(i) + " failed")
+        let got = get_file(dir, "a/b/state.json")
+        if not is_ok(got):
+            return report("atomic overwrite", false, "read " + int_to_text(i) + " failed")
+        if unwrap(got) != body:
+            return report("atomic overwrite", false, "read back a different version at " + int_to_text(i))
+        set i = i + 1
+    return report("atomic overwrite", true, "")
+
+fn check_lock(dir: Text) -> Int:
+    let lock_dir = dir + "/locktest"
+    let made = make_dirs(lock_dir)
+    let first = log_lock(lock_dir)
+    if not is_ok(first):
+        return report("lock directory", false, "the first lock failed")
+    let second = log_lock(lock_dir)
+    if is_ok(second):
+        return report("lock directory", false, "a second lock was granted while the first was held")
+    if not log_unlock(lock_dir):
+        return report("lock directory", false, "unlock failed")
+    let third = log_lock(lock_dir)
+    if not is_ok(third):
+        return report("lock directory", false, "could not lock again after unlock")
+    let done = log_unlock(lock_dir)
+    return report("lock directory", true, "")
+
+fn check_list(dir: Text) -> Int:
+    let made = make_dirs(dir + "/listing")
+    var i = 0
+    while i < 5:
+        let put = put_file(dir, "listing/f" + int_to_text(i), text_bytes("x"))
+        set i = i + 1
+    let listed = fs_list_dir(dir + "/listing")
+    if not is_ok(listed):
+        return report("list directory", false, "listing failed")
+    if len(unwrap(listed)) != 5:
+        return report("list directory", false, "expected 5 names, got " + int_to_text(len(unwrap(listed))))
+    return report("list directory", true, "")
+
+fn entry(i: Int) -> Bytes:
+    return text_bytes("check-entry-" + int_to_text(i))
+
+fn check_log(dir: Text) -> Int:
+    let key = unwrap(crypto_ed25519_public_key(seed()))
+    let log_dir = dir + "/log"
+    let opened = log_open(log_dir, "lotcast/fs-check", "lotcast/fs-check", key)
+    if not is_ok(opened):
+        return report("signed log", false, "could not open a new log")
+    var state = unwrap(opened)
+    var batch = 0
+    while batch < 10:
+        var entries: List[Bytes] = []
+        var j = 0
+        while j < 10:
+            set entries = list_push(entries, entry(batch * 10 + j))
+            set j = j + 1
+        let appended = log_append_many(state, entries, "lotcast/fs-check", seed(), [])
+        if not is_ok(appended):
+            return report("signed log", false, "append " + int_to_text(batch) + " failed")
+        set state = unwrap(appended).state
+        set batch = batch + 1
+    let again = log_open(log_dir, "lotcast/fs-check", "lotcast/fs-check", key)
+    if not is_ok(again):
+        return report("signed log", false, "could not reopen the log")
+    if unwrap(again).size != 100:
+        return report("signed log", false, "reopened size is " + int_to_text(unwrap(again).size))
+    return report("signed log", true, "")
+
+fn main() -> Int:
+    let all = args()
+    if len(all) != 1:
+        print("usage: fs_check.gu CHECKDIR")
+        return 2
+    let dir = all[0]
+    let made = make_dirs(dir)
+    var failed = 0
+    set failed = failed + check_atomic_overwrite(dir)
+    set failed = failed + check_lock(dir)
+    set failed = failed + check_list(dir)
+    set failed = failed + check_log(dir)
+    if failed == 0:
+        print("all checks passed")
+        return 0
+    return 1

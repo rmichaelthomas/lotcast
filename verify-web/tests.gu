@@ -1,0 +1,79 @@
+import "std:types"
+import "std:json"
+import "std:text"
+import "std:fs"
+import "verify.gu"
+
+fn main() -> Int:
+    return 0
+
+fn receipt(name: Text) -> Text:
+    return unwrap(read_text("fixtures/" + name))
+
+fn key(name: Text) -> Text:
+    return text_trim(unwrap(read_text("fixtures/" + name)))
+
+fn answer(receipt_text: Text, operator_key: Text) -> Json:
+    return unwrap(json_parse(verify_page(receipt_text, operator_key)))
+
+fn verdict_of(j: Json) -> Text:
+    return json_as_text(json_get(j, "verdict"))
+
+fn test_a_drand_only_anchored_receipt_is_verified() -> Unit:
+    let a = answer(receipt("anchored-receipt.json"), key("anchored-operator-key.hex"))
+    assert(verdict_of(a) == "verified")
+    assert(json_as_int(json_get(a, "failed_step")) == 0)
+    assert(json_len(json_get(a, "not_checked")) == 0)
+
+fn test_a_receipt_with_an_idle_source_is_pending_live_and_says_it_is_not_fully_checked() -> Unit:
+    let a = answer(receipt("anchored-receipt-all-sources.json"), key("anchored-operator-key.hex"))
+    assert(verdict_of(a) == "verified-pending-live")
+    assert(text_find(json_as_text(json_get(a, "detail")), "live", 0) >= 0)
+    assert(text_find(json_as_text(json_get(a, "detail")), "curby-q", 0) >= 0)
+
+fn test_a_changed_outcome_is_invalid_at_step_5() -> Unit:
+    let original = receipt("anchored-receipt.json")
+    let changed = text_replace(original, "\"hexagram\":", "\"hexagram\":9")
+    assert(changed != original)
+    let a = answer(changed, key("anchored-operator-key.hex"))
+    assert(verdict_of(a) == "invalid")
+    assert(json_as_int(json_get(a, "failed_step")) == 5)
+
+fn test_the_wrong_operator_key_is_invalid_at_step_1() -> Unit:
+    let a = answer(receipt("anchored-receipt.json"), "ff" + text_slice(key("anchored-operator-key.hex"), 2, 64))
+    assert(verdict_of(a) == "invalid")
+    assert(json_as_int(json_get(a, "failed_step")) == 1)
+
+fn test_text_that_is_not_json_is_unreadable_not_a_crash() -> Unit:
+    let a = answer("this is not a receipt", key("anchored-operator-key.hex"))
+    assert(verdict_of(a) == "unreadable")
+    assert(text_find(json_as_text(json_get(a, "detail")), "JSON", 0) >= 0)
+
+fn test_json_that_is_not_an_object_is_unreadable() -> Unit:
+    assert(verdict_of(answer("[1,2,3]", key("anchored-operator-key.hex"))) == "unreadable")
+
+fn test_a_bad_operator_key_is_unreadable_and_says_so() -> Unit:
+    let a = answer(receipt("anchored-receipt.json"), "not hex")
+    assert(verdict_of(a) == "unreadable")
+    assert(text_find(json_as_text(json_get(a, "detail")), "operator", 0) >= 0)
+
+fn test_an_empty_receipt_is_unreadable() -> Unit:
+    assert(verdict_of(answer("", key("anchored-operator-key.hex"))) == "unreadable")
+
+fn test_an_invalid_answer_always_names_a_step_from_1_to_6() -> Unit:
+    let a = answer("{}", key("anchored-operator-key.hex"))
+    if verdict_of(a) == "invalid":
+        let step = json_as_int(json_get(a, "failed_step"))
+        assert(step >= 1 and step <= 6)
+    else:
+        assert(verdict_of(a) == "unreadable")
+
+fn test_the_failure_sentence_names_the_step_and_what_it_checks() -> Unit:
+    let s = failure_sentence(5, "the outcome differs")
+    assert(text_find(s, "step 5", 0) >= 0)
+    assert(text_find(s, "the outcome", 0) >= 0)
+
+fn test_a_step_outside_1_to_6_is_not_named_as_a_step() -> Unit:
+    let s = failure_sentence(0, "something odd")
+    assert(text_find(s, "step", 0) < 0)
+    assert(text_find(s, "something odd", 0) >= 0)

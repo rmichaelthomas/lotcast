@@ -11,6 +11,7 @@ import "request.gu"
 import "store.gu"
 import "api.gu"
 import "limits.gu"
+import "pkg:lotcast-log/src/lib.gu"
 
 # The HTTP surface (spec 8.1). The service's settings reach the handlers as request headers named
 # `x-lotcast-*` set by a first layer (which also deletes any such header a client sent), because a
@@ -124,7 +125,7 @@ fn h_get_receipt(request: Request) -> Result[Response, HttpFailure]:
                     return Ok(error_response(e))
 
 fn operator_key_of(request: Request) -> Bytes:
-    let body = read_text(header_of(request, "x-lotcast-data") + "/state/operator_key.hex")
+    let body = vfs_read_text(header_of(request, "x-lotcast-data") + "/state/operator_key.hex")
     if not is_ok(body):
         return bytes_from_ints([])
     let decoded = hex_decode(text_trim(unwrap(body)))
@@ -144,6 +145,18 @@ fn h_verify(request: Request) -> Result[Response, HttpFailure]:
 
 # The operator's public key, for clients that pin it (first contact is trust on first use: pin it
 # out of band for anything that matters).
+# How many draws the service has not finished: requests waiting to be logged plus logged draws whose
+# receipts are not complete. The Cloudflare wrapper reads this before it lets the container sleep.
+fn h_status(request: Request) -> Result[Response, HttpFailure]:
+    let opened = store_open(header_of(request, "x-lotcast-data"))
+    if not is_ok(opened):
+        return Ok(error_response(ApiError(500, "E_INTERNAL", "the data directory cannot be opened")))
+    let store = unwrap(opened)
+    let counted = store_pending_count(store)
+    if not is_ok(counted):
+        return Ok(error_response(ApiError(503, "E_INTERNAL", "cannot tell how many draws are pending")))
+    return Ok(json_response(200, json_set(json_object(), "pending", json_int(unwrap(counted)))))
+
 fn h_operator(request: Request) -> Result[Response, HttpFailure]:
     let key = text_trim(operator_key_hex(request))
     if key == "":
@@ -151,7 +164,7 @@ fn h_operator(request: Request) -> Result[Response, HttpFailure]:
     return Ok(json_response(200, json_set(json_set(json_object(), "origin", json_text(header_of(request, "x-lotcast-origin"))), "public_key", json_text(key))))
 
 fn operator_key_hex(request: Request) -> Text:
-    let body = read_text(header_of(request, "x-lotcast-data") + "/state/operator_key.hex")
+    let body = vfs_read_text(header_of(request, "x-lotcast-data") + "/state/operator_key.hex")
     if not is_ok(body):
         return ""
     return unwrap(body)
@@ -214,7 +227,7 @@ fn after(config: Map[Text, Text], request: Request, response: Response) -> Resul
 # The whole application for a configuration. `wait_ms` is how long POST /v1/draws waits for the
 # writer to log the request before answering 503.
 pub fn app_build(cfg: Config, wait_ms: Int) -> Result[App, HttpFailure]:
-    let made = router([route("GET", "/v1/traditions", h_traditions), route("GET", "/v1/registry", h_registry), route("GET", "/v1/sources", h_sources), route("POST", "/v1/draws", h_post_draw), route("GET", "/v1/draws/{id}", h_get_draw), route("GET", "/v1/draws/{id}/receipt", h_get_receipt), route("POST", "/v1/verify", h_verify), route("GET", "/v1/operator", h_operator)])?
+    let made = router([route("GET", "/v1/traditions", h_traditions), route("GET", "/v1/registry", h_registry), route("GET", "/v1/sources", h_sources), route("POST", "/v1/draws", h_post_draw), route("GET", "/v1/draws/{id}", h_get_draw), route("GET", "/v1/draws/{id}/receipt", h_get_receipt), route("POST", "/v1/verify", h_verify), route("GET", "/v1/operator", h_operator), route("GET", "/v1/status", h_status)])?
     var settings: Map[Text, Text] = {}
     set settings = map_set(settings, "x-lotcast-data", cfg.data_dir)
     set settings = map_set(settings, "x-lotcast-registry", cfg.registry_file)

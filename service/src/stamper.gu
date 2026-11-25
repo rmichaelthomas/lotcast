@@ -94,7 +94,7 @@ fn attempt(note: Text, failing_in: Map[Text, Int], now: Int, stamp: fn(Text, Lis
 
 fn pending_epochs(store: Store) -> List[Int]:
     var out: List[Int] = []
-    let listed = fs_list_dir(store.root + "/epochs")
+    let listed = vfs_list(store.root + "/epochs")
     if not is_ok(listed):
         return out
     for name in sort(unwrap(listed)):

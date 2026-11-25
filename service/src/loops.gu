@@ -59,6 +59,13 @@ pub fn real_build(request: DrawRequest, log_part: Json, promise: Text, drand: Dr
 fn report(who: Text, problem: StdError) -> Unit:
     eprint(who + ": " + problem.code + ": " + problem.message)
 
+# How long the writer rests between passes: a quarter second on a local disk, and a second when
+# the files are in a remote store, where every pass is a few requests.
+fn writer_pause_ms() -> Int:
+    if vfs_base() != "":
+        return 1000
+    return 250
+
 # The writer: closes epochs and drains the inbox every quarter second. After any error it reopens
 # the log, which also resynchronises it with the disk.
 pub fn writer_loop(store: Store, cfg: Config, seed: Bytes, max_ticks: Int) -> Int:
@@ -86,7 +93,7 @@ pub fn writer_loop(store: Store, cfg: Config, seed: Bytes, max_ticks: Int) -> In
             sleep_ms(2000)
             set opened = writer_open(store, cfg, seed)
         set ticks = ticks + 1
-        sleep_ms(250)
+        sleep_ms(writer_pause_ms())
     return ticks
 
 pub fn stamper_loop(store: Store, max_ticks: Int) -> Int:

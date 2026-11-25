@@ -8,6 +8,10 @@ network = [
 ]
 
 [approved-capabilities.lotcast-log]
+environment = [
+    "LOTCAST_STORE_URL",
+    "LOTCAST_STORE_TOKEN",
+]
 files = [
     "read",
     "write",
@@ -34,6 +38,12 @@ version = "0.3.0"
 [dependencies.lotcast-log]
 path = "../lotcast-log"
 version = "0.1.0"
+
+[environment]
+variables = [
+    "LOTCAST_STORE_URL",
+    "LOTCAST_STORE_TOKEN",
+]
 
 [package]
 entry = "src/lib.gu"
